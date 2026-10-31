@@ -102,6 +102,37 @@ fn remember_classic_code(origin: &str, name: &str, source: &str, data: &[u8]) {
     });
 }
 
+/// Make ICU's default zone the process `TZ` on Windows.
+///
+/// The CLI sets `TZ` from `OBSCURA_TIMEZONE`, else `Europe/Berlin`
+/// (obscura-cli/src/main.rs `run_cli`). ICU reads `TZ` on Unix, but on Windows
+/// it asks the OS, so pages saw the host's real zone and `OBSCURA_TIMEZONE` did
+/// nothing. V8's `Date` and `Intl` both take the zone from ICU's default, so
+/// setting it here before the first isolate keeps them consistent.
+/// Called once, beside `icu::set_default_locale`, in `ObscuraJsRuntime` creation.
+#[cfg(windows)]
+fn pin_icu_timezone_from_tz() {
+    // ICU 77 is what the v8 crate links (see `v8::icu::set_common_data_77`); a
+    // V8 upgrade that moves ICU fails here at link time, not silently.
+    unsafe extern "C" {
+        fn ucal_setDefaultTimeZone_77(zone_id: *const u16, status: *mut i32);
+    }
+    let Some(tz) = std::env::var("TZ").ok().filter(|tz| !tz.trim().is_empty()) else {
+        return;
+    };
+    let zone: Vec<u16> = tz.trim().encode_utf16().chain(std::iter::once(0)).collect();
+    let mut status = 0i32;
+    // SAFETY: `zone` is NUL-terminated UTF-16 that outlives the call, and ICU
+    // copies it. Runs under the first-creation lock, before any isolate exists.
+    unsafe { ucal_setDefaultTimeZone_77(zone.as_ptr(), &mut status) };
+    if status > 0 {
+        tracing::warn!("could not set timezone {tz:?} (ICU status {status})");
+    }
+}
+
+#[cfg(not(windows))]
+fn pin_icu_timezone_from_tz() {}
+
 /// Enter a tokio runtime context when the caller is not already in one.
 ///
 /// deno_core registers each isolate with the tokio handle current at
@@ -679,6 +710,7 @@ impl ObscuraJsRuntime {
             // Set it under the first-creation lock, before parallel restorations.
             if !ISOLATE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
                 deno_core::v8::icu::set_default_locale("en-US");
+                pin_icu_timezone_from_tz();
             }
 
             let mut runtime = JsRuntime::new(RuntimeOptions {
