@@ -1,6 +1,17 @@
 use obscura_js::runtime::ObscuraJsRuntime;
 use serde_json::json;
 
+// A change reaches a child document at a later rendering step; one short turn
+// can miss it on a loaded host, so pump until it arrives (bounded).
+async fn pump_until(rt: &mut ObscuraJsRuntime, condition: &str) {
+    for _ in 0..100 {
+        rt.run_event_loop_bounded(30).await.unwrap();
+        if rt.evaluate(condition).unwrap() == json!(true) {
+            break;
+        }
+    }
+}
+
 fn runtime() -> ObscuraJsRuntime {
     let mut rt = ObscuraJsRuntime::new();
     rt.set_dom(obscura_dom::parse_html("<!doctype html><body></body>"));
@@ -47,7 +58,7 @@ async fn color_scheme_reaches_existing_and_new_child_documents() {
         child.eval("globalThis.q = matchMedia('(prefers-color-scheme: dark)'); globalThis.changes = []; q.onchange = e => changes.push(e.matches)");
     })()"#).unwrap();
     rt.set_media_preferences(true, true);
-    rt.run_event_loop_bounded(30).await.unwrap();
+    pump_until(&mut rt, "child.changes.length >= 1").await;
     assert_eq!(
         rt.evaluate("[child.q.matches, child.changes]").unwrap(),
         json!([true, [true]])
@@ -57,7 +68,7 @@ async fn color_scheme_reaches_existing_and_new_child_documents() {
         return f.contentWindow.matchMedia('(prefers-color-scheme: dark) and (prefers-reduced-motion: reduce)').matches;
     })()"#).unwrap(), json!(true));
     rt.set_media_preferences(false, false);
-    rt.run_event_loop_bounded(30).await.unwrap();
+    pump_until(&mut rt, "child.changes.length >= 2").await;
     assert_eq!(
         rt.evaluate("[child.q.matches, child.changes]").unwrap(),
         json!([false, [true, false]])

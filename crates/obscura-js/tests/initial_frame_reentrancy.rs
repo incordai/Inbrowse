@@ -17,7 +17,15 @@ async fn srcdoc_iframe_created_via_innerhtml_does_not_abort() {
     let mut rt = setup("<html><body><div id=host></div></body></html>");
     rt.evaluate(r#"host.innerHTML = '<iframe srcdoc="<p>frame</p>"></iframe>'"#)
         .unwrap();
-    rt.run_event_loop_bounded(30).await.unwrap();
+    // The srcdoc document loads at a later turn; one short turn can miss it on
+    // a loaded host, so pump until it is there (bounded).
+    for _ in 0..100 {
+        rt.run_event_loop_bounded(30).await.unwrap();
+        let loaded = "host.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>frame</p>'";
+        if rt.evaluate(loaded).unwrap() == json!(true) {
+            break;
+        }
+    }
     assert_eq!(
         rt.evaluate(
             r#"(() => {
