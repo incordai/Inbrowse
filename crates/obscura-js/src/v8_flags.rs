@@ -47,6 +47,27 @@ pub fn set_v8_flags(flags: &str) {
     });
 }
 
+/// Run the calling test alone in a fresh process so `flags` reach V8 before
+/// any runtime exists; under `cargo test` an earlier test has usually started
+/// the platform already and `set_v8_flags` would be dropped. Returns `true` in
+/// the parent once the child passed (the caller returns) and `false` in the
+/// child after applying the flags (the caller runs its body).
+///
+/// Callers: the GC-stress, heap-limit and natives-syntax tests in runtime.rs
+/// and frame.rs.
+#[cfg(test)]
+pub(crate) fn run_isolated_with_flags(test: &str, flags: &str) -> bool {
+    if crate::fresh_process::run_alone(test) {
+        return true;
+    }
+    assert!(
+        !PLATFORM_STARTED.load(Ordering::SeqCst),
+        "{test} must start the first V8 runtime in its process"
+    );
+    set_v8_flags(flags);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -63,7 +63,8 @@ async fn local_storage_is_shared_per_origin_and_survives_navigation() {
     page.navigate(&format!("{origin_a}/two")).await.unwrap();
     assert_eq!(page.evaluate("localStorage.getItem('token')"), json!("abc"));
     assert_eq!(page.evaluate("String(localStorage.length)"), json!("2"));
-    assert_eq!(page.evaluate("JSON.stringify(Object.keys(localStorage))"), json!("[\"b\",\"token\"]"));
+    // A Storage object's keys are its ordered map's keys: insertion order.
+    assert_eq!(page.evaluate("JSON.stringify(Object.keys(localStorage))"), json!("[\"token\",\"b\"]"));
     assert_eq!(page.evaluate("'token' in localStorage"), json!(true));
 
     // Another tab of the same origin sees the same area.
@@ -107,7 +108,7 @@ async fn local_storage_persists_with_storage_dir() {
         let mut page = Page::new("ls-persist-page-1".to_string(), ctx.clone());
         page.navigate(&format!("{origin}/")).await.unwrap();
         page.evaluate("(localStorage.setItem('session', 'kept'), 1)");
-        ctx.save_cookies();
+        ctx.save_storage();
     }
 
     let ctx = context("ls-persist-2", Some(dir.clone()));

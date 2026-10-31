@@ -394,7 +394,10 @@ impl Page {
             (printable_height * css_per_point).max(1.0),
         );
         let previous_viewport = js.swap_render_viewport(print_viewport);
-        let previous_media = js.set_render_media(obscura_js::CssMediaType::Print);
+        let previous_media = js.set_render_media(
+            obscura_js::CssMediaType::Print.with_reduced_motion(js.prefers_reduced_motion())
+                .with_dark_color_scheme(js.prefers_dark_color_scheme()),
+        );
         let header_footer = options.display_header_footer.then(|| HeaderFooter {
             header: options.header_template.clone(),
             footer: options.footer_template.clone(),
@@ -1791,6 +1794,48 @@ mod tests {
         let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_380_800 + 15 * 3600 + 5 * 60);
         assert_eq!(format_print_date(when), "9/26/26, 3:05 PM");
         assert_eq!(format_print_date(std::time::UNIX_EPOCH), "1/1/70, 12:00 AM");
+    }
+
+    #[test]
+    fn raster_pdf_preserves_emulated_color_scheme_and_restores_screen() {
+        let context = std::sync::Arc::new(crate::BrowserContext::new("pdf-color".into()));
+        let mut page = crate::Page::new("pdf-color-page".into(), context);
+        page.set_viewport((100.0, 80.0));
+        let mut runtime = obscura_js::runtime::ObscuraJsRuntime::new();
+        runtime.set_dom(obscura_dom::parse_html(r#"<!doctype html><style>
+            html,body { margin:0 }
+            #probe { width:100px;height:80px;background:#ffffff }
+            @media (prefers-color-scheme:dark) { #probe { background:#e02020 } }
+            @media print and (prefers-color-scheme:dark) and (prefers-reduced-motion:reduce) {
+                #probe { background:#2050e0 }
+            }
+        </style><body><div id="probe"></div></body>"#));
+        runtime.set_url("https://example.test/pdf-color");
+        page.url = Some(url::Url::parse("https://example.test/pdf-color").unwrap());
+        runtime.set_viewport(100.0, 80.0);
+        runtime.run_page_init();
+        page.js = Some(runtime);
+        page.set_media_preferences(true, true);
+        let before = page.screenshot((100.0, 80.0)).unwrap();
+        let pixels = image::load_from_memory(&before).unwrap().into_rgb8();
+        assert_eq!(pixels.get_pixel(50, 60).0, [224, 32, 32]);
+        let ad_hoc = page.screenshot((120.0, 90.0)).unwrap();
+        let ad_hoc = image::load_from_memory(&ad_hoc).unwrap().into_rgb8();
+        assert_eq!(ad_hoc.dimensions(), (120, 90));
+        assert_eq!(ad_hoc.get_pixel(50, 60).0, [224, 32, 32]);
+        let options = RasterPdfOptions {
+            print_background: true,
+            paper_width_in: 100.0 / POINTS_PER_INCH,
+            paper_height_in: 80.0 / POINTS_PER_INCH,
+            margin_top_in: 0.0, margin_bottom_in: 0.0,
+            margin_left_in: 0.0, margin_right_in: 0.0,
+            ..RasterPdfOptions::default()
+        };
+        let pages = pdf_page_rasters(&page.raster_pdf(options).unwrap());
+        assert_eq!(pages.len(), 1);
+        assert!(channel_near(*pages[0].get_pixel(50, 60), [32, 80, 224]));
+        assert_eq!(page.screenshot((100.0, 80.0)).unwrap(), before);
+        assert_eq!(page.evaluate("return matchMedia('(prefers-color-scheme:dark)').matches;"), serde_json::json!(true));
     }
 
     #[test]

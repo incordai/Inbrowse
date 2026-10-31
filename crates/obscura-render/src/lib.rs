@@ -13,6 +13,9 @@
 
 use taffy::prelude::*;
 
+#[cfg(all(test, feature = "paint"))]
+#[path = "../../test-support/fresh_process.rs"]
+pub(crate) mod fresh_process;
 pub mod css;
 pub use css::{CssMediaType, Stylesheet, StylesheetCache};
 
@@ -96,6 +99,8 @@ mod image_capability_tests {
 #[cfg(feature = "paint")]
 mod paint;
 #[cfg(feature = "paint")]
+pub use tiny_skia::Pixmap;
+#[cfg(feature = "paint")]
 pub use paint::{
     image_intrinsic_dimensions, paint_dom, paint_dom_scrolled,
     paint_dom_scrolled_at_animation_time,
@@ -145,16 +150,15 @@ pub mod inline {
     use obscura_dom::tree::{DomTree, NodeId};
     use std::collections::HashMap;
 
+    /// Uninhabited: without paint there is no shaper to load a web font into,
+    /// so no caller can build one (see `dom::layout_dom_with_resources`).
     #[derive(Clone)]
-    pub(crate) struct WebFont {
-        pub data: std::sync::Arc<Vec<u8>>,
-        pub family: Option<String>,
-        pub weight: Option<(u16, u16)>,
-        pub italic: Option<bool>,
-    }
+    pub(crate) enum WebFont {}
 
     #[derive(Default)]
-    pub struct TextEngine;
+    pub struct TextEngine {
+        controls: Vec<(taffy::Size<f32>, bool)>,
+    }
 
     pub(crate) fn text_may_need_emoji_font(_text: &str) -> bool {
         false
@@ -162,15 +166,40 @@ pub mod inline {
 
     impl TextEngine {
         pub fn new() -> Self {
-            TextEngine
-        }
-
-        pub(crate) fn new_with_web_fonts(_fonts: &[WebFont]) -> Self {
-            TextEngine
+            Self::default()
         }
 
         pub(crate) fn new_with_web_fonts_and_emoji(_fonts: &[WebFont], _load_emoji: bool) -> Self {
-            TextEngine
+            Self::default()
+        }
+
+        pub(crate) fn register_native_control(
+            &mut self, width: f32, height: f32, style: &crate::LayoutStyle,
+        ) -> usize {
+            let index = self.controls.len();
+            let zero_min_content = matches!(style.width, crate::Dimension::Percent(_))
+                || matches!(style.max_width, crate::Dimension::Percent(_))
+                || [0, 4].into_iter().any(|index| style.size_expressions[index]
+                    .as_deref().is_some_and(|expression| expression.contains('%')));
+            self.controls.push((taffy::Size { width, height }, zero_min_content));
+            (1usize << (usize::BITS - 1)) | index
+        }
+
+        pub fn measure_taffy(
+            &mut self, index: usize, known: taffy::Size<Option<f32>>,
+            available: taffy::Size<taffy::AvailableSpace>,
+        ) -> taffy::Size<f32> {
+            let bit = 1usize << (usize::BITS - 1);
+            if index & bit == 0 { return taffy::Size::ZERO; }
+            let (intrinsic, zero_min_content) = self.controls[index & !bit];
+            taffy::Size {
+                width: known.width.unwrap_or_else(|| {
+                    if zero_min_content && matches!(available.width, taffy::AvailableSpace::MinContent) {
+                        0.0
+                    } else { intrinsic.width }
+                }),
+                height: known.height.unwrap_or(intrinsic.height),
+            }
         }
 
         pub fn register_replaced(
@@ -245,7 +274,7 @@ pub mod inline {
     }
 
     pub(crate) fn used_line_height(style: &crate::LayoutStyle) -> f32 {
-        TextEngine.selected_line_height(style)
+        TextEngine::new().selected_line_height(style)
     }
 
     pub(crate) fn is_replaced(local: &str) -> bool {
@@ -915,6 +944,14 @@ pub(crate) enum RadialGradientSize {
     Explicit(Dimension, Dimension),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableRowDisplay {
+    Row,
+    Group,
+    Header,
+    Footer,
+}
+
 /// One computed CSS counter operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CounterDirective {
@@ -952,6 +989,7 @@ pub enum GeneratedContentItem {
 /// Sparse retained provenance for direct transform-only WAAPI sampling.
 /// Kept behind one pointer so ordinary, non-animated elements do not pay for
 /// another `Vec` in every `LayoutStyle`.
+#[cfg(feature = "paint")]
 #[derive(Debug, Clone)]
 pub(crate) struct WaapiSampleState {
     pub underlying_transform_ops: Vec<TransformOp>,
@@ -973,6 +1011,9 @@ pub struct LayoutStyle {
     /// until the parent's computed outer/inner display is known. The DOM
     /// top-down pass copies that provenance and then clears this marker.
     pub(crate) display_inherit: bool,
+    /// Inline outer display before absolute-position blockification. Retained
+    /// styles need this provenance to reconstruct the hypothetical static box.
+    pub(crate) static_position_inline: bool,
     /// Original legacy flexbox display provenance. `Some(false)` is
     /// `-webkit-box`; `Some(true)` is `-webkit-inline-box`. A vertical legacy
     /// box with an active line clamp computes to flow-root/inline-block, but
@@ -988,6 +1029,8 @@ pub struct LayoutStyle {
     /// top-down before layout because `container-type` is otherwise
     /// non-inherited.
     pub(crate) container_type_inherit: bool,
+    /// Explicit `contain` flags, independent of size-query eligibility.
+    pub(crate) containment: u8,
     /// Computed CSS `container-name`; empty represents `none` (not inherited).
     pub container_names: Vec<String>,
     /// The specified `container-name` value was CSS-wide `inherit`.
@@ -1013,6 +1056,8 @@ pub struct LayoutStyle {
     /// `<td>`/`<th>` elements even though Taffy represents their cell-content
     /// wrapper as an internal column flexbox.
     pub(crate) is_table_cell_box: bool,
+    /// Table row/group provenance, independent of the internal layout stand-in.
+    pub(crate) table_row_display: Option<TableRowDisplay>,
     /// The HTML UA sheet's vendor `text-align` behavior for `<center>`.
     /// Unlike ordinary `text-align:center`, it also centers fixed-width block
     /// descendants while leaving auto-width blocks fill-available.
@@ -1241,6 +1286,10 @@ pub struct LayoutStyle {
     /// Keeping this provenance distinguishes an explicit zero from the
     /// `normal` initial value while resolving the inherited property.
     pub letter_spacing_non_normal: Option<bool>,
+    /// Additional advance per word separator, resolved to CSS pixels before inheritance.
+    pub word_spacing: Option<f32>,
+    /// Relative length retained until the element's font size is resolved.
+    pub word_spacing_raw: Option<Dimension>,
     /// Specified CSS font weight during cascade (`1..1000`, `bolder`, or
     /// `lighter`), normalized to its numeric computed value by the inheritance
     /// pass before layout and shaping.
@@ -1417,6 +1466,9 @@ pub struct LayoutStyle {
     /// a real inherited CSS property). Resolved into `effectively_invisible`
     /// during `dom::layout_dom`'s inheritance pass.
     pub visibility_hidden: Option<bool>,
+    // Preserve the own value above for retained inheritance updates while
+    // exposing the resolved inherited value through CSSOM snapshots.
+    pub(crate) computed_visibility_hidden: bool,
     /// Computed `pointer-events: none|auto`. The property is inherited, so
     /// `None` means the top-down style pass still needs the parent's value.
     pub pointer_events_none: Option<bool>,
@@ -1587,6 +1639,7 @@ pub struct LayoutStyle {
     /// A retained compositor-style sample restores this value before replaying
     /// the registered effects, so sparse keyframes never compound on the
     /// previously sampled transform.
+    #[cfg(feature = "paint")]
     pub(crate) waapi_sample_state: Option<Box<WaapiSampleState>>,
     /// Individual CSS `translate` property. This composes independently with
     /// the legacy `transform` property, so `transform:none` must not clear it.
@@ -1694,8 +1747,15 @@ pub(crate) fn is_inline_level_box(style: &LayoutStyle) -> bool {
 /// Thus inline-flex becomes flex and inline-grid becomes grid, while
 /// inline-block/plain inline become block.
 pub(crate) fn blockify_outer_display(style: &mut LayoutStyle) {
+    if style.display != Display::None && style.table_row_display.take().is_some() {
+        style.display = Display::Block;
+        style.internal_flex_container = false;
+    }
     if !is_inline_level_box(style) {
         return;
+    }
+    if matches!(style.position, Some(taffy::Position::Absolute)) {
+        style.static_position_inline = true;
     }
     if style.display == Display::Inline {
         style.display = Display::Block;
@@ -1704,6 +1764,12 @@ pub(crate) fn blockify_outer_display(style: &mut LayoutStyle) {
 }
 
 pub(crate) const CB_TRIGGER_TRANSFORM: u16 = 1 << 0;
+pub(crate) const CONTAIN_SIZE: u8 = 1 << 0;
+pub(crate) const CONTAIN_INLINE_SIZE: u8 = 1 << 1;
+pub(crate) const CONTAIN_LAYOUT: u8 = 1 << 2;
+pub(crate) const CONTAIN_STYLE: u8 = 1 << 3;
+pub(crate) const CONTAIN_PAINT: u8 = 1 << 4;
+pub(crate) const CONTAIN_INHERIT: u8 = 1 << 7;
 pub(crate) const CB_TRIGGER_FILTER: u16 = 1 << 1;
 pub(crate) const CB_TRIGGER_BACKDROP_FILTER: u16 = 1 << 2;
 pub(crate) const CB_TRIGGER_PERSPECTIVE: u16 = 1 << 3;
@@ -2051,8 +2117,9 @@ pub struct WaapiAnimation {
 
 /// Page-owned CSS animation instance history retained across layout rebuilds.
 /// Node ids are document-scoped, so navigation must replace this value.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AnimationTimelineState {
+    display_suppressed: std::collections::HashSet<obscura_dom::tree::NodeId>,
     instances: std::collections::HashMap<obscura_dom::tree::NodeId, AnimationInstance>,
     start_candidates: std::collections::HashMap<obscura_dom::tree::NodeId, f32>,
     subtree_start_candidates: std::collections::HashMap<obscura_dom::tree::NodeId, f32>,
@@ -2102,6 +2169,7 @@ impl AnimationTimelineState {
     ) {
         for node in nodes {
             self.instances.remove(node);
+            self.display_suppressed.remove(node);
             self.start_candidates.remove(node);
             self.subtree_start_candidates.remove(node);
             self.waapi.retain(|_, animation| animation.node != *node);
@@ -2195,12 +2263,14 @@ impl AnimationTimelineState {
         })
     }
 
+    #[cfg(feature = "paint")]
     pub(crate) fn has_active_waapi(&self, document_time: AnimationSampleTime) -> bool {
         self.waapi
             .values()
             .any(|animation| waapi_is_active(animation, document_time))
     }
 
+    #[cfg(feature = "paint")]
     pub(crate) fn active_waapi_effect_impact(
         &self,
         document_time: AnimationSampleTime,
@@ -2242,6 +2312,7 @@ impl AnimationTimelineState {
             return sample.time;
         }
         let document_time_ms = sample.time.milliseconds;
+        let was_suppressed = self.display_suppressed.remove(&node);
         let transition_time_ms = self.start_candidates.remove(&node);
         let retained = self
             .instances
@@ -2250,7 +2321,11 @@ impl AnimationTimelineState {
         let instance = match retained {
             Some(instance) => instance,
             None => {
-                let candidate = transition_time_ms.unwrap_or(0.0);
+                let candidate = transition_time_ms.unwrap_or(if was_suppressed {
+                    document_time_ms
+                } else {
+                    0.0
+                });
                 let paused = play_state == AnimationPlayState::Paused;
                 self.instances.insert(
                     node,
@@ -2285,6 +2360,16 @@ impl AnimationTimelineState {
     pub(crate) fn clear_animation(&mut self, node: obscura_dom::tree::NodeId, sample: AnimationSample) {
         if sample.mode == AnimationSampleMode::DocumentTime {
             self.instances.remove(&node);
+            self.display_suppressed.remove(&node);
+        }
+    }
+
+    /// CSS animations terminate below display:none. Remember the suppression
+    /// so revealing an ancestor starts a new instance at the next style flush.
+    pub(crate) fn suppress_css_animation(&mut self, node: obscura_dom::tree::NodeId, sample: AnimationSample) {
+        if sample.mode == AnimationSampleMode::DocumentTime {
+            self.instances.remove(&node);
+            self.display_suppressed.insert(node);
         }
     }
 
@@ -2292,6 +2377,7 @@ impl AnimationTimelineState {
         &mut self,
         mut keep: impl FnMut(obscura_dom::tree::NodeId) -> bool,
     ) {
+        self.display_suppressed.retain(|node| keep(*node));
         self.instances.retain(|node, _| keep(*node));
         self.start_candidates.retain(|node, _| keep(*node));
         self.subtree_start_candidates.retain(|node, _| keep(*node));
@@ -2304,6 +2390,7 @@ impl AnimationTimelineState {
     }
 }
 
+#[cfg(feature = "paint")]
 fn waapi_is_active(animation: &WaapiAnimation, document_time: AnimationSampleTime) -> bool {
     if animation.play_state != WaapiPlayState::Running
         || animation.timing.duration_ms <= 0.0
@@ -2530,9 +2617,19 @@ pub(crate) fn to_taffy_style(style: &LayoutStyle) -> Style {
         width: dimension(style.max_width),
         height: dimension(style.max_height),
     };
-    if let Some(ar) = style.aspect_ratio {
-        if ar.is_finite() && ar > 0.0 {
-            s.aspect_ratio = Some(ar);
+    // Two definite replaced axes size independently of the preferred ratio.
+    // Keep the decoded ratio in LayoutStyle for object fitting, but do not let
+    // Taffy transfer min/max constraints to the other authored axis. Percentage
+    // and calc axes must retain their ratio until their basis is resolved.
+    let definite_replaced_axes = style.has_replaced_sizing
+        && matches!(style.width, Dimension::Px(_))
+        && matches!(style.height, Dimension::Px(_))
+        && style.size_expressions[..2].iter().all(Option::is_none);
+    if !definite_replaced_axes {
+        if let Some(ar) = style.aspect_ratio {
+            if ar.is_finite() && ar > 0.0 {
+                s.aspect_ratio = Some(ar);
+            }
         }
     }
     if style.ignores_used_box_sizes() {

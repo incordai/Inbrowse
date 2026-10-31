@@ -614,6 +614,9 @@ mod tests {
 
     #[test]
     fn config_off_without_key() {
+        if crate::fresh_process::run_alone("captcha::tests::config_off_without_key") {
+            return;
+        }
         std::env::remove_var("OBSCURA_CAPTCHA_API_KEY");
         assert!(CaptchaConfig::from_env().is_none());
     }

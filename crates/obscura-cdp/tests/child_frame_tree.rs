@@ -103,10 +103,21 @@ async fn get_frame_tree_reports_nested_child_frames() {
     // asks for, so the tree came back empty for every one of them.
     cdp(&mut ctx, 1, "Page.navigate", json!({"url": url}), session).await;
     // Frames are built when the page settles, which is not part of the
-    // navigation itself.
-    cdp(&mut ctx, 2, "Runtime.evaluate", json!({"expression": "1"}), session).await;
-
-    let tree = cdp(&mut ctx, 3, "Page.getFrameTree", json!({}), session).await;
+    // navigation itself. Under a loaded test run one settle is not always
+    // enough for both nested loads, so poll until the grandchild is in the
+    // tree; the assertions below still fail if it never arrives.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut id = 100;
+    let tree = loop {
+        cdp(&mut ctx, id, "Runtime.evaluate", json!({"expression": "1"}), session).await;
+        let tree = cdp(&mut ctx, id + 1, "Page.getFrameTree", json!({}), session).await;
+        id += 2;
+        let built = !tree["frameTree"]["childFrames"][0]["childFrames"][0].is_null();
+        if built || std::time::Instant::now() >= deadline {
+            break tree;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
     let root = &tree["frameTree"];
     let child = &root["childFrames"][0];
     assert!(

@@ -53,7 +53,9 @@ async fn run(page: &mut Page, body: &str) -> Value {
             return serde_json::from_str(s).unwrap();
         }
     }
-    panic!("script never called done()");
+    let url = page.url_string();
+    let head: String = body.trim_start().chars().take(80).collect();
+    panic!("script never called done() on {url}: {head}");
 }
 
 const PROMISIFY: &str = r#"
@@ -208,6 +210,8 @@ async fn databases_persist_across_navigation_and_storage_dir() {
             const s = db.transaction('people').objectStore('people');
             const v = await p(s.index('by_tag').get('t'));
             const list = await indexedDB.databases();
+            // An open connection blocks deleteDatabase until it closes.
+            db.close();
             done({{ upgrade, name: v && v.name, bytes: v && Array.from(v.bytes), map: v && v.m.get(1), list }});
         }})().catch(fail);
     "#);
@@ -221,7 +225,7 @@ async fn databases_persist_across_navigation_and_storage_dir() {
         // Same context, new document.
         page.navigate(&format!("{origin}/b")).await.unwrap();
         assert_eq!(run(&mut page, &read).await, expected);
-        ctx.save_cookies();
+        ctx.save_storage();
     }
 
     let mut page = Page::new("idb-persist-2".into(), context("idb-persist-2", Some(dir.clone())));

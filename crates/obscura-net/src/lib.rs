@@ -5,7 +5,6 @@ pub mod interceptor;
 pub mod robots;
 pub mod blocklist;
 pub mod proxy;
-pub mod web_storage;
 pub mod websocket;
 #[cfg(feature = "stealth")]
 pub mod wreq_client;
@@ -23,7 +22,6 @@ pub use encoding::{
     url_encode_query,
 };
 pub use proxy::ProxyPool;
-pub use web_storage::WebStorage;
 pub use robots::RobotsCache;
 pub use blocklist::is_blocked as is_tracker_blocked;
 #[cfg(feature = "stealth")]
@@ -31,3 +29,6 @@ pub use wreq_client::{
     StealthHttpClient, STEALTH_NAVIGATOR_PLATFORM, STEALTH_UA_PLATFORM,
     STEALTH_UA_PLATFORM_VERSION, STEALTH_USER_AGENT,
 };
+
+mod operator_hint;
+pub use operator_hint::private_network_error_hint;

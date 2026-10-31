@@ -3,6 +3,9 @@
 //! it stayed an inert node. This is the reporter's loopback repro, reduced to
 //! the part that needs no network: two documents on one local server.
 
+#[path = "../../test-support/fresh_process.rs"]
+mod fresh_process;
+
 use std::io::{Read, Write};
 
 use obscura::Browser;
@@ -320,6 +323,11 @@ async fn a_static_child_frame_runs_its_own_script() {
 
 #[tokio::test]
 async fn a_rejected_child_frame_does_not_leave_js_references() {
+    // OBSCURA_MAX_LIVE_FRAMES=0 is process-wide: run alone so the other frame
+    // tests in this binary keep their default cap.
+    if fresh_process::run_alone("a_rejected_child_frame_does_not_leave_js_references") {
+        return;
+    }
     std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
     std::env::set_var("OBSCURA_MAX_LIVE_FRAMES", "0");
     let base = spawn_server(STATIC_PARENT_HTML);

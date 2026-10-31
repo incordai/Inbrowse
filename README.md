@@ -73,7 +73,7 @@ This repository ([incordai/incord-browser](https://github.com/incordai/incord-br
 | **WebSocket** | A real connection instead of a stub that reported OPEN and dropped every message. Sends the page's cookies, `Origin` and user agent; uses the configured HTTP/SOCKS5 proxy; refuses private addresses unless `--allow-private-network`; stealth builds use the Chrome TLS fingerprint. Text, binary, Blob, subprotocols and close codes work. |
 | **WebSocket in CDP** | `Network.webSocketCreated`, `webSocketWillSendHandshakeRequest`, `webSocketHandshakeResponseReceived`, `webSocketFrameSent` / `Received`, `webSocketFrameError` and `webSocketClosed`, so Puppeteer and Playwright see socket traffic. |
 | **IndexedDB** | A working database instead of a shim that stored nothing: object stores, key generators, indexes (unique, multiEntry, compound), key ranges, cursors, transactions with rollback, version changes, `databases()`, `cmp()`. Dexie, idb-keyval and localForage run on it. Data persists per origin. |
-| **localStorage / sessionStorage** | Shared by every page and frame of an origin, kept across navigations, saved to `web_storage.json` with `--storage-dir`, with the 10 MiB per-origin quota. sessionStorage is per tab. |
+| **localStorage / sessionStorage** | Shared by every page and frame of an origin, kept across navigations, saved per origin under `localStorage/` with `--storage-dir`, with a 5 MiB per-origin quota. sessionStorage is per tab. IndexedDB is saved the same way under `indexedDB/`. |
 | **Touch and drag** | `Touch`, `TouchList`, `TouchEvent`, `DataTransfer` and `DragEvent`; CDP `Input.dispatchTouchEvent`, `Input.dispatchDragEvent` and `Input.setInterceptDrags`. |
 | **`innerText`** | Follows the HTML rendered-text rules: hidden content and `<script>`/`<style>` are skipped, whitespace collapses per `white-space`, and blocks, paragraphs and table cells get line breaks and tabs. Previously it returned `textContent`. |
 
@@ -114,6 +114,12 @@ The open-source engine stays Apache-2.0, fully featured. No feature gating, ever
 <br>
 **[📅 Book a demo →](https://cal.com/obscura/quick-chat)**
 
+### Open Source Support
+
+<a href="https://vercel.com/open-source-program">
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+</a>
+
 ## Sponsors
 
 **Obscura** is supported by organizations helping us build independent open-source browser infrastructure.
@@ -123,68 +129,23 @@ Want to sponsor? Email [hello@obscura.sh](mailto:hello@obscura.sh).
 <table>
    <tr>
     <td width="200" align="center" valign="middle">
-      <a href="https://go.nodemaven.com/obscurareadmeseptember2026" target="_blank">
-        <img alt="NodeMaven" src="assets/sponsors/nodemaven3.png" width="180"/>
+      <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank">
+        <img alt="NodeMaven" src="assets/sponsors/nodemaven4.png" width="180"/>
       </a>
     </td>
     <td valign="middle">
-      <a href="https://go.nodemaven.com/obscurareadmeseptember2026" target="_blank"><b>NodeMaven</b></a>: The most efficient proxy provider for Web Scraping and Automation with the Highest Quality IP on the market.<br><br>
-      <b>Why <a href="https://go.nodemaven.com/obscurareadmeseptember2026" target="_blank">NodeMaven</a>?</b><br>
+      <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank"><b>NodeMaven</b></a>: The most efficient proxy provider for Web Scraping and Automation with the Highest Quality IP on the market.<br><br>
+      <b>Why <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank">NodeMaven</a>?</b><br>
       ZIP targeting<br>
       99.9% uptime<br>
       IP filtering: all proxies have fraud score &lt;97%<br>
       No KYC required<br>
+      Check Nodemaven's new GitHub for more web scraping and automation solutions - https://github.com/nodemaven<br>
       Unique free tools: Proxy Bandwidth Checker, Meta Tag Checker, IP Lookup and others!<br><br>
       🎁 <b>Special codes for Obscura users:</b><br>
       <b>OBSCURA35</b> - 35% off to Mobile and Residential Proxies<br>
       <b>OBSCURA40</b> - 40% off to ISP (Static) Proxies
     </td>
- <tr>
-  <td width="200" align="center" valign="middle">
-    <a href="https://proxyempire.io/?ref=obscura&utm_source=obscuragithub" target="_blank">
-      <img alt="ProxyEmpire" src="assets/sponsors/proxyempire.png" width="180"/>
-    </a>
-  </td>
-  <td valign="middle">
-    🚀 <b>Obscura × ProxyEmpire</b><br>
-    Using Obscura for AI agents, browser automation, or web scraping? Power it with reliable residential and mobile proxies from <a href="https://proxyempire.io/?ref=obscura&utm_source=obscuragithub"><b>ProxyEmpire</b></a>.<br><br>
-    <b>
-      🌍 30M+ residential IPs in 170+ countries<br>
-      📱 4G/5G mobile proxies<br>
-      🔄 Rotating & sticky sessions<br>
-      🎯 City, region & ISP targeting<br>
-      🔐 HTTP, HTTPS & SOCKS5 support<br><br>
-      🎁 Use code <b>OBSCURA35</b> for a <b>35% recurring discount</b>.<br><br>
-    </b>
-    Better proxies. Fewer blocks. More scalable automation.
-  </td>
-</tr>
-   </tr>
-    <td width="200" align="center" valign="middle">
-      <a href="https://niuproxy.com/?utm_source=obscura&utm_medium=obscura&ref=obscura" target="_blank">
-        <img alt="NiuProxy" src="assets/sponsors/niuproxlogo.png" width="180"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <a href="https://niuproxy.com/?utm_source=obscura&utm_medium=obscura&ref=obscura"><b>NiuProxy</b></a> Rotating Residential Proxies — Special Offer: 10TB at $0.35/GB | 1TB at $0.50/GB.<br><br>
-      🎁 Use code <b>PAY2</b> for <b>10% off</b> your recharge.
-    </td>  
-</tr>
-    <tr>
-    <td width="200" align="center" valign="middle">
-      <a href="https://masklabs.io" target="_blank">
-        <img alt="Masklabs" src="assets/sponsors/Masklabs.png" width="180"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <b>Obscura + <a href="https://masklabs.io" target="_blank">Masklabs</a></b><br><br>
-      Obscura masks the browser. Masklabs masks the traffic.<br><br>
-      Mobile proxies for scrapers, bots, and AI agents that need to look human. Real carrier IPs across a rotating pool, zero shared-IP baggage.<br><br>
-      Pair Obscura's stealth rendering with Masklabs' mobile network and your requests blend into everyday traffic.<br><br>
-      💸 <b>Try it free for 30 days.</b><br><br>
-      🎁 Use code <b>OBSCURA25</b> for <b>25% off your first month</b>.
-    </td>
-  </tr>
 </table>
 
 ## Install
@@ -377,6 +338,8 @@ obscura --proxy http://127.0.0.1:8080 scrape https://example.com https://news.yc
 
 ## Puppeteer / Playwright
 
+[Media preference emulation](docs/CDP-media.md) covers color-scheme and reduced-motion overrides.
+
 ### Puppeteer
 
 ```bash
@@ -521,8 +484,22 @@ Start a CDP WebSocket server.
 | `--proxy` | — | HTTP/SOCKS5 proxy URL |
 | `--stealth` | off | Enable anti-detection + tracker blocking |
 | `--workers` | `1` | Number of parallel worker processes |
+| `--worker-max-connections` | off | Recycle a worker after N CDP connections (needs `--workers` > 1) |
+| `--worker-max-rss` | off | Recycle a worker above this many MB resident (Linux) |
+| `--worker-max-age` | off | Recycle a worker after this many seconds |
+| `--worker-drain-timeout` | `120` | Seconds a replaced worker may finish its live connections before it is killed |
 | `--font-dir` | — | Recursively load fonts once per worker (repeatable; render build) |
 | `--obey-robots` | off | Respect robots.txt |
+
+With multiple workers, exited children are reaped and restarted. New connections
+use ready workers only; if none are ready, the balancer returns HTTP 503. A crash
+still closes that worker's existing sessions, which clients must reconnect.
+
+The `--worker-max-*` options recycle workers gracefully: a replacement starts
+first, new connections go only to it, and the old worker keeps serving the
+connections it already has until they close (or the drain timeout passes), then
+exits. Each recycle is logged with its reason.
+Worker errors remain visible on stderr.
 
 ### `obscura fetch <URL>`
 
@@ -546,6 +523,10 @@ Fetch and render a single page.
 ### `obscura scrape <URL...>`
 
 Scrape multiple URLs in parallel with worker processes.
+
+`scrape` and `fetch --file ... --dump original` keep at most `--concurrency`
+jobs active, starting the next URL as soon as a slot becomes available. Results
+remain in input order. URL input and completed results are still held in memory.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -580,6 +561,7 @@ Optional flags (both transports):
 |------|-------------|
 | `--proxy <URL>` | HTTP/SOCKS5 proxy |
 | `--user-agent <UA>` | Custom User-Agent string |
+| `--font-dir <DIR>` | Load additional fonts before rendering (repeatable; render build) |
 | `--stealth` | Enable anti-detection mode |
 
 ### Claude Desktop config

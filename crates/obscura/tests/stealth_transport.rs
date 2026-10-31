@@ -1,5 +1,8 @@
 #![cfg(feature = "stealth")]
 
+#[path = "../../test-support/fresh_process.rs"]
+mod fresh_process;
+
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -67,6 +70,9 @@ async fn navigate_user_agent(stealth: bool) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stealth_transport_requires_compile_time_and_runtime_opt_in() {
+    if fresh_process::run_alone("stealth_transport_requires_compile_time_and_runtime_opt_in") {
+        return;
+    }
     std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
     std::env::set_var("OBSCURA_PROFILE", "0");
 
