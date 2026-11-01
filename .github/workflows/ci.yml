@@ -218,14 +218,14 @@ jobs:
 
       - name: Test no-render configuration
         run: |
-          # `inbrowse` uses its default `api` feature for the public library; an
+          # `inbrowse-sdk` uses its default `api` feature for the public library; an
           # empty feature set is not a supported crate configuration. Test that
           # no-render API normally and every non-render crate with defaults
           # disabled. `inbrowse-render` has paint-only test fixtures, so verify
           # its feature-minimal library separately without compiling those
           # fixtures.
           cargo nextest run --release -p inbrowse-sdk --no-fail-fast
-          cargo nextest run --release --workspace --exclude inbrowse \
+          cargo nextest run --release --workspace --exclude inbrowse-sdk \
             --exclude inbrowse-render \
             --no-default-features --no-fail-fast
           cargo check --release -p inbrowse-render --no-default-features

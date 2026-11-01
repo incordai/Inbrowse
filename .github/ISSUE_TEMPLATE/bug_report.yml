@@ -38,7 +38,7 @@ body:
       options:
         - CLI (fetch / serve / scrape / mcp)
         - CDP server with Puppeteer or Playwright
-        - Embedded Rust library (inbrowse crate)
+        - Embedded Rust library (inbrowse-sdk crate)
         - Other
     validations:
       required: true

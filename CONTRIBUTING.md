@@ -9,7 +9,8 @@ does not repeat it.
 
 Be respectful and constructive. We want Inbrowse to be a welcoming project, so
 keep discussion focused on the work and assume good faith. Harassment or abuse
-is not tolerated.
+is not tolerated. The full policy is the [Code of Conduct](CODE_OF_CONDUCT.md);
+report problems privately to [conduct@incord.ai](mailto:conduct@incord.ai).
 
 ## Before you start
 

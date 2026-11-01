@@ -23,6 +23,6 @@ pub use inbrowse_js::{
 pub use page::{url_matches_cdp_pattern, NetworkEvent, Page, PageError};
 #[cfg(feature = "render")]
 pub use pdf::{RasterPdfError, RasterPdfOptions, RasterPdfPageRange};
-// Re-exported so the embeddable `inbrowse` crate (which depends on inbrowse,
+// Re-exported so the embeddable `inbrowse-sdk` crate (which depends on inbrowse,
 // not inbrowse-js) can surface the interception channel types.
 pub use inbrowse_js::ops::{InterceptResolution, InterceptedRequest};

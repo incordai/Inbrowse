@@ -13,6 +13,9 @@ Report a vulnerability privately through GitHub: go to the repository's
 **Security** tab and click [**Report a vulnerability**](https://github.com/incordai/Inbrowse/security/advisories/new)
 to open a private advisory.
 
+If you cannot use GitHub advisories, email **security@incord.ai** with
+"security" in the subject line.
+
 ### What to include
 
 To help us triage quickly, please provide as much of the following as you can:
