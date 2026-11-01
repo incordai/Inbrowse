@@ -94,37 +94,37 @@ fn body(text: String) -> Section {
 /// Which elements carry text and structure, by local name.
 struct Rules {
     /// Text is kept only inside these elements.
-    text: &'static [&'static [u8]],
+    text: &'static [&'static str],
     /// Each of these ends a line.
-    paragraph: &'static [&'static [u8]],
-    tab: &'static [&'static [u8]],
-    line_break: &'static [&'static [u8]],
+    paragraph: &'static [&'static str],
+    tab: &'static [&'static str],
+    line_break: &'static [&'static str],
     /// ODF `text:s`: `text:c` spaces, default one.
-    spaces: Option<&'static [u8]>,
+    spaces: Option<&'static str>,
 }
 
 const OOXML_WORD: Rules = Rules {
-    text: &[b"t"],
-    paragraph: &[b"p"],
-    tab: &[b"tab"],
-    line_break: &[b"br", b"cr"],
+    text: &["t"],
+    paragraph: &["p"],
+    tab: &["tab"],
+    line_break: &["br", "cr"],
     spaces: None,
 };
 
 const OOXML_DRAWING: Rules = Rules {
-    text: &[b"t"],
-    paragraph: &[b"p"],
-    tab: &[b"tab"],
-    line_break: &[b"br"],
+    text: &["t"],
+    paragraph: &["p"],
+    tab: &["tab"],
+    line_break: &["br"],
     spaces: None,
 };
 
 const ODF: Rules = Rules {
-    text: &[b"p", b"h"],
-    paragraph: &[b"p", b"h"],
-    tab: &[b"tab"],
-    line_break: &[b"line-break"],
-    spaces: Some(b"s"),
+    text: &["p", "h"],
+    paragraph: &["p", "h"],
+    tab: &["tab"],
+    line_break: &["line-break"],
+    spaces: Some("s"),
 };
 
 fn xml_text(xml: &str, rules: &Rules) -> Result<String, ExtractError> {
@@ -170,7 +170,7 @@ fn push_empty(out: &mut String, e: &BytesStart<'_>, rules: &Rules) {
     } else if rules.line_break.contains(&name) || rules.paragraph.contains(&name) {
         out.push('\n');
     } else if rules.spaces == Some(name) {
-        let count = attribute(e, b"c").and_then(|c| c.parse::<usize>().ok()).unwrap_or(1);
+        let count = attribute(e, "c").and_then(|c| c.parse::<usize>().ok()).unwrap_or(1);
         // `text:c` is attacker-controlled; a page of spaces is plenty.
         out.extend(std::iter::repeat_n(' ', count.min(4096)));
     }
@@ -185,7 +185,7 @@ fn push_reference(out: &mut String, r: &quick_xml::events::BytesRef<'_>) {
     }
 }
 
-fn attribute(e: &BytesStart<'_>, local: &[u8]) -> Option<String> {
+fn attribute(e: &BytesStart<'_>, local: &str) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == local)
@@ -203,7 +203,7 @@ fn odp_slides(xml: &str) -> Result<Vec<Section>, ExtractError> {
         let page = &after[..end];
         number += 1;
         let name = Reader::from_str(page).read_event().ok().and_then(|event| match event {
-            Event::Start(e) | Event::Empty(e) => attribute(&e, b"name"),
+            Event::Start(e) | Event::Empty(e) => attribute(&e, "name"),
             _ => None,
         });
         sections.push(Section {

@@ -149,7 +149,8 @@ pub fn extract_with_limits(
 }
 
 /// UTF-8 with any byte-order mark removed; invalid sequences are replaced.
+/// Trailing whitespace is dropped, as every other format's sections do.
 fn decode_text(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    String::from_utf8_lossy(bytes).into_owned()
+    String::from_utf8_lossy(bytes).trim_end().to_string()
 }

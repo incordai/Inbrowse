@@ -1,7 +1,7 @@
 //! Spreadsheet text via calamine: one section per sheet, cells separated by
 //! tabs and rows by newlines. Called by `extract_with_limits` (lib.rs).
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 
 use calamine::Reader;
 
@@ -11,8 +11,34 @@ pub(crate) fn extract(bytes: &[u8], format: Format, limits: &Limits) -> Result<V
     if format != Format::Xls {
         check_declared_size(bytes, limits)?;
     }
-    let mut workbook = calamine::open_workbook_auto_from_rs(Cursor::new(bytes))
-        .map_err(|e| ExtractError::Malformed(format!("spreadsheet: {e}")))?;
+    // detect.rs already knows the format, so open that reader directly:
+    // calamine's auto-detection hides every reader's own error behind
+    // "Cannot detect file format".
+    let cursor = Cursor::new(bytes);
+    match format {
+        Format::Xlsx => sheets(open::<calamine::Xlsx<_>, _>(cursor)?),
+        Format::Xlsb => sheets(open::<calamine::Xlsb<_>, _>(cursor)?),
+        Format::Xls => sheets(open::<calamine::Xls<_>, _>(cursor)?),
+        Format::Ods => sheets(open::<calamine::Ods<_>, _>(cursor)?),
+        other => unreachable!("sheet::extract called for {other:?}"),
+    }
+}
+
+fn open<R, RS>(reader: RS) -> Result<R, ExtractError>
+where
+    RS: Read + Seek,
+    R: Reader<RS>,
+    R::Error: std::fmt::Display,
+{
+    calamine::open_workbook_from_rs(reader).map_err(|e| ExtractError::Malformed(format!("spreadsheet: {e}")))
+}
+
+fn sheets<R, RS>(mut workbook: R) -> Result<Vec<Section>, ExtractError>
+where
+    RS: Read + Seek,
+    R: Reader<RS>,
+    R::Error: std::fmt::Display,
+{
     let names = workbook.sheet_names();
     let mut sections = Vec::with_capacity(names.len());
     for name in names {
