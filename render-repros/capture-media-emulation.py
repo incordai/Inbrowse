@@ -2,7 +2,7 @@
 """Capture the reduced-motion fixture through public Playwright/CDP operations.
 
 Requires Playwright and Pillow, like the existing rendering harness. Run with
---endpoint http://127.0.0.1:9222 for Obscura, or --chromium-bin PATH for Chrome.
+--endpoint http://127.0.0.1:9222 for Inbrowse, or --chromium-bin PATH for Chrome.
 The output directory must not already exist. A failing upstream run is useful
 before evidence; it is not a passing regression gate.
 """

@@ -1,0 +1,46 @@
+[package]
+name = "inbrowse-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "inbrowse"
+path = "src/main.rs"
+
+[[bin]]
+name = "inbrowse-worker"
+path = "src/worker.rs"
+
+[features]
+default = ["extract"]
+stealth = ["inbrowse/stealth", "inbrowse-net/stealth", "inbrowse-mcp/stealth"]
+render = ["inbrowse/render", "inbrowse-cdp/render", "inbrowse-mcp/render"]
+# `inbrowse extract`: text from PDF, Office, OpenDocument and spreadsheet files.
+extract = ["dep:inbrowse-extract"]
+
+[dependencies]
+inbrowse = { workspace = true }
+inbrowse-mcp = { workspace = true }
+inbrowse-cdp = { workspace = true }
+inbrowse-dom = { workspace = true }
+inbrowse-net = { workspace = true }
+inbrowse-js = { workspace = true }
+inbrowse-extract = { workspace = true, optional = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+tokio-tungstenite = { workspace = true }
+futures-util = "0.3"

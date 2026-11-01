@@ -64,7 +64,7 @@ def check_artifacts(files: list[str], errors: list[str], warnings: list[str]) ->
         if "target" in parts or "__pycache__" in parts or path.suffix.lower() in BLOCKED_SUFFIXES:
             errors.append(f"generated build artifact is not allowed: {name}")
         elif path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} and not name.startswith(
-            ("crates/obscura-render/assets/", ".github/")
+            ("crates/inbrowse-render/assets/", ".github/")
         ):
             warnings.append(f"review newly committed image evidence: {name}")
 
@@ -185,9 +185,9 @@ def check_scope(base: str, head: str, files: list[str], warnings: list[str]) -> 
     tests = any("/tests/" in name or name.startswith("render-repros/") for name in files)
     if runtime and not tests:
         warnings.append("runtime code changed without a focused integration-test file")
-    rendering = any(name.startswith("crates/obscura-render/") for name in files)
+    rendering = any(name.startswith("crates/inbrowse-render/") for name in files)
     render_validation = any(
-        name.startswith("render-repros/") or name.startswith("crates/obscura-render/tests/")
+        name.startswith("render-repros/") or name.startswith("crates/inbrowse-render/tests/")
         for name in files
     )
     if rendering and not render_validation:

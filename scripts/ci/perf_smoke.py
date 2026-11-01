@@ -60,11 +60,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_once(binary: Path, url: str, expression: str, expected: int) -> tuple[float, int]:
-    with tempfile.NamedTemporaryFile(prefix="obscura-rss-", delete=False) as rss_file:
+    with tempfile.NamedTemporaryFile(prefix="inbrowse-rss-", delete=False) as rss_file:
         rss_path = Path(rss_file.name)
-    with tempfile.NamedTemporaryFile(prefix="obscura-stdout-", delete=False) as stdout_file:
+    with tempfile.NamedTemporaryFile(prefix="inbrowse-stdout-", delete=False) as stdout_file:
         stdout_path = Path(stdout_file.name)
-    with tempfile.NamedTemporaryFile(prefix="obscura-stderr-", delete=False) as stderr_file:
+    with tempfile.NamedTemporaryFile(prefix="inbrowse-stderr-", delete=False) as stderr_file:
         stderr_path = Path(stderr_file.name)
     command = [
         "timeout",

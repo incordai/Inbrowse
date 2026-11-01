@@ -1,0 +1,17 @@
+[package]
+name = "inbrowse-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Text extraction from PDF, Office and OpenDocument files for Inbrowse"
+
+[dependencies]
+pdf-extract = "=0.12.1"
+calamine = "=0.37.0"
+# Office and OpenDocument files only use deflate; the default features would
+# add AES, bzip2, LZMA, xz and zstd. Matches calamine's own zip features, so
+# the workspace keeps one copy.
+zip = { version = "=9.1.3", default-features = false, features = ["deflate"] }
+quick-xml = "=0.42.0"
+serde = { workspace = true }
+serde_json = { workspace = true }

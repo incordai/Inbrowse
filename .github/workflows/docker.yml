@@ -38,10 +38,10 @@ jobs:
           context: .
           push: true
           build-args: |
-            OBSCURA_VERSION=${{ steps.version.outputs.version }}
+            INBROWSE_VERSION=${{ steps.version.outputs.version }}
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/obscura:${{ steps.version.outputs.version }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/obscura:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/inbrowse:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/inbrowse:latest
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

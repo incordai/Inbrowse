@@ -93,7 +93,7 @@ class ControlledScrollTests(unittest.TestCase):
             '"innerWidth":1280,"innerHeight":900,'
             '"scrollWidth":1291,"scrollHeight":2702}}\n'
         )
-        state = paired_corpus.parse_obscura_scroll_report(stdout)
+        state = paired_corpus.parse_inbrowse_scroll_report(stdout)
         self.assertEqual(state["requested"], {"x": 0, "y": 2702})
         self.assertEqual(
             state["pre_reassert_actual"], {"x": 0, "y": 1791}
@@ -110,23 +110,23 @@ class ControlledScrollTests(unittest.TestCase):
             state["sampled_phase"], paired_corpus.CAPTURE_BOUNDARY_PHASE
         )
 
-    def test_obscura_capture_exports_final_scroll_request_to_cli(self):
-        environment = paired_corpus.obscura_environment(1280, 720)
+    def test_inbrowse_capture_exports_final_scroll_request_to_cli(self):
+        environment = paired_corpus.inbrowse_environment(1280, 720)
         paired_corpus.with_controlled_scroll_environment(
             environment, (12, "bottom")
         )
-        self.assertEqual(environment["OBSCURA_SHOT_SCROLL_X"], "12")
-        self.assertEqual(environment["OBSCURA_SHOT_SCROLL_Y"], "bottom")
-        self.assertEqual(environment["OBSCURA_SHOT_EVAL_AT_CAPTURE"], "1")
-        self.assertEqual(environment["OBSCURA_SHOT_RESOURCE_WARMUP"], "1")
-        self.assertNotIn("OBSCURA_SHOT_ANIMATION_TIME_MS", environment)
+        self.assertEqual(environment["INBROWSE_SHOT_SCROLL_X"], "12")
+        self.assertEqual(environment["INBROWSE_SHOT_SCROLL_Y"], "bottom")
+        self.assertEqual(environment["INBROWSE_SHOT_EVAL_AT_CAPTURE"], "1")
+        self.assertEqual(environment["INBROWSE_SHOT_RESOURCE_WARMUP"], "1")
+        self.assertNotIn("INBROWSE_SHOT_ANIMATION_TIME_MS", environment)
 
-    def test_obscura_capture_exports_explicit_animation_sample(self):
-        environment = paired_corpus.obscura_environment(1280, 720, 0)
-        self.assertEqual(environment["OBSCURA_SHOT_ANIMATION_TIME_MS"], "0")
+    def test_inbrowse_capture_exports_explicit_animation_sample(self):
+        environment = paired_corpus.inbrowse_environment(1280, 720, 0)
+        self.assertEqual(environment["INBROWSE_SHOT_ANIMATION_TIME_MS"], "0")
 
     def test_paired_state_expression_is_read_only_at_capture_boundary(self):
-        expression = paired_corpus.obscura_state_eval_expression(
+        expression = paired_corpus.inbrowse_state_eval_expression(
             None,
             [".card"],
             sampled_phase=paired_corpus.CAPTURE_BOUNDARY_PHASE,
@@ -139,9 +139,9 @@ class ControlledScrollTests(unittest.TestCase):
         self.assertNotIn("window.scrollTo", expression)
 
     def test_every_capture_expression_samples_page_state_without_scrolling(self):
-        expression = paired_corpus.obscura_state_eval_expression(None)
+        expression = paired_corpus.inbrowse_state_eval_expression(None)
         self.assertIn("outer_html_fnv1a32", expression)
-        self.assertIn("data-obscura-external-stylesheets", expression)
+        self.assertIn("data-inbrowse-external-stylesheets", expression)
         self.assertIn("normalized_outer_html_fnv1a32", expression)
         self.assertIn("body_text_fnv1a32", expression)
         self.assertIn("body.textContent", expression)
@@ -161,7 +161,7 @@ class ControlledScrollTests(unittest.TestCase):
             '"innerWidth":640,"innerHeight":480,'
             '"scrollWidth":650,"scrollHeight":1200}}\n'
         )
-        state = paired_corpus.parse_obscura_capture_report(stdout)
+        state = paired_corpus.parse_inbrowse_capture_report(stdout)
         self.assertEqual(state["document"]["element_count"], 7)
         self.assertEqual(state["geometry"]["scroll_y"], 40)
         self.assertEqual(state["geometry"]["document_scroll_height"], 1200)
@@ -176,7 +176,7 @@ class ControlledScrollTests(unittest.TestCase):
             '"innerWidth":640,"innerHeight":480,'
             '"scrollWidth":640,"scrollHeight":480}}\n'
         )
-        state = paired_corpus.parse_obscura_capture_report(stdout)
+        state = paired_corpus.parse_inbrowse_capture_report(stdout)
         self.assertEqual(
             state["sampled_phase"], "before-cli-post-eval-settle"
         )
@@ -187,7 +187,7 @@ class ControlledScrollTests(unittest.TestCase):
         self.assertFalse(state["state_and_screenshot_share_capture_boundary"])
 
     def test_page_state_comparison_reports_provenance_and_geometry_deltas(self):
-        obscura = {
+        inbrowse = {
             "document": {
                 "ready_state": "complete",
                 "element_count": 9,
@@ -213,7 +213,7 @@ class ControlledScrollTests(unittest.TestCase):
             },
             "geometry": {"document_scroll_height": 1000, "scroll_y": 250},
         }
-        comparison = paired_corpus.compare_page_states(obscura, chromium)
+        comparison = paired_corpus.compare_page_states(inbrowse, chromium)
         self.assertTrue(comparison["ready_state_equal"])
         self.assertEqual(comparison["element_count_delta"], 2)
         self.assertFalse(comparison["outer_html_fingerprint_equal"])
@@ -289,7 +289,7 @@ class StateComparabilityTests(unittest.TestCase):
         self.assertIn("cold-load-latency-mode", fidelity["exclusion_reasons"])
 
     def test_delayed_route_after_settle_is_comparable_despite_hashes(self):
-        obscura = self.state(
+        inbrowse = self.state(
             399,
             3910,
             [2, 1, 7, 4, 18, 3, 2],
@@ -305,7 +305,7 @@ class StateComparabilityTests(unittest.TestCase):
         )
 
         comparison = paired_corpus.classify_state_comparability(
-            obscura,
+            inbrowse,
             chromium,
             {"stable": True},
         )
@@ -366,11 +366,11 @@ class StateComparabilityTests(unittest.TestCase):
         self.assertEqual(comparison["gross_provenance_signals"], [])
 
     def test_capture_boundary_instability_excludes_otherwise_matching_state(self):
-        obscura = self.state(100, 800, [2, 4, 1])
+        inbrowse = self.state(100, 800, [2, 4, 1])
         chromium = self.state(100, 800, [2, 4, 1])
 
         comparison = paired_corpus.classify_state_comparability(
-            obscura,
+            inbrowse,
             chromium,
             {"stable": False},
         )
@@ -381,11 +381,11 @@ class StateComparabilityTests(unittest.TestCase):
         )
 
     def test_one_moderate_provenance_difference_does_not_overreject(self):
-        obscura = self.state(70, 800, [2, 4, 1])
+        inbrowse = self.state(70, 800, [2, 4, 1])
         chromium = self.state(100, 800, [2, 4, 1])
 
         comparison = paired_corpus.classify_state_comparability(
-            obscura,
+            inbrowse,
             chromium,
             {"stable": True},
         )
@@ -414,10 +414,10 @@ class GeometryProbeTests(unittest.TestCase):
             return self.state
 
     def test_default_state_expressions_do_not_include_probe_work(self):
-        obscura_expression = paired_corpus.obscura_state_eval_expression(None)
-        self.assertNotIn("sampleGeometrySelector", obscura_expression)
-        self.assertNotIn("geometry_probes", obscura_expression)
-        self.assertIn("feature_probes:featureProbes", obscura_expression)
+        inbrowse_expression = paired_corpus.inbrowse_state_eval_expression(None)
+        self.assertNotIn("sampleGeometrySelector", inbrowse_expression)
+        self.assertNotIn("geometry_probes", inbrowse_expression)
+        self.assertIn("feature_probes:featureProbes", inbrowse_expression)
 
         page = self.FakePage(self.chromium_state())
         paired_corpus.capture_chromium_state(page)
@@ -454,17 +454,17 @@ class GeometryProbeTests(unittest.TestCase):
         self.assertIn("style.webkitLineClamp!=='none'", expression)
         self.assertIn("box_quads:null", expression)
         self.assertIn("comparison_index:comparisonIndex", expression)
-        self.assertIn("data-obscura-external-stylesheets", expression)
+        self.assertIn("data-inbrowse-external-stylesheets", expression)
         self.assertNotIn("querySelector", expression)
         self.assertNotIn("scrollWidth", expression)
         self.assertNotIn("scrollHeight", expression)
         self.assertNotIn("clientWidth", expression)
         self.assertNotIn("clientHeight", expression)
 
-    def test_obscura_records_quad_capability_instead_of_fabricated_corners(self):
-        expression = paired_corpus.obscura_state_eval_expression(None)
+    def test_inbrowse_records_quad_capability_instead_of_fabricated_corners(self):
+        expression = paired_corpus.inbrowse_state_eval_expression(None)
         self.assertIn(
-            "Obscura CLI capture does not expose node-scoped CDP",
+            "Inbrowse CLI capture does not expose node-scoped CDP",
             expression,
         )
         self.assertIn("box_quads:null", expression)
@@ -615,14 +615,14 @@ class GeometryProbeTests(unittest.TestCase):
 
     def test_repeatable_selectors_are_passed_safely_in_one_state_expression(self):
         selectors = ["header nav a", '[data-label="a\\\"b"]', "["]
-        obscura_expression = paired_corpus.obscura_state_eval_expression(
+        inbrowse_expression = paired_corpus.inbrowse_state_eval_expression(
             (0, 25), selectors
         )
         encoded = json.dumps(selectors, ensure_ascii=True, separators=(",", ":"))
-        self.assertIn(encoded, obscura_expression)
-        self.assertIn("sampleGeometrySelector", obscura_expression)
-        self.assertIn("catch(error)", obscura_expression)
-        self.assertIn("geometry_probes:geometryProbes", obscura_expression)
+        self.assertIn(encoded, inbrowse_expression)
+        self.assertIn("sampleGeometrySelector", inbrowse_expression)
+        self.assertIn("catch(error)", inbrowse_expression)
+        self.assertIn("geometry_probes:geometryProbes", inbrowse_expression)
 
         page = self.FakePage(self.chromium_state())
         paired_corpus.capture_chromium_state(page, selectors)
@@ -662,7 +662,7 @@ class GeometryProbeTests(unittest.TestCase):
         )
 
     def test_probe_comparison_reports_raw_deltas_and_invalid_errors(self):
-        obscura = {
+        inbrowse = {
             "geometry_probes": [
                 {
                     "selector": ".card",
@@ -725,7 +725,7 @@ class GeometryProbeTests(unittest.TestCase):
             ]
         }
 
-        comparison = paired_corpus.compare_geometry_probes(obscura, chromium)
+        comparison = paired_corpus.compare_geometry_probes(inbrowse, chromium)
         self.assertEqual(comparison[0]["counts"]["delta"], 1)
         self.assertFalse(comparison[0]["geometry_verdict_valid"])
         self.assertIn(
@@ -738,7 +738,7 @@ class GeometryProbeTests(unittest.TestCase):
         )
         self.assertEqual(
             comparison[0]["rect_deltas"][0]["visibility"],
-            {"obscura": True, "chromium": False},
+            {"inbrowse": True, "chromium": False},
         )
         self.assertEqual(
             comparison[0]["rect_deltas"][0]["computed_difference_count"], 2
@@ -746,11 +746,11 @@ class GeometryProbeTests(unittest.TestCase):
         self.assertEqual(
             comparison[0]["rect_deltas"][0]["computed_differences"],
             {
-                "align_items": {"obscura": "stretch", "chromium": "normal"},
-                "width": {"obscura": "100px", "chromium": "98px"},
+                "align_items": {"inbrowse": "stretch", "chromium": "normal"},
+                "width": {"inbrowse": "100px", "chromium": "98px"},
             },
         )
-        self.assertEqual(comparison[1]["valid"], {"obscura": False, "chromium": False})
+        self.assertEqual(comparison[1]["valid"], {"inbrowse": False, "chromium": False})
         self.assertFalse(comparison[1]["geometry_verdict_valid"])
         self.assertIsNone(comparison[1]["counts"]["delta"])
         self.assertEqual(comparison[1]["rects_compared"], 0)
@@ -883,7 +883,7 @@ class GeometryProbeTests(unittest.TestCase):
                 for mismatch in comparison["id_comparison"]["mismatches"]
             )
         )
-        self.assertEqual(comparison["obscura"]["nodes"][0]["id"], "ng-tab-7")
+        self.assertEqual(comparison["inbrowse"]["nodes"][0]["id"], "ng-tab-7")
         self.assertEqual(
             comparison["chromium"]["nodes"][0]["id"], "ng-tab-19"
         )
@@ -1106,7 +1106,7 @@ class GeometryProbeTests(unittest.TestCase):
         )
 
     def test_feature_comparison_reports_presence_computed_geometry_and_quad_capability(self):
-        obscura = {
+        inbrowse = {
             "feature_probes": {
                 "bounds": {"scan_limit": 2000},
                 "scanned_elements": 12,
@@ -1181,7 +1181,7 @@ class GeometryProbeTests(unittest.TestCase):
                 },
             }
         }
-        comparison = paired_corpus.compare_feature_probes(obscura, chromium)
+        comparison = paired_corpus.compare_feature_probes(inbrowse, chromium)
         category = comparison["categories"][0]
         self.assertEqual(category["kind"], "transform")
         self.assertEqual(category["matches_seen"]["delta"], -1)
@@ -1191,12 +1191,12 @@ class GeometryProbeTests(unittest.TestCase):
             {"x": 2, "y": -2, "width": 0, "height": 1},
         )
         self.assertEqual(first["computed_difference_count"], 1)
-        self.assertFalse(first["box_quads"]["obscura_available"])
+        self.assertFalse(first["box_quads"]["inbrowse_available"])
         self.assertTrue(first["box_quads"]["chromium_available"])
         self.assertIsNone(first["box_quads"]["content_delta"])
         second = category["candidates"][1]
         self.assertEqual(
-            second["present"], {"obscura": False, "chromium": True}
+            second["present"], {"inbrowse": False, "chromium": True}
         )
 
 

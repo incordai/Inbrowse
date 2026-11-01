@@ -1,8 +1,8 @@
-Obscura is an open-source headless browser engine written in Rust. It runs JavaScript via V8, speaks the Chrome DevTools Protocol, and works as a drop-in replacement for headless Chrome with Puppeteer and Playwright.
+Inbrowse is an open-source headless browser engine written in Rust. It runs JavaScript via V8, speaks the Chrome DevTools Protocol, and works as a drop-in replacement for headless Chrome with Puppeteer and Playwright.
 
 ## Versus headless Chrome
 
-| Metric      | Obscura  | Headless Chrome |
+| Metric      | Inbrowse  | Headless Chrome |
 | ----------- | -------- | --------------- |
 | Memory      | 30 MB    | 200+ MB         |
 | Binary size | ~70 MiB  | 300+ MB         |
@@ -50,8 +50,8 @@ the wreq/BoringSSL transport and browser-identity protections.
 
 ## Links
 
-- Source: https://github.com/h4ckf0r0day/obscura
-- Releases: https://github.com/h4ckf0r0day/obscura/releases
-- Issues: https://github.com/h4ckf0r0day/obscura/issues
+- Source: https://github.com/incordai/Inbrowse
+- Releases: https://github.com/incordai/Inbrowse/releases
+- Issues: https://github.com/incordai/Inbrowse/issues
 
 License: Apache-2.0.

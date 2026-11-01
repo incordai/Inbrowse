@@ -1,15 +1,16 @@
-Obscura is a workspace of nine crates.
+Inbrowse is a workspace of ten crates.
 
 ```
-obscura-cli       CLI entry point. fetch, serve, scrape, mcp.
-obscura-cdp       Chrome DevTools Protocol server. WebSocket, dispatch, domain handlers.
-obscura-browser   Page type, navigation, lifecycle events.
-obscura-js        V8 runtime via deno_core. bootstrap.js + Rust ops.
-obscura-dom       DOM tree implementation.
-obscura-net       HTTP client, stealth client, cookie jar, robots cache, tracker blocklist.
-obscura-mcp       Model Context Protocol server.
-obscura-render    CSS cascade, retained layout, text shaping, and CPU paint.
-obscura           Embeddable Rust library API (Browser, Page, Element, CookieStore).
+inbrowse-cli       CLI entry point. fetch, serve, scrape, mcp.
+inbrowse-cdp       Chrome DevTools Protocol server. WebSocket, dispatch, domain handlers.
+inbrowse           Page type, navigation, lifecycle events.
+inbrowse-js        V8 runtime via deno_core. bootstrap.js + Rust ops.
+inbrowse-dom       DOM tree implementation.
+inbrowse-net       HTTP client, stealth client, cookie jar, robots cache, tracker blocklist.
+inbrowse-ssrf      SSRF deny-set shared by the net transports and render's image/font loader.
+inbrowse-mcp       Model Context Protocol server.
+inbrowse-render    CSS cascade, retained layout, text shaping, and CPU paint.
+inbrowse-sdk       Embeddable Rust library API (Browser, Page, Element, CookieStore).
 ```
 
 ## Request flow
@@ -20,22 +21,22 @@ A `Page.navigate` from a CDP client:
 CDP client (Puppeteer)
         │ WebSocket frame
         ▼
-obscura-cdp/server.rs           accept, route by sessionId
+inbrowse-cdp/server.rs           accept, route by sessionId
         │
         ▼
-obscura-cdp/dispatch.rs         method router, acquires v8_lock
+inbrowse-cdp/dispatch.rs         method router, acquires v8_lock
         │
         ▼
-obscura-cdp/domains/page.rs     Page.navigate handler
+inbrowse-cdp/domains/page.rs     Page.navigate handler
         │
         ▼
-obscura-browser/page.rs         navigate_with_wait
+inbrowse/page.rs         navigate_with_wait
         │
-        ├──► obscura-net/client.rs        HTTP fetch
+        ├──► inbrowse-net/client.rs        HTTP fetch
         │
-        ├──► obscura-dom/tree.rs          parse HTML into the tree
+        ├──► inbrowse-dom/tree.rs          parse HTML into the tree
         │
-        └──► obscura-js/runtime.rs        run inline scripts
+        └──► inbrowse-js/runtime.rs        run inline scripts
                   │
                   └──► bootstrap.js + ops.rs    DOM bindings
 ```
@@ -44,11 +45,11 @@ The dispatcher emits CDP events (`Network.requestWillBeSent`, `Page.frameNavigat
 
 ## Rendering flow
 
-`obscura-render` consumes the shared DOM and computed style state. Taffy
-provides the flex/grid foundation; Obscura adds browser formatting behavior,
+`inbrowse-render` consumes the shared DOM and computed style state. Taffy
+provides the flex/grid foundation; Inbrowse adds browser formatting behavior,
 text shaping, intrinsic replaced-element sizing, retained geometry, scrolling,
-and CPU-backed paint. `obscura-js` exposes renderer-owned geometry to DOM APIs,
-`obscura-browser` prepares resources and owns capture, and `obscura-cdp` maps
+and CPU-backed paint. `inbrowse-js` exposes renderer-owned geometry to DOM APIs,
+`inbrowse` prepares resources and owns capture, and `inbrowse-cdp` maps
 screenshots, screencast frames, and raster PDF output onto CDP.
 
 Layout is retained between captures and invalidated by relevant DOM, style,
@@ -62,23 +63,23 @@ for navigation/screenshot warmup and for later renderer misses. The DOM-only
 `Page::screenshot` fallback (for example after `Page::suspend_js`) also performs
 no network requests: external images and fonts absent from its cache remain
 unavailable. Resume the page and prepare its resources before capture when
-those assets are required. Standalone `obscura-render` callers retain their
+those assets are required. Standalone `inbrowse-render` callers retain their
 existing synchronous-loader behavior.
 
 The relevant paths are `Page::screenshot_with_animation_sample` and
-`Page::render_resource_candidates` in `crates/obscura-browser/src/page.rs`,
-`ObscuraJsRuntime::take_render_resource_requests` in
-`crates/obscura-js/src/runtime.rs`, and `RenderResourceCache` in
-`crates/obscura-render/src/paint.rs`.
+`Page::render_resource_candidates` in `crates/inbrowse/src/page.rs`,
+`InbrowseJsRuntime::take_render_resource_requests` in
+`crates/inbrowse-js/src/runtime.rs`, and `RenderResourceCache` in
+`crates/inbrowse-render/src/paint.rs`.
 
 ## Single V8 isolate
 
 All pages in a process share one V8 isolate. The isolate is single-threaded by design.
 
-`obscura_js::v8_lock::global()` is a `tokio::sync::Mutex` that serializes V8 work. A handler that wants to run JS must acquire the lock first:
+`inbrowse_js::v8_lock::global()` is a `tokio::sync::Mutex` that serializes V8 work. A handler that wants to run JS must acquire the lock first:
 
 ```rust
-let _guard = obscura_js::v8_lock::global().lock().await;
+let _guard = inbrowse_js::v8_lock::global().lock().await;
 page.evaluate(expr).await
 ```
 
@@ -108,13 +109,13 @@ for Playwright frame locators or iframe screenshot fidelity.
 
 ## Robustness
 
-One page cannot hang or crash the process. `obscura-js/runtime.rs` provides a V8 termination watchdog (`arm_watchdog`, `run_event_loop_bounded`) that terminates the isolate from a separate thread when synchronous work overruns a budget, because `tokio::time::timeout` cannot preempt synchronous V8. It bounds the post-load settle, the navigation event-loop pumps, and `--eval`. The complete script phase is bounded by `OBSCURA_SCRIPT_DEADLINE_MS`; enhancement modules have a shorter per-module graph-loading/evaluation budget controlled by `OBSCURA_MODULE_BUDGET_MS`, while modules mounting an empty SPA shell receive the full script deadline. `obscura-js/cdp_watchdog.rs` is a single shared watchdog the dispatcher arms around every CDP command, so a runaway page cannot hold the V8 lock and wedge other sessions (tunable via `OBSCURA_CDP_COMMAND_TIMEOUT_MS`). `op_dom` is wrapped in `catch_unwind` so a DOM-op panic degrades to a null result instead of aborting the process through V8's FFI frame, and `obscura-dom/tree.rs` rejects cyclic reparenting that would make tree walks loop forever. Scripted `fetch()`/XHR and module network requests are timeout-bounded (`OBSCURA_FETCH_TIMEOUT_MS`), and the one-shot `fetch` CLI has a process-level hard deadline as a final backstop.
+One page cannot hang or crash the process. `inbrowse-js/runtime.rs` provides a V8 termination watchdog (`arm_watchdog`, `run_event_loop_bounded`) that terminates the isolate from a separate thread when synchronous work overruns a budget, because `tokio::time::timeout` cannot preempt synchronous V8. It bounds the post-load settle, the navigation event-loop pumps, and `--eval`. The complete script phase is bounded by `INBROWSE_SCRIPT_DEADLINE_MS`; enhancement modules have a shorter per-module graph-loading/evaluation budget controlled by `INBROWSE_MODULE_BUDGET_MS`, while modules mounting an empty SPA shell receive the full script deadline. `inbrowse-js/cdp_watchdog.rs` is a single shared watchdog the dispatcher arms around every CDP command, so a runaway page cannot hold the V8 lock and wedge other sessions (tunable via `INBROWSE_CDP_COMMAND_TIMEOUT_MS`). `op_dom` is wrapped in `catch_unwind` so a DOM-op panic degrades to a null result instead of aborting the process through V8's FFI frame, and `inbrowse-dom/tree.rs` rejects cyclic reparenting that would make tree walks loop forever. Scripted `fetch()`/XHR and module network requests are timeout-bounded (`INBROWSE_FETCH_TIMEOUT_MS`), and the one-shot `fetch` CLI has a process-level hard deadline as a final backstop.
 
 ## JS bridge
 
-`obscura-js/js/bootstrap.js` provides the browser globals: `document`, `window`, `navigator`, `location`, observers, fetch, indexedDB, etc.
+`inbrowse-js/js/bootstrap.js` provides the browser globals: `document`, `window`, `navigator`, `location`, observers, fetch, indexedDB, etc.
 
-`obscura-js/src/ops.rs` registers Rust ops that the bootstrap calls into:
+`inbrowse-js/src/ops.rs` registers Rust ops that the bootstrap calls into:
 
 ```js
 Deno.core.ops.op_dom('insert_before', parentNid, refNid, newNid);
@@ -147,7 +148,7 @@ Targets are created by `Target.createTarget`. Closing the WebSocket detaches all
 
 ## Lifecycle
 
-Lifecycle events are emitted by `obscura-browser/lifecycle.rs` as the page transitions:
+Lifecycle events are emitted by `inbrowse/lifecycle.rs` as the page transitions:
 
 ```
 init → commit → domcontentloaded → load → networkidle2 → networkidle0
@@ -161,7 +162,7 @@ init → commit → domcontentloaded → load → networkidle2 → networkidle0
 
 ## Stealth
 
-`--stealth` swaps the default `reqwest` client for `obscura-net/wreq_client.rs`, which presents a real browser's TLS ClientHello, ALPN, and cipher order (a consistent Chrome fingerprint, not a randomized one) so the TLS layer matches the User-Agent and JS surfaces. It also applies the bundled tracker blocklist before any request leaves the process. Scripted `fetch()`/XHR go through the same stealth client, so subresource requests carry the same fingerprint as the navigation. `--stealth` is a global CLI flag that applies to `fetch`, `serve`, `scrape`, and `mcp`.
+`--stealth` swaps the default `reqwest` client for `inbrowse-net/wreq_client.rs`, which presents a real browser's TLS ClientHello, ALPN, and cipher order (a consistent Chrome fingerprint, not a randomized one) so the TLS layer matches the User-Agent and JS surfaces. It also applies the bundled tracker blocklist before any request leaves the process. Scripted `fetch()`/XHR go through the same stealth client, so subresource requests carry the same fingerprint as the navigation. `--stealth` is a global CLI flag that applies to `fetch`, `serve`, `scrape`, and `mcp`.
 
 ## Workspace conventions
 

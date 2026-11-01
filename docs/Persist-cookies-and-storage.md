@@ -3,8 +3,8 @@
 ## CLI
 
 ```bash
-obscura fetch https://example.com --storage-dir ./obscura-data
-obscura fetch https://example.com --storage-dir ./obscura-data
+inbrowse fetch https://example.com --storage-dir ./inbrowse-data
+inbrowse fetch https://example.com --storage-dir ./inbrowse-data
 ```
 
 The second invocation starts with the cookies, `localStorage` and IndexedDB data left by the first.
@@ -12,22 +12,22 @@ The second invocation starts with the cookies, `localStorage` and IndexedDB data
 ## Server
 
 ```bash
-obscura serve --storage-dir ./obscura-data
+inbrowse serve --storage-dir ./inbrowse-data
 ```
 
-All CDP sessions read and write to the same directory. Run separate `obscura serve` processes with different `--storage-dir` paths for isolated profiles.
+All CDP sessions read and write to the same directory. Run separate `inbrowse serve` processes with different `--storage-dir` paths for isolated profiles.
 
 For MCP, put the profile flag before the subcommand:
 
 ```bash
-obscura --storage-dir ./obscura-data mcp
+inbrowse --storage-dir ./inbrowse-data mcp
 ```
 
-The MCP server also accepts `OBSCURA_STORAGE_DIR` and flushes the profile on exit.
+The MCP server also accepts `INBROWSE_STORAGE_DIR` and flushes the profile on exit.
 
 ## Layout
 
-Inside `./obscura-data`:
+Inside `./inbrowse-data`:
 
 - `cookies.json`: cookie jar in a stable format with `same_site`, `expires`, `http_only`, `secure`.
 - `localStorage/<origin>-<digest>.json`: one file per origin, holding
@@ -42,9 +42,9 @@ Inside `./obscura-data`:
 The format is stable. Inspect with `jq`:
 
 ```bash
-jq '.[] | select(.domain == "example.com")' ./obscura-data/cookies.json
-jq '.entries' ./obscura-data/localStorage/*.json
-jq '.databases[].name' ./obscura-data/indexedDB/*.json
+jq '.[] | select(.domain == "example.com")' ./inbrowse-data/cookies.json
+jq '.entries' ./inbrowse-data/localStorage/*.json
+jq '.databases[].name' ./inbrowse-data/indexedDB/*.json
 ```
 
 ## When state is written
@@ -102,7 +102,7 @@ cookies or Web Storage.
 ## Login once, scrape many
 
 ```bash
-obscura serve --storage-dir ./session-1
+inbrowse serve --storage-dir ./session-1
 ```
 
 Drive a login flow once via Puppeteer or Playwright. Stop the server. Subsequent runs against the same `--storage-dir` start logged in.
@@ -110,12 +110,12 @@ Drive a login flow once via Puppeteer or Playwright. Stop the server. Subsequent
 ## Multiple identities
 
 ```bash
-obscura serve --port 9222 --storage-dir ./identity-a
-obscura serve --port 9223 --storage-dir ./identity-b
+inbrowse serve --port 9222 --storage-dir ./identity-a
+inbrowse serve --port 9223 --storage-dir ./identity-b
 ```
 
 ## Clear state
 
 ```bash
-rm -rf ./obscura-data
+rm -rf ./inbrowse-data
 ```

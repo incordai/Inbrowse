@@ -1,8 +1,8 @@
-## `obscura`
+## `inbrowse`
 
 Most top-level flags apply to every subcommand. `--storage-dir` is the
 exception: it is declared on `serve` and `fetch`, and the top-level copy is read
-only by `mcp`, which exports it to `OBSCURA_STORAGE_DIR`. Pass it after the
+only by `mcp`, which exports it to `INBROWSE_STORAGE_DIR`. Pass it after the
 subcommand to use it with `serve` or `fetch`.
 
 ```
@@ -19,7 +19,7 @@ subcommand to use it with `serve` or `fetch`.
 -V, --version                Version
 ```
 
-## `obscura fetch <URL>`
+## `inbrowse fetch <URL>`
 
 Load a URL and print its content or an evaluated expression.
 
@@ -47,7 +47,7 @@ default and may be combined with `--eval`; the expression runs before capture,
 which is useful for scrolling or preparing page state. It is not available in
 `--file` batch mode.
 
-When `--wait` is omitted, Obscura drives timers and async work until the page
+When `--wait` is omitted, Inbrowse drives timers and async work until the page
 becomes quiescent, with a five-second ceiling. Supplying `--wait N` instead
 requests a fixed `N`-second delay. `--timeout` separately bounds navigation.
 
@@ -63,7 +63,7 @@ requests a fixed `N`-second delay. `--timeout` separately bounds navigation.
 | `original` | Raw HTTP response body (binary-safe, bypasses the engine) |
 | `cookies`  | All cookies in the jar as a JSON array, including HttpOnly cookies invisible to `document.cookie` |
 
-## `obscura serve`
+## `inbrowse serve`
 
 Run the CDP server. Puppeteer and Playwright connect over WebSocket.
 
@@ -88,7 +88,7 @@ Run the CDP server. Puppeteer and Playwright connect over WebSocket.
 
 Default endpoint is `ws://127.0.0.1:9222`.
 
-## `obscura scrape [URLS]...`
+## `inbrowse scrape [URLS]...`
 
 Run a JS expression across many URLs in parallel.
 
@@ -109,14 +109,14 @@ Run a JS expression across many URLs in parallel.
 Read URLs from stdin with `-`:
 
 ```bash
-cat urls.txt | obscura scrape - --eval "document.title" --concurrency 20
+cat urls.txt | inbrowse scrape - --eval "document.title" --concurrency 20
 ```
 
-Requires `obscura-worker` next to `obscura` in `PATH`.
+Requires `inbrowse-worker` next to `inbrowse` in `PATH`.
 
-## `obscura mcp`
+## `inbrowse mcp`
 
-Run obscura as an MCP server.
+Run inbrowse as an MCP server.
 
 ```
     --http                   HTTP transport instead of stdio
@@ -130,16 +130,50 @@ Run obscura as an MCP server.
 -v, --verbose                Enable info logging
 ```
 
-`--host` only applies with `--http`. The default `127.0.0.1` keeps the server loopback-only. A non-loopback bind requires `OBSCURA_MCP_TOKEN` (at least 32 bytes); use `OBSCURA_MCP_ALLOWED_ORIGINS` as well when a browser-based client needs access.
+`--host` only applies with `--http`. The default `127.0.0.1` keeps the server loopback-only. A non-loopback bind requires `INBROWSE_MCP_TOKEN` (at least 32 bytes); use `INBROWSE_MCP_ALLOWED_ORIGINS` as well when a browser-based client needs access.
 
 Default transport is stdio. See [Use the MCP server](Use-the-MCP-server.md).
 
 Render-enabled builds add `browser_screenshot` and `browser_pdf` to the MCP
 tool list. Streaming screencasts are available through CDP rather than MCP.
 
+## `inbrowse extract <PATH|URL>`
+
+Print the text of one document as JSON. Reads PDF, Word (`.docx`),
+PowerPoint (`.pptx`), OpenDocument text and presentations (`.odt`, `.odp`),
+spreadsheets (`.xlsx`, `.xlsb`, `.xls`, `.ods`), CSV and plain text. The format
+is recognised from the file's bytes, not its name. Legacy `.doc` and `.ppt`
+files are not supported.
+
+```
+    --hint <NAME|MIME>       Mark plain text as CSV (defaults to the
+                             Content-Type or file name)
+    --timeout <SECS>         Download plus extraction (default 60)
+-o, --output <FILE>          Write the JSON to a file
+```
+
+```bash
+inbrowse extract report.pdf
+inbrowse extract https://example.com/prices.xlsx -o prices.json
+```
+
+```json
+{"format":"pdf","text":"…","sections":[{"kind":"page","name":"Page 1","text":"…"}]}
+```
+
+`sections` has one entry per page (PDF), slide (PPTX, ODP), sheet
+(spreadsheets, cells tab-separated) or a single `body`. `text` joins every
+section with a blank line.
+
+URLs are downloaded like `fetch --dump original`, so `--proxy`, `--stealth`,
+`--user-agent` and the private-network block apply. Documents are untrusted:
+inputs over 100 MiB, archives that unpack past 256 MiB or list more than 10,000
+entries are refused, and a parser failure is reported as an error. The command
+is part of the default `extract` cargo feature.
+
 ## Worker navigation responses
 
-`obscura-worker` accepts newline-delimited JSON commands on stdin and emits one
+`inbrowse-worker` accepts newline-delimited JSON commands on stdin and emits one
 JSON response per command on stdout. For example:
 
 ```json
@@ -167,7 +201,7 @@ are unchanged.
 
 ## Worker navigation readiness
 
-`obscura-worker` accepts newline-delimited JSON commands on stdin and writes
+`inbrowse-worker` accepts newline-delimited JSON commands on stdin and writes
 one response per command to stdout. Select a readiness mode per navigation:
 
 ```json

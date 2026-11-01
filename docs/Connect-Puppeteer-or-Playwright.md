@@ -1,14 +1,14 @@
-Obscura speaks the Chrome DevTools Protocol over WebSocket. Puppeteer and
+Inbrowse speaks the Chrome DevTools Protocol over WebSocket. Puppeteer and
 Playwright can connect to its CDP endpoint for the supported workflows below.
 
 ## Start the server
 
 ```bash
-obscura serve --port 9222
+inbrowse serve --port 9222
 ```
 
 ```
-obscura listening on ws://127.0.0.1:9222
+inbrowse listening on ws://127.0.0.1:9222
 ```
 
 ## Puppeteer
@@ -52,7 +52,7 @@ console.log(await page.title());
 await browser.close();
 ```
 
-Use `connectOverCDP`, not `connect`. Playwright's `connect` speaks Playwright's own protocol, which obscura does not implement.
+Use `connectOverCDP`, not `connect`. Playwright's `connect` speaks Playwright's own protocol, which inbrowse does not implement.
 
 ## `waitUntil`
 
@@ -84,7 +84,7 @@ await page.goto('https://example.com', { waitUntil: 'load' });
 - raw CDP `Page.startScreencast` with frame acknowledgements (`page.createCDPSession()`
   in Puppeteer; `context.newCDPSession(page)` in Playwright)
 
-DOM-agent frameworks such as browser-use also connect: obscura implements `DOMSnapshot.captureSnapshot` and `Target.targetInfoChanged` for perception, and `DOM.focus` so a focused field receives `Input.dispatchKeyEvent` keystrokes.
+DOM-agent frameworks such as browser-use also connect: inbrowse implements `DOMSnapshot.captureSnapshot` and `Target.targetInfoChanged` for perception, and `DOM.focus` so a focused field receives `Input.dispatchKeyEvent` keystrokes.
 
 `Runtime.evaluate` runs scripts in the execution context's global scope, without
 calling the page's `eval`. Global lexical bindings survive subsequent evaluations

@@ -9,14 +9,14 @@
 // runs as the first thing in the process. Under nextest each test already has
 // its own process, and the re-run only adds one exec.
 //
-// Included with `#[path]` at each crate root (obscura-browser, obscura-cdp,
-// obscura-js, obscura-mcp, obscura-net client.rs, obscura-render with paint)
-// and by the integration tests that change process state (obscura-cdp
-// integration.rs, obscura-mcp http_page_progress.rs, obscura child_frame_scripts.rs
+// Included with `#[path]` at each crate root (inbrowse, inbrowse-cdp,
+// inbrowse-js, inbrowse-mcp, inbrowse-net client.rs, inbrowse-render with paint)
+// and by the integration tests that change process state (inbrowse-cdp
+// integration.rs, inbrowse-mcp http_page_progress.rs, inbrowse child_frame_scripts.rs
 // and stealth_transport.rs). Callers: every test that sets an environment
 // variable or other set-once process state.
 
-const CHILD_ENV: &str = "OBSCURA_FRESH_PROCESS_TEST";
+const CHILD_ENV: &str = "INBROWSE_FRESH_PROCESS_TEST";
 
 /// `test` is the libtest path without the crate name, e.g.
 /// `runtime::tests::heap_limit_terminates_script_and_runtime_recovers`.

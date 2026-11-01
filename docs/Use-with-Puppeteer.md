@@ -1,7 +1,7 @@
 ## Setup
 
 ```bash
-obscura serve --port 9222
+inbrowse serve --port 9222
 npm install puppeteer-core
 ```
 
@@ -87,7 +87,7 @@ See [Intercept and modify requests](Intercept-and-modify-requests.md).
 
 Scripted fetch/XHR requests in stealth mode report Network events and retained
 response bodies using the same request IDs as the normal transport. The existing
-`OBSCURA_NETWORK_BODY_BUFFER_ENTRIES` and `OBSCURA_NETWORK_BODY_BUFFER_BYTES`
+`INBROWSE_NETWORK_BODY_BUFFER_ENTRIES` and `INBROWSE_NETWORK_BODY_BUFFER_BYTES`
 settings still control retention; disabling retention does not disable events.
 
 ## Expose a Node callback
@@ -164,7 +164,7 @@ Frames are activity-driven page captures, not fixed-rate desktop video.
 ## Disconnect
 
 ```js
-await browser.disconnect();  // leaves obscura serve running
+await browser.disconnect();  // leaves inbrowse serve running
 ```
 
 ## Page lifecycle
@@ -200,5 +200,5 @@ not receive this traffic.
 ES-module roots, dependencies, and dynamic imports report their actual HTTP
 status, response headers, and body size. Retained bodies remain readable by
 request ID when a page's JavaScript runtime is suspended, subject to
-`OBSCURA_NETWORK_BODY_BUFFER_ENTRIES` and `OBSCURA_NETWORK_BODY_BUFFER_BYTES`.
+`INBROWSE_NETWORK_BODY_BUFFER_ENTRIES` and `INBROWSE_NETWORK_BODY_BUFFER_BYTES`.
 Cached imports do not produce another network request.

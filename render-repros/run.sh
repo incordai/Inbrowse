@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Render every repro fixture in obscura and Chromium side by side.
+# Render every repro fixture in inbrowse and Chromium side by side.
 # Usage: ./run.sh [outdir]   (default: ./out)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${OBSCURA_BIN:-$ROOT/target/release/obscura}"
+BIN="${INBROWSE_BIN:-$ROOT/target/release/inbrowse}"
 CHROME="${CHROME_BIN:-}"
 PYTHON="${PYTHON_BIN:-python3}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,10 +12,10 @@ mkdir -p "$OUT"
 status=0
 for f in "$DIR"/*.html; do
   n=$(basename "$f" .html)
-  if ! OBSCURA_SHOT_W=900 OBSCURA_SHOT_H=1000 OBSCURA_ALLOW_PRIVATE_NETWORK=1 \
-    timeout 60 "$BIN" fetch "file://$f" --screenshot "$OUT/$n.obscura.png" \
-      --timeout 30000 --wait 2 >"$OUT/$n.obscura.log" 2>&1 || [[ ! -s "$OUT/$n.obscura.png" ]]; then
-    echo "FAILED obscura: $n (see $OUT/$n.obscura.log)" >&2
+  if ! INBROWSE_SHOT_W=900 INBROWSE_SHOT_H=1000 INBROWSE_ALLOW_PRIVATE_NETWORK=1 \
+    timeout 60 "$BIN" fetch "file://$f" --screenshot "$OUT/$n.inbrowse.png" \
+      --timeout 30000 --wait 2 >"$OUT/$n.inbrowse.log" 2>&1 || [[ ! -s "$OUT/$n.inbrowse.png" ]]; then
+    echo "FAILED inbrowse: $n (see $OUT/$n.inbrowse.log)" >&2
     status=1
     continue
   fi

@@ -1,0 +1,32 @@
+[package]
+name = "inbrowse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+stealth = ["inbrowse-net/stealth", "inbrowse-js/stealth"]
+render = ["inbrowse-js/render", "dep:image"]
+
+[dependencies]
+inbrowse-dom = { workspace = true }
+inbrowse-net = { workspace = true }
+inbrowse-js = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true }
+futures = "0.3"
+url = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio = { workspace = true, features = ["test-util"] }

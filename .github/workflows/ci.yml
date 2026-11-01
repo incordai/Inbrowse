@@ -52,7 +52,7 @@ jobs:
           fi
           git cat-file -e "${base_sha}^{commit}"
 
-          policy_root="$RUNNER_TEMP/obscura-policy"
+          policy_root="$RUNNER_TEMP/inbrowse-policy"
           mkdir -p "$policy_root"
           git show "$base_sha:scripts/ci/pr_policy.py" > "$policy_root/pr_policy.py"
           git show "$base_sha:deny.toml" > "$policy_root/deny.toml"
@@ -155,7 +155,7 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: obscura-ci-dependencies
+          shared-key: inbrowse-ci-dependencies
           # Only successful main builds save. PRs remain restore-only and
           # release workflows do not consume this cache.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -169,13 +169,13 @@ jobs:
           fi
 
       - name: Build render release
-        run: cargo build --release -p obscura-cli --bins --features render
+        run: cargo build --release -p inbrowse-cli --bins --features render
 
       - name: Test render configuration
         run: cargo nextest run --release --features render --no-fail-fast
 
       - name: Stage candidate binary for comparison
-        run: install -D -m 0755 target/release/obscura "$RUNNER_TEMP/obscura-ci/obscura-pr"
+        run: install -D -m 0755 target/release/inbrowse "$RUNNER_TEMP/inbrowse-ci/inbrowse-pr"
 
       - name: Checkout pinned obstacle course
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -187,57 +187,57 @@ jobs:
 
       - name: Require all 33 obstacle stages
         run: |
-          OBSCURA_BIN="$RUNNER_TEMP/obscura-ci/obscura-pr" \
+          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
             python3 obscura-benchmark/obstacle-course/run.py \
-              --json --runs 1 --warmup 0 > "$RUNNER_TEMP/obscura-ci/obstacle-candidate.json"
+              --json --runs 1 --warmup 0 > "$RUNNER_TEMP/inbrowse-ci/obstacle-candidate.json"
 
       - name: Upload obstacle evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: core-obstacle-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/obscura-ci/obstacle-candidate.json
+          path: ${{ runner.temp }}/inbrowse-ci/obstacle-candidate.json
           if-no-files-found: ignore
           retention-days: 7
 
       - name: Build render and stealth release
-        run: cargo build --release -p obscura-cli --bins --features render,stealth
+        run: cargo build --release -p inbrowse-cli --bins --features render,stealth
 
       - name: Test the stealth transport
         run: |
           # The gzip fixture binds loopback. Keep the ordinary suite under the
           # default SSRF policy, then opt in only for that single focused test.
-          cargo nextest run --release -p obscura-net --features stealth \
+          cargo nextest run --release -p inbrowse-net --features stealth \
             --no-fail-fast -- --skip stealth_client_decodes_gzip_response
-          OBSCURA_ALLOW_PRIVATE_NETWORK=1 cargo nextest run --release \
-            -p obscura-net --features stealth \
+          INBROWSE_ALLOW_PRIVATE_NETWORK=1 cargo nextest run --release \
+            -p inbrowse-net --features stealth \
             stealth_client_decodes_gzip_response --no-fail-fast
 
       - name: Build no-render release
-        run: cargo build --release -p obscura-cli --bins --no-default-features
+        run: cargo build --release -p inbrowse-cli --bins --no-default-features
 
       - name: Test no-render configuration
         run: |
-          # `obscura` uses its default `api` feature for the public library; an
+          # `inbrowse` uses its default `api` feature for the public library; an
           # empty feature set is not a supported crate configuration. Test that
           # no-render API normally and every non-render crate with defaults
-          # disabled. `obscura-render` has paint-only test fixtures, so verify
+          # disabled. `inbrowse-render` has paint-only test fixtures, so verify
           # its feature-minimal library separately without compiling those
           # fixtures.
-          cargo nextest run --release -p obscura --no-fail-fast
-          cargo nextest run --release --workspace --exclude obscura \
-            --exclude obscura-render \
+          cargo nextest run --release -p inbrowse-sdk --no-fail-fast
+          cargo nextest run --release --workspace --exclude inbrowse \
+            --exclude inbrowse-render \
             --no-default-features --no-fail-fast
-          cargo check --release -p obscura-render --no-default-features
+          cargo check --release -p inbrowse-render --no-default-features
 
       - name: Build no-render and stealth release
-        run: cargo build --release -p obscura-cli --bins --no-default-features --features stealth
+        run: cargo build --release -p inbrowse-cli --bins --no-default-features --features stealth
 
       - name: Upload candidate binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: obscura-pr-${{ github.run_id }}
-          path: ${{ runner.temp }}/obscura-ci/obscura-pr
+          name: inbrowse-pr-${{ github.run_id }}
+          path: ${{ runner.temp }}/inbrowse-ci/inbrowse-pr
           if-no-files-found: error
           overwrite: true
           retention-days: 1
@@ -266,8 +266,8 @@ jobs:
       - name: Download candidate binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: obscura-pr-${{ github.run_id }}
-          path: ${{ runner.temp }}/obscura-ci
+          name: inbrowse-pr-${{ github.run_id }}
+          path: ${{ runner.temp }}/inbrowse-ci
 
       - name: Install system dependencies
         run: |
@@ -281,7 +281,7 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: obscura-ci-dependencies
+          shared-key: inbrowse-ci-dependencies
           save-if: false
 
       - name: Repair incomplete V8 cache
@@ -298,30 +298,30 @@ jobs:
           BASE_SHA: ${{ needs.policy.outputs.base-sha }}
         run: |
           set -euo pipefail
-          script_root="$RUNNER_TEMP/obscura-ci-scripts"
+          script_root="$RUNNER_TEMP/inbrowse-ci-scripts"
           mkdir -p "$script_root"
           git show "$BASE_SHA:scripts/ci/perf_smoke.py" > "$script_root/perf_smoke.py"
           git show "$BASE_SHA:scripts/ci/compare_obstacle.py" > "$script_root/compare_obstacle.py"
           # Checkout and cache metadata both belong to the trusted base. Build
           # in the restored target directory, not a separate empty worktree.
-          cargo build --release -p obscura-cli --bins --features render
+          cargo build --release -p inbrowse-cli --bins --features render
           install -D -m 0755 \
-            target/release/obscura \
-            "$RUNNER_TEMP/obscura-ci/obscura-base"
-          chmod 0755 "$RUNNER_TEMP/obscura-ci/obscura-pr"
+            target/release/inbrowse \
+            "$RUNNER_TEMP/inbrowse-ci/inbrowse-base"
+          chmod 0755 "$RUNNER_TEMP/inbrowse-ci/inbrowse-pr"
 
       - name: Run base and candidate obstacle courses
         shell: bash
         run: |
           set -euo pipefail
-          results_root="$RUNNER_TEMP/obscura-ci-results"
+          results_root="$RUNNER_TEMP/inbrowse-ci-results"
           mkdir -p "$results_root"
           set +e
-          OBSCURA_BIN="$RUNNER_TEMP/obscura-ci/obscura-base" \
+          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-base" \
             python3 obscura-benchmark/obstacle-course/run.py \
               --json --runs 3 --warmup 1 > "$results_root/obstacle-base.json"
           base_status=$?
-          OBSCURA_BIN="$RUNNER_TEMP/obscura-ci/obscura-pr" \
+          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
             python3 obscura-benchmark/obstacle-course/run.py \
               --json --runs 3 --warmup 1 > "$results_root/obstacle-pr.json"
           pr_status=$?
@@ -332,22 +332,22 @@ jobs:
 
       - name: Run interleaved latency and RSS smoke benchmark
         run: |
-          python3 "$RUNNER_TEMP/obscura-ci-scripts/perf_smoke.py" \
-            --base "$RUNNER_TEMP/obscura-ci/obscura-base" \
-            --candidate "$RUNNER_TEMP/obscura-ci/obscura-pr" \
-            --output "$RUNNER_TEMP/obscura-ci-results/perf-smoke.json"
+          python3 "$RUNNER_TEMP/inbrowse-ci-scripts/perf_smoke.py" \
+            --base "$RUNNER_TEMP/inbrowse-ci/inbrowse-base" \
+            --candidate "$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
+            --output "$RUNNER_TEMP/inbrowse-ci-results/perf-smoke.json"
 
       - name: Compare obstacle correctness and latency
         run: |
-          python3 "$RUNNER_TEMP/obscura-ci-scripts/compare_obstacle.py" \
-            --base "$RUNNER_TEMP/obscura-ci-results/obstacle-base.json" \
-            --candidate "$RUNNER_TEMP/obscura-ci-results/obstacle-pr.json"
+          python3 "$RUNNER_TEMP/inbrowse-ci-scripts/compare_obstacle.py" \
+            --base "$RUNNER_TEMP/inbrowse-ci-results/obstacle-base.json" \
+            --candidate "$RUNNER_TEMP/inbrowse-ci-results/obstacle-pr.json"
 
       - name: Upload comparison evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pr-comparison-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/obscura-ci-results
+          path: ${{ runner.temp }}/inbrowse-ci-results
           if-no-files-found: warn
           retention-days: 7

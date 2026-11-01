@@ -1,17 +1,7 @@
+<h2 align="center">Inbrowse</h2>
+<p align="center">by <strong>Incord AI</strong></p>
 <p align="center">
-<img width="1200" height="630" alt="memory" src="https://github.com/user-attachments/assets/94eba4cb-0ba0-4a07-b891-b12ac2d42790" />
-
-</p>
-<h2 align="center">Obscura</h2>
-<p align="center">
-  <a href="https://trendshift.io/repositories/25837?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-25837" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/25837/daily" alt="h4ckf0r0day%2Fobscura | Trendshift" width="250" height="55"/></a>
-</p>
-<p align="center">
-  <a href="https://docs.obscura.sh"><img src="https://img.shields.io/badge/Docs-1a1a1a?style=for-the-badge&logo=gitbook&logoColor=white" alt="Documentation" /></a>
-  <a href="https://obscura.sh"><img src="https://img.shields.io/badge/Website-1a1a1a?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjE5MCAxNzAgNDIwIDQyMCI+PHBhdGggZmlsbD0iI0ZGRkZGRiIgZmlsbC1ydWxlPSJldmVub2RkIiBkPSJNNDA2LDE3NS4wMDA0MTIgQzQ0MC40OTg5MzIsMTc1LjAwMDM1MSA0NzQuNDk4MTA4LDE3NS4wODA5OTQgNTA4LjQ5NjczNSwxNzQuOTc1NjYyIEM1MzcuNzMzNjQzLDE3NC44ODUwODYgNTYxLjI3MDY5MSwxODcuMjIwNTUxIDU3OS45Mzk2MzYsMjA4Ljc4NjYyMSBDNTkwLjg0MTA2NCwyMjEuMzc5Nzc2IDU5Ny44ODM1NDUsMjM2LjM1MjY2MSA1OTkuOTgxODczLDI1My4yMjAzNjcgQzYwMC40NDU1NTcsMjU2Ljk0NzU0MCA2MDAuOTUxMTExLDI2MC43MDQ0MzcgNjAwLjk1NjYwNCwyNjQuNDQ4MzY0IEM2MDEuMDIyNjQ0LDMwOS42MTM1MjUgNjAxLjA3NTgwNiwzNTQuNzc5MDIyIDYwMC45NTE3ODIsMzk5Ljk0MzkzOSBDNjAwLjkxMzE0Nyw0MTQuMDMyMzQ5IDYwMC42NjMyNjksNDI4LjE0MDEwNiA1OTkuNzgyMjg4LDQ0Mi4xOTMzNTkgQzU5OS41NDEwMTYsNDQ2LjA0MDg5NCA1OTcuNTYwNzkxLDQ1MC42MTU2MDEgNTk0Ljg1MzIxMCw0NTMuMzQxMzA5IEM1NzEuMTc3NTUxLDQ3Ny4xNzUzMjMgNTQ3LjE4MDcyNSw1MDAuNjkwNzk2IDUyMy4yMjc5NjYsNTI0LjI0ODc3OSBDNTA2Ljc5OTgzNSw1NDAuNDA2MTI4IDQ5MC4yMDk5OTEsNTU2LjM5OTkwMiA0NzMuODY0NTYzLDU3Mi42NDAxMzcgQzQ2OC44MDA4NDIsNTc3LjY3MTIwNCA0NjMuMDgyODg2LDU4MC4wNTQxOTkgNDU1Ljk3MDYxMiw1ODAuMDQzODIzIEM0MDAuOTcyNDQzLDU3OS45NjM1MDEgMzQ1Ljk3MzY2Myw1ODAuMTMyMDE5IDI5MC45NzYwNDQsNTc5LjkzNjc2OCBDMjY3LjU4MDQxNCw1NzkuODUzNjk5IDI0Ni41NTEyMDgsNTcyLjA0MzU3OSAyMjguOTM5NzQzLDU1Ni44Mjc1MTUgQzIxMi44NDk2MjUsNTQyLjkyNTg0MiAyMDIuNzUxOTY4LDUyNC45MDIxMDAgMTk4LjE1NjE1OCw1MDQuMDM5NjczIEMxOTcuMjgyMTk2LDUwMC4wNzIyOTYgMTk3LjA1MjQxNCw0OTUuODk1Mzg2IDE5Ny4wNDczMzMsNDkxLjgxNDQ4NCBDMTk2Ljk3ODE0OSw0MzYuMTQ5NjU4IDE5Ny4wNTA3MjAsMzgwLjQ4NDYxOSAxOTYuOTMyNjE3LDMyNC44MTk5NDYgQzE5Ni45MTkxNDQsMzE4LjQ3MDkxNyAxOTkuMTg0ODQ1LDMxMy40MTYxOTkgMjAzLjQ5NTU3NSwzMDkuMTAwNTI1IEMyNDAuNTg3OTk3LDI3MS45NjU0MjQgMjc3LjY4MjQ5NSwyMzQuODMyMzA2IDMxNC44MzQ1NjQsMTk3Ljc1Njk1OCBDMzIwLjk1NjQyMSwxOTEuNjQ3Nzk3IDMyNy4yNjQ0MzUsMTg1LjcxNTI1NiAzMzMuNjczOTIwLDE3OS45MDgwODEgQzMzNy4zNzYwMzgsMTc2LjU1MzgzMyAzNDEuNzIxNDY2LDE3NC44NTMzMTcgMzQ3LjAwNTc5OCwxNzQuOTEyODcyIEMzNjYuNTAxNzA5LDE3NS4xMzI2MTQgMzg2LjAwMTYxNywxNzUuMDAwMzIwIDQwNiwxNzUuMDAwNDEyIFogTTUwMy4zNDQ2NjYsMjczLjg0MDE0OSBDNTA0LjEwMjcyMiwyNzYuMTY3NTcyIDUwNC45NDA5NDgsMjc4LjIxMTA5MCA1MDQuOTQzMjY4LDI4MC4yNTU1MjQgQzUwNS4wMTI4NDgsMzQxLjc0MjI0OSA1MDQuOTY5MTQ3LDQwMy4yMjkwNjUgNTA1LjAzMDc5Miw0NjQuNzE1NzkwIEM1MDUuMDQwODAyLDQ3NC42ODY0OTMgNDk2LjExNzQ2Miw0ODMuOTUzMTg2IDQ4NS43Nzc5MjQsNDgzLjk2NTI3MSBDNDI0LjYyNDQ1MSw0ODQuMDM2ODk2IDM2My40NzA5MTcsNDg0LjAwMzIzNSAzMDIuMzE3MzgzLDQ4My45OTY3MzUgQzI5NS41ODc3NjksNDgzLjk5NjAzMyAyOTMuMDAxMjUxLDQ4MS4zMDE2MDUgMjkzLjAwMDkxNiw0NzQuMzM4NTYyIEMyOTIuOTk3ODY0LDQxMy4zNTE2NTQgMjkzLjIwOTYyNSwzNTIuMzYzMzEyIDI5Mi43ODA3MDEsMjkxLjM3OTM5NSBDMjkyLjcxMzUzMSwyODEuODI4MDk0IDMwMy4yMTMwNDMsMjcwLjgyNDE1OCAzMTMuNDc4MjcxLDI3MC44OTQzMTggQzM1MS45NjgyMDEsMjcxLjE1NzQ0MCAzOTAuNDYwOTk5LDI3MC45OTk3ODYgNDI4Ljk1MjcyOCwyNzAuOTk5Nzg2IEM0NTEuMTE0NjI0LDI3MC45OTk3ODYgNDczLjI3NzI4MywyNzAuOTE3NDgwIDQ5NS40Mzc0NjksMjcxLjExMjE1MiBDNDk3Ljk3NzAyMCwyNzEuMTM0NDkxIDUwMC41MDI5MzAsMjcyLjcwNDM3NiA1MDMuMzQ0NjY2LDI3My44NDAxNDkgWiI+PC9wYXRoPjwvc3ZnPgo=&logoColor=white" alt="Website" /></a>
-  <a href="https://x.com/obscura_sh" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/TWITTER%20%2F%20X-1a1a1a?style=for-the-badge&logo=x&logoColor=white" alt="Obscura on Twitter/X" /></a>
-  <a href="https://cal.com/obscura/quick-chat"><img src="https://img.shields.io/badge/Book_a_Demo-1a1a1a?style=for-the-badge&logo=googlecalendar&logoColor=white" alt="Book a demo" /></a>
-  <a href="https://github.com/h4ckf0r0day/obscura/releases"><img src="https://img.shields.io/badge/Releases-1a1a1a?style=for-the-badge&logo=github&logoColor=white" alt="Releases" /></a>
+  <a href="https://github.com/incordai/Inbrowse/releases"><img src="https://img.shields.io/badge/Releases-1a1a1a?style=for-the-badge&logo=github&logoColor=white" alt="Releases" /></a>
 </p>
 <p align="center">
   <strong>The open-source headless browser for AI agents and web scraping.</strong><br>
@@ -19,16 +9,16 @@
 </p>
 <h3 align="center">Native rendering is here. No Chromium required. 🎉 </h3>
 <p align="center">
-  Capture screenshots, screencast live pages, and export PDFs directly with Obscura.
+  Capture screenshots, screencast live pages, and export PDFs directly with Inbrowse.
 </p>
 
 ---
 
-Obscura is a headless browser engine written in Rust, built for web scraping and AI agent automation. It runs real JavaScript via V8, supports the Chrome DevTools Protocol, and acts as a drop-in replacement for headless Chrome with Puppeteer and Playwright.
+Inbrowse is a headless browser engine written in Rust by Incord AI, built for web scraping and AI agent automation. It runs real JavaScript via V8, supports the Chrome DevTools Protocol, and acts as a drop-in replacement for headless Chrome with Puppeteer and Playwright.
 
-### Why Obscura over headless Chrome?
+### Why Inbrowse over headless Chrome?
 
-| Metric       | Obscura      | Headless Chrome |
+| Metric       | Inbrowse      | Headless Chrome |
 |--------------|--------------|------------------|
 | Memory       | **30 MB**    | 200+ MB          |
 | Binary size  | **~70 MiB**  | 300+ MB          |
@@ -38,33 +28,7 @@ Obscura is a headless browser engine written in Rust, built for web scraping and
 | Puppeteer    | **Yes**      | Yes              |
 | Playwright   | **Yes**      | Yes              |
 
-<table>
-  <tr>
-    <td width="90" align="center">
-      <a href="https://blog.cloudflare.com/kitesurf/">
-        <img
-          src="https://cdn.simpleicons.org/cloudflare/F38020"
-          alt="Cloudflare"
-          width="54"
-        />
-      </a>
-    </td>
-    <td>
-      <strong>Obscura inspired Cloudflare Kitesurf’s first prototype</strong>
-      <br>
-      Cloudflare began by porting Obscura to Workers while developing its
-      new agent-first browser.
-      <br>
-      <a href="https://blog.cloudflare.com/kitesurf/">
-        Read Cloudflare’s engineering story →
-      </a>
-    </td>
-  </tr>
-</table>
-
-## What this repository adds
-
-This repository ([incordai/incord-browser](https://github.com/incordai/incord-browser)) builds on upstream [Obscura](https://github.com/h4ckf0r0day/obscura) and adds the following. Upstream does not have these yet.
+## What's new in Inbrowse
 
 ### Web platform
 
@@ -72,10 +36,10 @@ This repository ([incordai/incord-browser](https://github.com/incordai/incord-br
 |---|---|
 | **WebSocket** | A real connection instead of a stub that reported OPEN and dropped every message. Sends the page's cookies, `Origin` and user agent; uses the configured HTTP/SOCKS5 proxy; refuses private addresses unless `--allow-private-network`; stealth builds use the Chrome TLS fingerprint. Text, binary, Blob, subprotocols and close codes work. |
 | **WebSocket in CDP** | `Network.webSocketCreated`, `webSocketWillSendHandshakeRequest`, `webSocketHandshakeResponseReceived`, `webSocketFrameSent` / `Received`, `webSocketFrameError` and `webSocketClosed`, so Puppeteer and Playwright see socket traffic. |
-| **IndexedDB** | A working database instead of a shim that stored nothing: object stores, key generators, indexes (unique, multiEntry, compound), key ranges, cursors, transactions with rollback, version changes, `databases()`, `cmp()`. Dexie, idb-keyval and localForage run on it. Data persists per origin. |
-| **localStorage / sessionStorage** | Shared by every page and frame of an origin, kept across navigations, saved per origin under `localStorage/` with `--storage-dir`, with a 5 MiB per-origin quota. sessionStorage is per tab. IndexedDB is saved the same way under `indexedDB/`. |
+| **IndexedDB on disk** | With `--storage-dir`, databases are saved per origin under `indexedDB/` and survive a restart. |
 | **Touch and drag** | `Touch`, `TouchList`, `TouchEvent`, `DataTransfer` and `DragEvent`; CDP `Input.dispatchTouchEvent`, `Input.dispatchDragEvent` and `Input.setInterceptDrags`. |
-| **`innerText`** | Follows the HTML rendered-text rules: hidden content and `<script>`/`<style>` are skipped, whitespace collapses per `white-space`, and blocks, paragraphs and table cells get line breaks and tabs. Previously it returned `textContent`. |
+| **Timezone on Windows** | The default zone and `INBROWSE_TIMEZONE` also apply on Windows, where ICU ignores `TZ`, so pages never see the host's real zone. |
+| **`innerText` whitespace** | Whitespace collapses per the element's `white-space` value, so `pre` and `pre-wrap` text keeps its spaces and line breaks. |
 
 ### Rendering
 
@@ -101,86 +65,40 @@ This repository ([incordai/incord-browser](https://github.com/incordai/incord-br
 
 | Feature | What changed |
 |---|---|
-| **`fetch --font-dir`** | One-shot screenshots can load system fonts, as `serve --font-dir` already could. |
+| **`inbrowse extract`** | Text from a PDF, Word, PowerPoint, OpenDocument, spreadsheet, CSV or text file, local or downloaded, as JSON with one section per page, slide or sheet. See the [CLI reference](docs/CLI-reference.md). |
+| **`fetch --font-dir`** | One-shot screenshots can load system fonts, as `serve` and `mcp` already could. |
 | **`--dump markdown` tables** | Tables are valid GFM: a header row, a `\|---\|` separator, one line per row, and the caption as a paragraph. |
-
-## Obscura Cloud
-
-We are working on **Obscura Cloud** the hosted version, with managed infrastructure, residential proxies, and dedicated support. For people who want the engine without operating it themselves.
-
-The open-source engine stays Apache-2.0, fully featured. No feature gating, ever.
-
-**[Get on the waitlist →](https://tally.so/r/gDWzdD)**
-<br>
-**[📅 Book a demo →](https://cal.com/obscura/quick-chat)**
-
-### Open Source Support
-
-<a href="https://vercel.com/open-source-program">
-  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-</a>
-
-## Sponsors
-
-**Obscura** is supported by organizations helping us build independent open-source browser infrastructure.
-
-Want to sponsor? Email [hello@obscura.sh](mailto:hello@obscura.sh).
-
-<table>
-   <tr>
-    <td width="200" align="center" valign="middle">
-      <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank">
-        <img alt="NodeMaven" src="assets/sponsors/nodemaven4.png" width="180"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank"><b>NodeMaven</b></a>: The most efficient proxy provider for Web Scraping and Automation with the Highest Quality IP on the market.<br><br>
-      <b>Why <a href="https://go.nodemaven.com/obscurareadmeoctober" target="_blank">NodeMaven</a>?</b><br>
-      ZIP targeting<br>
-      99.9% uptime<br>
-      IP filtering: all proxies have fraud score &lt;97%<br>
-      No KYC required<br>
-      Check Nodemaven's new GitHub for more web scraping and automation solutions - https://github.com/nodemaven<br>
-      Unique free tools: Proxy Bandwidth Checker, Meta Tag Checker, IP Lookup and others!<br><br>
-      🎁 <b>Special codes for Obscura users:</b><br>
-      <b>OBSCURA35</b> - 35% off to Mobile and Residential Proxies<br>
-      <b>OBSCURA40</b> - 40% off to ISP (Static) Proxies
-    </td>
-</table>
 
 ## Install
 
 ### Download
 
-Grab the latest binary from [Releases](https://github.com/h4ckf0r0day/obscura/releases):
+Grab the latest binary from [Releases](https://github.com/incordai/Inbrowse/releases):
 
 ```bash
 # Linux x86_64
-curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
-tar xzf obscura-x86_64-linux.tar.gz
-./obscura fetch https://example.com --eval "document.title"
+curl -LO https://github.com/incordai/Inbrowse/releases/latest/download/inbrowse-x86_64-linux.tar.gz
+tar xzf inbrowse-x86_64-linux.tar.gz
+./inbrowse fetch https://example.com --eval "document.title"
 
 # Linux ARM64 (aarch64)
-curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-aarch64-linux.tar.gz
-tar xzf obscura-aarch64-linux.tar.gz
-
-# NixOS
-nix-env -iA nixpkgs.obscura
+curl -LO https://github.com/incordai/Inbrowse/releases/latest/download/inbrowse-aarch64-linux.tar.gz
+tar xzf inbrowse-aarch64-linux.tar.gz
 
 # macOS Apple Silicon
-curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-aarch64-macos.tar.gz
-tar xzf obscura-aarch64-macos.tar.gz
+curl -LO https://github.com/incordai/Inbrowse/releases/latest/download/inbrowse-aarch64-macos.tar.gz
+tar xzf inbrowse-aarch64-macos.tar.gz
 
 # macOS Intel
-curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-macos.tar.gz
-tar xzf obscura-x86_64-macos.tar.gz
+curl -LO https://github.com/incordai/Inbrowse/releases/latest/download/inbrowse-x86_64-macos.tar.gz
+tar xzf inbrowse-x86_64-macos.tar.gz
 
 # Windows
 Download the `.zip` from the releases page and extract it manually.
 ```
 
 No Chrome, no Node.js, no dependencies. Release archives include both
-`obscura` and `obscura-worker`; keep them in the same directory for the
+`inbrowse` and `inbrowse-worker`; keep them in the same directory for the
 parallel `scrape` command.
 
 | Archive suffix | Rendering | Stealth transport |
@@ -196,30 +114,31 @@ usable on common LTS servers with glibc 2.35+.
 ### Docker
 
 ```bash
-docker run -d --name obscura -p 127.0.0.1:9222:9222 \
-  -e OBSCURA_CDP_TOKEN="$(openssl rand -hex 32)" \
-  h4ckf0r0day/obscura
+docker build -t inbrowse .
+docker run -d --name inbrowse -p 127.0.0.1:9222:9222 \
+  -e INBROWSE_CDP_TOKEN="$(openssl rand -hex 32)" \
+  inbrowse
 ```
 
-Image on [Docker Hub](https://hub.docker.com/r/h4ckf0r0day/obscura). Multi-stage build on `distroless/cc:nonroot` — no shell, no package manager, runs as uid 65532, ~57 MB compressed. A mounted `--storage-dir` must be writable by uid 65532. Publish to host loopback as above; `-p 9222:9222` exposes the port on every interface.
+Built from the repository's `Dockerfile`. Multi-stage build on `distroless/cc:nonroot` — no shell, no package manager, runs as uid 65532, ~57 MB compressed. A mounted `--storage-dir` must be writable by uid 65532. Publish to host loopback as above; `-p 9222:9222` exposes the port on every interface.
 
 ### Build from source
 
 ```bash
-git clone https://github.com/h4ckf0r0day/obscura.git
-cd obscura
+git clone https://github.com/incordai/Inbrowse.git
+cd inbrowse
 
 # Rendering
-cargo build --release -p obscura-cli --bins --features render
+cargo build --release -p inbrowse-cli --bins --features render
 
 # Rendering and stealth
-cargo build --release -p obscura-cli --bins --features render,stealth
+cargo build --release -p inbrowse-cli --bins --features render,stealth
 
 # No rendering
-cargo build --release -p obscura-cli --bins --no-default-features
+cargo build --release -p inbrowse-cli --bins --no-default-features
 
 # No rendering, with stealth
-cargo build --release -p obscura-cli --bins --no-default-features --features stealth
+cargo build --release -p inbrowse-cli --bins --no-default-features --features stealth
 ```
 
 Requires Rust 1.75+ ([rustup.rs](https://rustup.rs)). First build takes ~5 min (V8 compiles from source, cached after).
@@ -239,50 +158,50 @@ wreq/BoringSSL and therefore needs the additional build tools above.
 
 ```bash
 # Get the page title
-obscura fetch https://example.com --eval "document.title"
+inbrowse fetch https://example.com --eval "document.title"
 
 # Extract all links
-obscura fetch https://example.com --dump links
+inbrowse fetch https://example.com --dump links
 
 # Render JavaScript and dump HTML
-obscura fetch https://news.ycombinator.com --dump html
+inbrowse fetch https://news.ycombinator.com --dump html
 
 # Write dump or eval output to a file
-obscura fetch https://example.com --dump text --output page.txt
+inbrowse fetch https://example.com --dump text --output page.txt
 
 # Stream the raw response body verbatim (binary-safe; bypasses the JS/DOM layer).
 # Use this for images, JSON, JS, CSS, or any non-HTML resource.
-obscura fetch https://picsum.photos/200/300 --dump original > photo.jpg
+inbrowse fetch https://picsum.photos/200/300 --dump original > photo.jpg
 
 # List every sub-resource URL the page would fetch (NDJSON; one record per asset)
-obscura fetch https://example.com --dump assets
+inbrowse fetch https://example.com --dump assets
 
 # Fetch through an HTTP or SOCKS proxy
-obscura --proxy socks5://127.0.0.1:1080 fetch https://example.com --dump text
+inbrowse --proxy socks5://127.0.0.1:1080 fetch https://example.com --dump text
 
 # Wait for dynamic content
-obscura fetch https://example.com --wait-until networkidle0
+inbrowse fetch https://example.com --wait-until networkidle0
 
 # Bound navigation time for slow or broken pages
-obscura fetch https://example.com --timeout 10
+inbrowse fetch https://example.com --timeout 10
 
 # Capture the settled page as PNG
-obscura fetch https://example.com --screenshot page.png
+inbrowse fetch https://example.com --screenshot page.png
 
 # The screenshot flag also has a short form
-obscura fetch https://example.com -s page.png
+inbrowse fetch https://example.com -s page.png
 
 ### Testing against localhost / LAN dev servers
 
-Obscura blocks fetches to private/internal IPs by default (SSRF protection).
+Inbrowse blocks fetches to private/internal IPs by default (SSRF protection).
 To point it at a local dev server, pass `--allow-private-network` (or set
-`OBSCURA_ALLOW_PRIVATE_NETWORK=1`):
+`INBROWSE_ALLOW_PRIVATE_NETWORK=1`):
 
 ```bash
-obscura fetch http://127.0.0.1:3000 --allow-private-network --dump text
+inbrowse fetch http://127.0.0.1:3000 --allow-private-network --dump text
 
 # Works on any subcommand, e.g. the CDP server for local Puppeteer/Playwright:
-obscura serve --port 9222 --allow-private-network
+inbrowse serve --port 9222 --allow-private-network
 ```
 
 See [docs/Environment-variables.md](docs/Environment-variables.md) for the
@@ -315,25 +234,25 @@ platform font rasterization may differ from Chromium. The existing
 ### Start the CDP server
 
 ```bash
-obscura serve --port 9222
+inbrowse serve --port 9222
 
 # With stealth mode (anti-detection + tracker blocking)
-obscura serve --port 9222 --stealth
+inbrowse serve --port 9222 --stealth
 ```
 
 ### Scrape in parallel
 
 ```bash
-obscura scrape url1 url2 url3 ... \
+inbrowse scrape url1 url2 url3 ... \
   --concurrency 25 \
   --eval "document.querySelector('h1').textContent" \
   --format json
 
 # Suppress scrape progress on stderr for script-friendly output
-obscura scrape https://example.com --quiet --format json
+inbrowse scrape https://example.com --quiet --format json
 
 # Scrape workers inherit the global proxy
-obscura --proxy http://127.0.0.1:8080 scrape https://example.com https://news.ycombinator.com
+inbrowse --proxy http://127.0.0.1:8080 scrape https://example.com https://news.ycombinator.com
 ```
 
 ## Puppeteer / Playwright
@@ -394,20 +313,43 @@ await page.evaluate(() => {
   document.querySelector('#password').value = 'admin';
   document.querySelector('form').submit();
 });
-// Obscura handles the POST, follows the 302 redirect, maintains cookies
+// Inbrowse handles the POST, follows the 302 redirect, maintains cookies
 ```
 
 ## Benchmarks
 
 Page load:
 
-| Page | Obscura | Chrome |
+| Page | Inbrowse | Chrome |
 |------|---------|--------|
 | Static HTML | **51 ms** | ~500 ms |
 | JS + XHR + fetch | **84 ms** | ~800 ms |
 | Dynamic scripts | **78 ms** | ~700 ms |
 
 The full benchmark suite (WPT conformance, obstacle course, real-world corpus, and vs-Chrome speed) lives in a separate repo: https://github.com/h4ckf0r0day/obscura-benchmark
+
+## Host privacy
+
+An agent browsing with Inbrowse does not reveal the machine it runs on. Pages
+see a fixed browser profile rather than the host's own details, with or
+without `--stealth`:
+
+| A page reads | It gets | Not the host's |
+|---|---|---|
+| Timezone (`Intl`, `Date`) | `Europe/Berlin`, or `INBROWSE_TIMEZONE` | real zone, on Linux, macOS and Windows |
+| Language and locale | `en-US` | OS language and region |
+| `navigator.platform`, user agent | a Chrome-on-Windows profile | real OS and browser |
+| CPU cores, device memory, screen | values from a fixed set | real hardware |
+| Fonts | fonts bundled with Inbrowse | installed fonts, unless `--font-dir` is passed |
+| WebRTC | no network candidates | local IP addresses |
+
+The one thing the profile cannot hide is the **public IP address**: sites see
+the address the request leaves from. Route through a proxy to hide it, for
+example a VPN client's local SOCKS5 proxy mode:
+
+```bash
+inbrowse --proxy socks5://127.0.0.1:40000 fetch https://example.com --dump text
+```
 
 ## Stealth Mode
 
@@ -432,7 +374,7 @@ MCP functionality.
 
 ## CDP API
 
-Obscura implements the Chrome DevTools Protocol for Puppeteer/Playwright compatibility.
+Inbrowse implements the Chrome DevTools Protocol for Puppeteer/Playwright compatibility.
 
 | Domain | Methods |
 |--------|---------|
@@ -447,34 +389,34 @@ Obscura implements the Chrome DevTools Protocol for Puppeteer/Playwright compati
 | **Input** | dispatchMouseEvent, dispatchKeyEvent, dispatchTouchEvent, dispatchDragEvent, setInterceptDrags |
 | **LP** | getMarkdown (DOM-to-Markdown conversion) |
 
-To download a large resource without one giant `Network.getResponseBody` blob, call `Fetch.takeResponseBodyAsStream` then read it in chunks with `IO.read` / `IO.close`. Response bodies over the cache limit (`OBSCURA_NETWORK_BODY_BUFFER_BYTES`, default 2 MiB) are not retained, so raise that limit when you intend to stream large downloads.
+To download a large resource without one giant `Network.getResponseBody` blob, call `Fetch.takeResponseBodyAsStream` then read it in chunks with `IO.read` / `IO.close`. Response bodies over the cache limit (`INBROWSE_NETWORK_BODY_BUFFER_BYTES`, default 2 MiB) are not retained, so raise that limit when you intend to stream large downloads.
 ## CLI Reference
 
 ### Tuning V8
 
-Obscura embeds V8 directly. Use `--v8-flags` to pass raw flags through to V8, same syntax as Chromium's `--js-flags` and Node's command-line flags. Most common use is raising the heap cap to fix `JavaScript heap out of memory` on JS-heavy pages:
+Inbrowse embeds V8 directly. Use `--v8-flags` to pass raw flags through to V8, same syntax as Chromium's `--js-flags` and Node's command-line flags. Most common use is raising the heap cap to fix `JavaScript heap out of memory` on JS-heavy pages:
 
 ```bash
-obscura --v8-flags "--max-old-space-size=4096" fetch <url>
+inbrowse --v8-flags "--max-old-space-size=4096" fetch <url>
 ```
 
 ### Heavy SPAs (script execution budget)
 
-Obscura caps the page's script-execution phase so one slow or hung page cannot stall a worker. The default budget is 30s; pages that finish sooner return immediately, so the cap only affects pages that keep running. A very heavy React/Vue/Angular SPA on a slow network can need more time to boot before it fires its data requests. Raise the budget with `OBSCURA_SCRIPT_DEADLINE_MS` (milliseconds), and pair it with a matching navigation timeout in your CDP client:
+Inbrowse caps the page's script-execution phase so one slow or hung page cannot stall a worker. The default budget is 30s; pages that finish sooner return immediately, so the cap only affects pages that keep running. A very heavy React/Vue/Angular SPA on a slow network can need more time to boot before it fires its data requests. Raise the budget with `INBROWSE_SCRIPT_DEADLINE_MS` (milliseconds), and pair it with a matching navigation timeout in your CDP client:
 
 ```bash
-OBSCURA_SCRIPT_DEADLINE_MS=60000 obscura serve --port 9222
+INBROWSE_SCRIPT_DEADLINE_MS=60000 inbrowse serve --port 9222
 ```
 
 Modules that enhance an already-rendered page have a separate 3s per-module budget so one non-essential module cannot hold navigation open. Raise it for legitimate long-running modules such as a Vite HMR client:
 
 ```bash
-OBSCURA_MODULE_BUDGET_MS=10000 obscura serve --port 9222
+INBROWSE_MODULE_BUDGET_MS=10000 inbrowse serve --port 9222
 ```
 
-An unmounted SPA shell already gives its app modules the full `OBSCURA_SCRIPT_DEADLINE_MS` budget. `OBSCURA_FETCH_TIMEOUT_MS` controls the module's network request, not its evaluation time. See [Environment variables](docs/Environment-variables.md) for the complete timeout model.
+An unmounted SPA shell already gives its app modules the full `INBROWSE_SCRIPT_DEADLINE_MS` budget. `INBROWSE_FETCH_TIMEOUT_MS` controls the module's network request, not its evaluation time. See [Environment variables](docs/Environment-variables.md) for the complete timeout model.
 
-### `obscura serve`
+### `inbrowse serve`
 
 Start a CDP WebSocket server.
 
@@ -501,7 +443,7 @@ connections it already has until they close (or the drain timeout passes), then
 exits. Each recycle is logged with its reason.
 Worker errors remain visible on stderr.
 
-### `obscura fetch <URL>`
+### `inbrowse fetch <URL>`
 
 Fetch and render a single page.
 
@@ -520,7 +462,7 @@ Fetch and render a single page.
 | `--quiet` | off | Suppress banner |
 | `--proxy` | — | Inherited global HTTP/SOCKS5 proxy URL |
 
-### `obscura scrape <URL...>`
+### `inbrowse scrape <URL...>`
 
 Scrape multiple URLs in parallel with worker processes.
 
@@ -538,20 +480,20 @@ remain in input order. URL input and completed results are still held in memory.
 
 ## MCP (Model Context Protocol)
 
-Obscura ships an MCP server that exposes browser automation tools to AI agents (Claude Desktop, Cursor, etc.).
+Inbrowse ships an MCP server that exposes browser automation tools to AI agents (Claude Desktop, Cursor, etc.).
 
 ### Start
 
 **stdio** (default) — for Claude Desktop and MCP clients that launch a subprocess:
 
 ```bash
-obscura mcp
+inbrowse mcp
 ```
 
 **HTTP** — for clients that connect over the network:
 
 ```bash
-obscura mcp --http --port 8080
+inbrowse mcp --http --port 8080
 # endpoint: http://127.0.0.1:8080/mcp
 ```
 
@@ -569,8 +511,8 @@ Optional flags (both transports):
 ```json
 {
   "mcpServers": {
-    "obscura": {
-      "command": "obscura",
+    "inbrowse": {
+      "command": "inbrowse",
       "args": ["mcp"]
     }
   }
@@ -599,12 +541,11 @@ Optional flags (both transports):
 The MCP server exposes still-image and PDF output. Use CDP when you need the
 streaming `Page.startScreencast` protocol.
 
-## Integrations
-
-- **[Hermes agent plugin](https://github.com/SGavrl/hermes-plugin-obscura)**: run [Hermes](https://github.com/NousResearch/hermes-agent) agent browser tasks on Obscura. The plugin spawns `obscura serve` per session (or connects to an already running server) and drives it over CDP, with optional `--stealth`.
-
 ## License
 
-Apache 2.0
+Apache-2.0. Copyright 2026 Incord AI. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Inbrowse is based on [obscura](https://github.com/h4ckf0r0day/obscura) (Apache-2.0).
+The speed and memory figures above are obscura's published measurements.
 
 ---

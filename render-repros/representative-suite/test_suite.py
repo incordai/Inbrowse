@@ -17,9 +17,9 @@ class RepresentativeSuiteTests(unittest.TestCase):
     def run_wrapper(self, *arguments, extra_environment=None):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
-            obscura = temporary / "obscura"
-            obscura.write_text("#!/usr/bin/env sh\nexit 0\n")
-            obscura.chmod(obscura.stat().st_mode | stat.S_IXUSR)
+            inbrowse = temporary / "inbrowse"
+            inbrowse.write_text("#!/usr/bin/env sh\nexit 0\n")
+            inbrowse.chmod(inbrowse.stat().st_mode | stat.S_IXUSR)
 
             invocation = temporary / "invocation.txt"
             python = temporary / "python"
@@ -34,7 +34,7 @@ class RepresentativeSuiteTests(unittest.TestCase):
             environment.update(
                 {
                     "INVOCATION": str(invocation),
-                    "OBSCURA_BIN": str(obscura),
+                    "INBROWSE_BIN": str(inbrowse),
                     "PYTHON_BIN": str(python),
                 }
             )
@@ -54,10 +54,10 @@ class RepresentativeSuiteTests(unittest.TestCase):
                 if invocation.exists()
                 else []
             )
-            return result, invoked_arguments, str(output), str(obscura)
+            return result, invoked_arguments, str(output), str(inbrowse)
 
     def test_default_invocation_pins_capture_conditions_and_generic_probes(self):
-        result, arguments, output, obscura = self.run_wrapper()
+        result, arguments, output, inbrowse = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             arguments[:2],
@@ -69,8 +69,8 @@ class RepresentativeSuiteTests(unittest.TestCase):
         self.assertEqual(
             arguments[2:12],
             [
-                "--obscura-bin",
-                obscura,
+                "--inbrowse-bin",
+                inbrowse,
                 "--out",
                 output,
                 "--width",
@@ -111,7 +111,7 @@ class RepresentativeSuiteTests(unittest.TestCase):
             "bottom",
             extra_environment={
                 "CHROMIUM_BIN": "/opt/chromium",
-                "BASELINE_BIN": "/opt/obscura-baseline",
+                "BASELINE_BIN": "/opt/inbrowse-baseline",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -119,7 +119,7 @@ class RepresentativeSuiteTests(unittest.TestCase):
             "--chromium-bin",
             "/opt/chromium",
             "--baseline-bin",
-            "/opt/obscura-baseline",
+            "/opt/inbrowse-baseline",
             "--scroll-y",
             "bottom",
         ])

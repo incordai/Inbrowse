@@ -5,12 +5,12 @@ normal-motion green bar must measure 100×30 CSS pixels. The public CDP probe
 also selects reduced motion, where both geometry and painted width must be 40.
 
 With the existing rendering harness's Python dependencies (Playwright and
-Pillow), start a render-enabled Obscura CDP server and run:
+Pillow), start a render-enabled Inbrowse CDP server and run:
 
 ```sh
-obscura serve --host 127.0.0.1 --port 9222
+inbrowse serve --host 127.0.0.1 --port 9222
 python3 render-repros/capture-media-emulation.py \
-  --endpoint http://127.0.0.1:9222 --out /tmp/media-obscura
+  --endpoint http://127.0.0.1:9222 --out /tmp/media-inbrowse
 python3 render-repros/capture-media-emulation.py \
   --chromium-bin /path/to/chrome --out /tmp/media-chrome
 ```

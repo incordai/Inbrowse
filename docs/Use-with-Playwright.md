@@ -1,7 +1,7 @@
 ## Setup
 
 ```bash
-obscura serve --port 9222
+inbrowse serve --port 9222
 npm install playwright
 ```
 
@@ -107,7 +107,7 @@ await client.detach();
 
 These are native V8 isolate byte counts, not process memory. Reading them does
 not run page tasks or force collection. `embedderHeapUsedSize` is zero because
-Obscura's Rust DOM is not a V8-managed cppgc heap; Rust allocations and renderer
+Inbrowse's Rust DOM is not a V8-managed cppgc heap; Rust allocations and renderer
 memory are not included.
 
 ## Application timing
@@ -195,7 +195,7 @@ Frames are activity-driven page captures, not fixed-rate desktop video.
 ## Disconnect
 
 ```js
-await browser.close();  // closes the CDP connection, leaves obscura serve running
+await browser.close();  // closes the CDP connection, leaves inbrowse serve running
 ```
 
 ## Fetch cancellation
@@ -235,7 +235,7 @@ early parent abort listener, before dependent abort steps run.
 - Playwright `page.video()` and tracing artifacts that require desktop capture
   are not implemented. Use the raw CDP flow above for page frames.
 - `BrowserContext` storage-state save/restore remains limited; use
-  `--storage-dir` on `obscura serve`, as described in
+  `--storage-dir` on `inbrowse serve`, as described in
   [Persist cookies and storage](Persist-cookies-and-storage.md).
 - Service workers, native media, some Web APIs, long-tail CSS, and compositor
   behavior remain incomplete relative to Chromium.

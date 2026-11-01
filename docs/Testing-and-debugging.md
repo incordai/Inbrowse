@@ -9,14 +9,14 @@ cargo nextest run --release --features render --no-fail-fast
 Crate-scoped:
 
 ```bash
-cargo nextest run --release --features render -p obscura-cdp
-cargo nextest run --release --features render -p obscura-browser
+cargo nextest run --release --features render -p inbrowse-cdp
+cargo nextest run --release --features render -p inbrowse
 ```
 
 By name, also selecting the crate and test target:
 
 ```bash
-rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo nextest run --release --features render -p obscura-js --lib completed_scripts_do_not_wait_for_watchdog_deadline
+rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo nextest run --release --features render -p inbrowse-js --lib completed_scripts_do_not_wait_for_watchdog_deadline
 ```
 
 Use `cargo nextest`, not `cargo test`. Runtime tests require process isolation
@@ -26,7 +26,7 @@ release mode; debug builds are not a fidelity or performance gate.
 ### Fast edit/test loop
 
 For runtime unit tests, the `test-js` Cargo alias enables incremental compilation
-only for `obscura-js`, retaining release optimization and reusing dependencies:
+only for `inbrowse-js`, retaining release optimization and reusing dependencies:
 
 ```bash
 rtk proxy env -u CARGO_INCREMENTAL CARGO_BUILD_JOBS=2 cargo test-js -E 'test(classic_script_url_is_dynamic_import_referrer)'
@@ -42,7 +42,7 @@ For other crates, select the affected binary before applying a test-name filter.
 CDP integration tests share one binary; select a module within it:
 
 ```bash
-rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo nextest run --release --features render -p obscura-cdp --test integration -E 'test(page_frame_contract::)'
+rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo nextest run --release --features render -p inbrowse-cdp --test integration -E 'test(page_frame_contract::)'
 ```
 
 `-p` selects packages; `--lib` or `--test NAME` selects binaries to compile.
@@ -64,7 +64,7 @@ and nextest's [target selection](https://nexte.st/docs/running/).
 
 ### CDP parity tests
 
-`crates/obscura-cdp/tests/*.rs` exercise CDP methods end-to-end with a real
+`crates/inbrowse-cdp/tests/*.rs` exercise CDP methods end-to-end with a real
 `dispatch` call and an in-process HTTP server. `integration.rs` registers these
 files as modules in one binary to avoid repeatedly linking the browser engine.
 Nextest still runs each test in its own process. Register new files in its
@@ -78,7 +78,7 @@ Pattern:
 ```rust
 #[tokio::test(flavor = "current_thread")]
 async fn my_test() {
-    std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
+    std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
     let url = serve_once().await;
     let mut ctx = CdpContext::new();
     let page_id = ctx.create_page();
@@ -95,19 +95,19 @@ async fn my_test() {
 ## Logging
 
 ```bash
-RUST_LOG=obscura=info  obscura serve
-RUST_LOG=obscura=debug obscura serve
-RUST_LOG=obscura_cdp=trace,obscura_browser=debug obscura serve
+RUST_LOG=inbrowse=info  inbrowse serve
+RUST_LOG=inbrowse=debug inbrowse serve
+RUST_LOG=inbrowse_cdp=trace,inbrowse=debug inbrowse serve
 ```
 
 Logs go to stderr.
 
-`--verbose` on any subcommand is equivalent to `RUST_LOG=obscura=info`.
+`--verbose` on any subcommand is equivalent to `RUST_LOG=inbrowse=info`.
 
 ## Driving the CDP server manually
 
 ```bash
-obscura serve --port 9222 --verbose
+inbrowse serve --port 9222 --verbose
 ```
 
 In another shell:
@@ -128,13 +128,13 @@ Useful for reproducing what Puppeteer or Playwright is doing without their abstr
 
 The runtime embeds a generated V8 snapshot, not `bootstrap.js` directly.
 Restored build artifacts can contain an older snapshot even when the Rust ops
-are current. Confirm which `OBSCURA_SNAPSHOT.bin` the binary's dependency file
+are current. Confirm which `INBROWSE_SNAPSHOT.bin` the binary's dependency file
 under `target/release/deps/` references before changing engine behavior.
 To regenerate the snapshot while retaining dependency caches:
 
 ```bash
-rtk proxy touch crates/obscura-js/js/bootstrap.js
-rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo build --release -p obscura-cli --bins --features render
+rtk proxy touch crates/inbrowse-js/js/bootstrap.js
+rtk proxy env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo build --release -p inbrowse-cli --bins --features render
 ```
 
 Then rerun the failing nextest command, which rebuilds its own feature-specific
@@ -143,11 +143,11 @@ feature configurations.
 
 ### `Target.createTarget timed out`
 
-Lock contention in the dispatcher. Should not happen on current main. If it does, run with `RUST_LOG=obscura_cdp=trace`, look for handlers that hold `v8_lock` across long awaits.
+Lock contention in the dispatcher. Should not happen on current main. If it does, run with `RUST_LOG=inbrowse_cdp=trace`, look for handlers that hold `v8_lock` across long awaits.
 
 ### `page.goto()` returns `null` from Puppeteer
 
-Means `Network.requestWillBeSent` for the main document did not arrive with `requestId == loaderId`. Check `do_navigate` in `crates/obscura-cdp/src/domains/page.rs`.
+Means `Network.requestWillBeSent` for the main document did not arrive with `requestId == loaderId`. Check `do_navigate` in `crates/inbrowse-cdp/src/domains/page.rs`.
 
 ### `Cannot find context with specified id`
 
@@ -159,7 +159,7 @@ Two pages tried to use V8 concurrently. The `v8_lock` was bypassed, or a handler
 
 ### Test hangs
 
-A handler is awaiting something that never resolves. Run with `RUST_LOG=obscura=trace` and check the last log line before the hang.
+A handler is awaiting something that never resolves. Run with `RUST_LOG=inbrowse=trace` and check the last log line before the hang.
 
 ## Reproducing user bug reports
 
@@ -174,9 +174,9 @@ real-site suite at both the top and bottom of pages:
 
 ```bash
 RUN_ROOT="$(mktemp -d)"
-OBSCURA_BIN=./target/release/obscura render-repros/run.sh "$RUN_ROOT/fixtures"
-OBSCURA_BIN=./target/release/obscura render-repros/representative-suite/run.sh "$RUN_ROOT/top"
-OBSCURA_BIN=./target/release/obscura render-repros/representative-suite/run.sh "$RUN_ROOT/bottom" bottom
+INBROWSE_BIN=./target/release/inbrowse render-repros/run.sh "$RUN_ROOT/fixtures"
+INBROWSE_BIN=./target/release/inbrowse render-repros/representative-suite/run.sh "$RUN_ROOT/top"
+INBROWSE_BIN=./target/release/inbrowse render-repros/representative-suite/run.sh "$RUN_ROOT/bottom" bottom
 ```
 
 Set `BASELINE_BIN` or `CHROMIUM_BIN` when producing paired captures. Keep the
@@ -192,21 +192,21 @@ CPU with `perf` and a flamegraph:
 
 ```bash
 cargo build --release --features render
-perf record -F 99 -g -- ./target/release/obscura fetch https://heavy-spa.example
+perf record -F 99 -g -- ./target/release/inbrowse fetch https://heavy-spa.example
 perf script | flamegraph.pl > flame.svg
 ```
 
 Memory with heaptrack:
 
 ```bash
-heaptrack ./target/release/obscura serve
+heaptrack ./target/release/inbrowse serve
 ```
 
 Tokio task inspection:
 
 ```bash
 RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features render
-./target/release/obscura serve
+./target/release/inbrowse serve
 # in another shell
 tokio-console
 ```

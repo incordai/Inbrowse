@@ -1,14 +1,14 @@
-`obscura mcp` exposes obscura as a Model Context Protocol server so MCP-capable clients (Claude Desktop, Claude Code, etc.) can drive it.
+`inbrowse mcp` exposes inbrowse as a Model Context Protocol server so MCP-capable clients (Claude Desktop, Claude Code, etc.) can drive it.
 
 Render-enabled builds can load additional fonts for screenshots and PDF output:
 
 ```bash
-obscura mcp --font-dir /path/to/fonts
+inbrowse mcp --font-dir /path/to/fonts
 ```
 
 Repeat `--font-dir` to load multiple directories. It recursively loads TTF, TTC,
 OTF, and OTC files once before rendering, using the same opt-in font database as
-`obscura serve`. System fonts are not scanned automatically. Invalid directories
+`inbrowse serve`. System fonts are not scanned automatically. Invalid directories
 fail at startup, and no-render builds reject a nonempty font directory option.
 The option works with both stdio and HTTP transports.
 
@@ -17,39 +17,39 @@ The option works with both stdio and HTTP transports.
 Stdio (default, for direct client integration):
 
 ```bash
-obscura mcp
+inbrowse mcp
 ```
 
 HTTP (for remote or shared use):
 
 ```bash
-obscura mcp --http --port 3000
+inbrowse mcp --http --port 3000
 ```
 
 The HTTP transport binds `127.0.0.1` by default. Bind all interfaces with `--host` for a container or sidecar deployment:
 
 ```bash
-obscura mcp --http --host 0.0.0.0 --port 3000
+inbrowse mcp --http --host 0.0.0.0 --port 3000
 ```
 
 With stealth and proxy:
 
 ```bash
-obscura mcp --stealth --proxy http://proxy.example.com:8080
+inbrowse mcp --stealth --proxy http://proxy.example.com:8080
 ```
 
 ## Security
 
 The HTTP transport exposes a privileged browser session. Its guards are:
 
-- **Bearer authentication.** Set `OBSCURA_MCP_TOKEN` and send it in the `Authorization: Bearer ...` header. A non-loopback bind is refused without a token of at least 32 bytes.
-- **Origin allowlist.** Browser requests are refused by default. Set `OBSCURA_MCP_ALLOWED_ORIGINS` to permit specific browser origins. Native clients send no `Origin` and are unaffected.
+- **Bearer authentication.** Set `INBROWSE_MCP_TOKEN` and send it in the `Authorization: Bearer ...` header. A non-loopback bind is refused without a token of at least 32 bytes.
+- **Origin allowlist.** Browser requests are refused by default. Set `INBROWSE_MCP_ALLOWED_ORIGINS` to permit specific browser origins. Native clients send no `Origin` and are unaffected.
 - **Resource bounds.** Request bodies, headers, JSON-RPC batches, pending work, and live connections are bounded.
 
 ```bash
-OBSCURA_MCP_TOKEN="$(openssl rand -hex 32)" \
-OBSCURA_MCP_ALLOWED_ORIGINS="https://app.example.com" \
-  obscura mcp --http --host 0.0.0.0
+INBROWSE_MCP_TOKEN="$(openssl rand -hex 32)" \
+INBROWSE_MCP_ALLOWED_ORIGINS="https://app.example.com" \
+  inbrowse mcp --http --host 0.0.0.0
 ```
 
 ## Tools exposed
@@ -161,20 +161,20 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ```json
 {
   "mcpServers": {
-    "obscura": {
-      "command": "/path/to/obscura",
+    "inbrowse": {
+      "command": "/path/to/inbrowse",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. The obscura tools appear in the tool list.
+Restart Claude Desktop. The inbrowse tools appear in the tool list.
 
 ## Claude Code
 
 ```bash
-claude mcp add obscura /path/to/obscura mcp
+claude mcp add inbrowse /path/to/inbrowse mcp
 ```
 
 ## With stealth in config
@@ -182,8 +182,8 @@ claude mcp add obscura /path/to/obscura mcp
 ```json
 {
   "mcpServers": {
-    "obscura": {
-      "command": "/path/to/obscura",
+    "inbrowse": {
+      "command": "/path/to/inbrowse",
       "args": ["mcp", "--stealth"]
     }
   }
@@ -192,6 +192,6 @@ claude mcp add obscura /path/to/obscura mcp
 
 Local and private network addresses are blocked by default. CLI and stdio MCP
 navigation errors explain the existing `--allow-private-network` /
-`OBSCURA_ALLOW_PRIVATE_NETWORK=1` opt-in for your own local services. The hint
+`INBROWSE_ALLOW_PRIVATE_NETWORK=1` opt-in for your own local services. The hint
 does not grant access, is omitted for known metadata endpoints and special
 address ranges, and is not shown by the HTTP MCP transport.

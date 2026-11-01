@@ -26,7 +26,7 @@ class PairMetricsTests(unittest.TestCase):
                 image[20:120, 260:460] = [112, 72, 232]
                 if extra_component:
                     image[140:170, 20:60] = [232, 89, 12]
-                for engine in ("obscura", "chrome"):
+                for engine in ("inbrowse", "chrome"):
                     Image.fromarray(image).save(out / f"sparse-grid-scroll.{engine}.png")
                 with patch.object(sys, "argv", ["check.py", str(out)]), \
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -37,7 +37,7 @@ class PairMetricsTests(unittest.TestCase):
                     else:
                         main()
                 report = json.loads((out / "analysis.json").read_text())
-                for engine in ("obscura", "chromium"):
+                for engine in ("inbrowse", "chromium"):
                     check = report["fixtures"]["sparse-grid-scroll"]["behavior"][engine][-1]
                     self.assertEqual(check["passed"], not extra_component)
 

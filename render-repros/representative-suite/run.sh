@@ -5,7 +5,7 @@ SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SUITE_DIR/../.." && pwd)"
 PAIRED_CORPUS="$REPO_ROOT/render-repros/paired-corpus.py"
 SITES="$SUITE_DIR/sites.txt"
-OBSCURA="${OBSCURA_BIN:-$REPO_ROOT/target/release/obscura}"
+INBROWSE="${INBROWSE_BIN:-$REPO_ROOT/target/release/inbrowse}"
 PYTHON="${PYTHON_BIN:-python3}"
 
 usage() {
@@ -60,15 +60,15 @@ if [[ -e "$OUT" ]]; then
   echo "output path already exists: $OUT" >&2
   exit 2
 fi
-if [[ ! -x "$OBSCURA" ]]; then
-  echo "Obscura binary is not executable: $OBSCURA" >&2
+if [[ ! -x "$INBROWSE" ]]; then
+  echo "Inbrowse binary is not executable: $INBROWSE" >&2
   exit 2
 fi
 
 args=(
   "$PAIRED_CORPUS"
   "$SITES"
-  --obscura-bin "$OBSCURA"
+  --inbrowse-bin "$INBROWSE"
   --out "$OUT"
   --width 1440
   --height 1000

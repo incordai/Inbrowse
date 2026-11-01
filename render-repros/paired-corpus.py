@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture Obscura and Chromium concurrently with the same real settle delay.
+"""Capture Inbrowse and Chromium concurrently with the same real settle delay.
 
 Every run uses a new output directory, checks process status and non-empty
 screenshots, records browser versions and timings, and reports raw full-canvas
@@ -9,7 +9,7 @@ fingerprints, viewport geometry, and JS-visible resource-readiness state at
 capture time. Repeatable `--geometry-selector` probes can additionally retain
 bounded, viewport-relative element rects from that same pre-screenshot sample.
 It deliberately emits no aggregate parity verdict. An optional pre-change
-Obscura binary can be captured concurrently so regressions are compared
+Inbrowse binary can be captured concurrently so regressions are compared
 against the same live-page moment.
 """
 
@@ -42,9 +42,9 @@ CANONICAL_USER_AGENT = (
 CANONICAL_PLATFORM = "Win32"
 CANONICAL_UA_PLATFORM = "Windows"
 CANONICAL_UA_PLATFORM_VERSION = "10.0.0"
-CANONICAL_OBSCURA_PROFILE = 0
+CANONICAL_INBROWSE_PROFILE = 0
 CANONICAL_COLOR_SCHEME = "light"
-# Obscura currently models the default motion preference, not `reduce`.
+# Inbrowse currently models the default motion preference, not `reduce`.
 CANONICAL_REDUCED_MOTION = "no-preference"
 EXPECTED_MEDIA_MATCHES = {
     "prefers_color_scheme_light": True,
@@ -231,10 +231,10 @@ def feature_probe_javascript(box_quad_unavailable_reason):
         "let featureProbeComparisonIndex=0;"
         "for(let domIndex=0;domIndex<featureProbeScanned;domIndex++){"
         "const element=featureProbeElements[domIndex];"
-        "const obscuraStyleMirror=element.tagName==='STYLE'&&"
-        "(element.hasAttribute('data-obscura-external-stylesheets')||"
-        "element.hasAttribute('data-obscura-linked'));"
-        "if(obscuraStyleMirror)continue;"
+        "const inbrowseStyleMirror=element.tagName==='STYLE'&&"
+        "(element.hasAttribute('data-inbrowse-external-stylesheets')||"
+        "element.hasAttribute('data-inbrowse-linked'));"
+        "if(inbrowseStyleMirror)continue;"
         "const comparisonIndex=featureProbeComparisonIndex++;"
         "const style=getComputedStyle(element);"
         "const transformReasons=[];"
@@ -323,7 +323,7 @@ def parse_scroll_y(value):
 
 def scroll_eval_expression(scroll):
     """Compatibility wrapper used by older callers and focused tests."""
-    return obscura_state_eval_expression(scroll)
+    return inbrowse_state_eval_expression(scroll)
 
 
 def reassert_chromium_controlled_scroll(page, scroll):
@@ -381,7 +381,7 @@ def reassert_chromium_controlled_scroll(page, scroll):
     )
 
 
-def obscura_state_eval_expression(
+def inbrowse_state_eval_expression(
     scroll,
     geometry_selectors=None,
     sampled_phase="before-cli-post-eval-settle",
@@ -432,7 +432,7 @@ def obscura_state_eval_expression(
         + "const root=document.documentElement,body=document.body;"
         "const dom=root?root.outerHTML:'';"
         "const injectedStyles=root?Array.from(root.querySelectorAll("
-        "'style[data-obscura-external-stylesheets],style[data-obscura-linked]'"
+        "'style[data-inbrowse-external-stylesheets],style[data-inbrowse-linked]'"
         ")):[];"
         "const normalizedDom=injectedStyles.reduce((html,node)=>"
         "typeof node.outerHTML==='string'?html.replace(node.outerHTML,''):html,dom);"
@@ -443,7 +443,7 @@ def obscura_state_eval_expression(
         "h=Math.imul(h,16777619)}"
         "return ('00000000'+(h>>>0).toString(16)).slice(-8)};"
         + feature_probe_javascript(
-            "Obscura CLI capture does not expose node-scoped CDP "
+            "Inbrowse CLI capture does not expose node-scoped CDP "
             "DOM.getBoxModel at the screenshot boundary"
         )
         + geometry_setup
@@ -489,7 +489,7 @@ def obscura_state_eval_expression(
     )
 
 
-def parse_obscura_capture_report(stdout):
+def parse_inbrowse_capture_report(stdout):
     """Parse the CLI's evaluation plus authoritative screenshot capture state."""
     for line in reversed(stdout.splitlines()):
         try:
@@ -537,8 +537,8 @@ def parse_obscura_capture_report(stdout):
     return None
 
 
-def parse_obscura_scroll_report(stdout):
-    state = parse_obscura_capture_report(stdout)
+def parse_inbrowse_scroll_report(stdout):
+    state = parse_inbrowse_capture_report(stdout)
     if state is None:
         return None
     geometry = state.get("geometry") or {}
@@ -581,46 +581,46 @@ def parse_obscura_scroll_report(stdout):
     }
 
 
-def obscura_environment(width, height, animation_time_ms=None):
+def inbrowse_environment(width, height, animation_time_ms=None):
     env = dict(
         os.environ,
-        OBSCURA_SHOT_W=str(width),
-        OBSCURA_SHOT_H=str(height),
-        OBSCURA_ALLOW_PRIVATE_NETWORK="1",
+        INBROWSE_SHOT_W=str(width),
+        INBROWSE_SHOT_H=str(height),
+        INBROWSE_ALLOW_PRIVATE_NETWORK="1",
         # Product fetches return early when the event loop becomes idle. Paired
         # captures instead need the same complete post-load wall interval that
         # Playwright's wait_for_timeout below uses.
-        OBSCURA_STRICT_SETTLE="1",
+        INBROWSE_STRICT_SETTLE="1",
         # Match Playwright's 50-second goto allowance. This is the browser
         # engine's millisecond ceiling, distinct from the CLI's seconds unit.
-        OBSCURA_NAV_TIMEOUT_MS="50000",
+        INBROWSE_NAV_TIMEOUT_MS="50000",
         # Pin the navigator platform/profile as well as the explicit UA. A
         # randomized platform changes responsive content and font selection,
         # making a renderer comparison answer the wrong question.
-        OBSCURA_PROFILE=str(CANONICAL_OBSCURA_PROFILE),
+        INBROWSE_PROFILE=str(CANONICAL_INBROWSE_PROFILE),
         # Run the paired corpus's read-only state/selector evaluation only after
         # all settle phases and the final scroll reassertion. No event-loop
         # pumping occurs between that evaluation and screenshot paint.
-        OBSCURA_SHOT_EVAL_AT_CAPTURE="1",
+        INBROWSE_SHOT_EVAL_AT_CAPTURE="1",
         # Resolve the exact retained image/font graph with one throwaway paint
         # before resource-readiness state is sampled. Chromium performs the
         # same warm-up shot in the paired process.
-        OBSCURA_SHOT_RESOURCE_WARMUP="1",
+        INBROWSE_SHOT_RESOURCE_WARMUP="1",
     )
     if animation_time_ms is not None:
-        env["OBSCURA_SHOT_ANIMATION_TIME_MS"] = str(animation_time_ms)
+        env["INBROWSE_SHOT_ANIMATION_TIME_MS"] = str(animation_time_ms)
     return env
 
 
 def with_controlled_scroll_environment(env, scroll):
     """Copy capture-only final scroll coordinates into the CLI environment."""
     if scroll is not None:
-        env["OBSCURA_SHOT_SCROLL_X"] = str(scroll[0])
-        env["OBSCURA_SHOT_SCROLL_Y"] = str(scroll[1])
+        env["INBROWSE_SHOT_SCROLL_X"] = str(scroll[0])
+        env["INBROWSE_SHOT_SCROLL_Y"] = str(scroll[1])
     return env
 
 
-def probe_obscura_identity(binary):
+def probe_inbrowse_identity(binary):
     expression = (
         "JSON.stringify({userAgent:navigator.userAgent,"
         "platform:navigator.platform,"
@@ -647,7 +647,7 @@ def probe_obscura_identity(binary):
         "0",
         "--quiet",
     ]
-    env = obscura_environment(1, 1)
+    env = inbrowse_environment(1, 1)
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=15, env=env
@@ -669,7 +669,7 @@ def probe_obscura_identity(binary):
         return {"ok": False, "status": "probe-error", "diagnostic": str(error)}
 
 
-def probe_obscura_css_media(binary):
+def probe_inbrowse_css_media(binary):
     """Verify the renderer's CSS media evaluator, not only JS matchMedia."""
     html = """<!doctype html><style>
       html,body{margin:0}
@@ -681,7 +681,7 @@ def probe_obscura_css_media(binary):
       @media (prefers-reduced-motion:reduce){#motion{background:#ffff00}}
       </style><div id=scheme></div><div id=motion></div>"""
     url = "data:text/html," + urllib.parse.quote(html, safe="")
-    with tempfile.TemporaryDirectory(prefix="obscura-media-probe-") as directory:
+    with tempfile.TemporaryDirectory(prefix="inbrowse-media-probe-") as directory:
         screenshot = Path(directory) / "probe.png"
         command = [
             binary,
@@ -703,7 +703,7 @@ def probe_obscura_css_media(binary):
                 capture_output=True,
                 text=True,
                 timeout=15,
-                env=obscura_environment(8, 4),
+                env=inbrowse_environment(8, 4),
             )
             if result.returncode != 0 or not screenshot.is_file():
                 return {
@@ -731,7 +731,7 @@ def probe_obscura_css_media(binary):
             return {"ok": False, "status": "probe-error", "diagnostic": str(error)}
 
 
-def capture_obscura(
+def capture_inbrowse(
     binary,
     url,
     screenshot,
@@ -744,7 +744,7 @@ def capture_obscura(
     animation_time_ms=None,
 ):
     env = with_controlled_scroll_environment(
-        obscura_environment(width, height, animation_time_ms), scroll
+        inbrowse_environment(width, height, animation_time_ms), scroll
     )
     command = [
         binary,
@@ -759,7 +759,7 @@ def capture_obscura(
         "--wait",
         f"{settle_ms / 1000:g}",
     ]
-    state_expression = obscura_state_eval_expression(
+    state_expression = inbrowse_state_eval_expression(
         None,
         geometry_selectors,
         sampled_phase=CAPTURE_BOUNDARY_PHASE,
@@ -772,7 +772,7 @@ def capture_obscura(
         )
         log.write_text(result.stdout + result.stderr)
         state = (
-            parse_obscura_capture_report(result.stdout)
+            parse_inbrowse_capture_report(result.stdout)
             if result.returncode == 0
             else None
         )
@@ -781,7 +781,7 @@ def capture_obscura(
             media["matches_configured"] = media_matches_configured(media)
             state["media"] = media
         scroll_state = (
-            parse_obscura_scroll_report(result.stdout)
+            parse_inbrowse_scroll_report(result.stdout)
             if scroll is not None and state is not None
             else None
         )
@@ -808,7 +808,7 @@ def capture_obscura(
 
 
 def chromium_identity_override(session):
-    """Keep request headers and navigator identity aligned with Obscura."""
+    """Keep request headers and navigator identity aligned with Inbrowse."""
     match = re.search(r"Chrome/(\d+)", CANONICAL_USER_AGENT)
     major = int(match.group(1)) if match else 143
     grease = {
@@ -878,7 +878,7 @@ def capture_chromium_state(page, geometry_selectors=None):
           const body = document.body;
           const dom = root ? root.outerHTML : "";
           const injectedStyles = root ? Array.from(root.querySelectorAll(
-            "style[data-obscura-external-stylesheets],style[data-obscura-linked]"
+            "style[data-inbrowse-external-stylesheets],style[data-inbrowse-linked]"
           )) : [];
           const normalizedDom = injectedStyles.reduce(
             (html, node) => typeof node.outerHTML === "string"
@@ -1072,7 +1072,7 @@ def attach_chromium_box_quads(session, state):
         "reason": None,
     }
     models = {}
-    object_group = "obscura-parity-feature-probes"
+    object_group = "inbrowse-parity-feature-probes"
     try:
         for dom_index in unique_indices:
             try:
@@ -1296,7 +1296,7 @@ def capture_chromium_image(
 def warm_chromium_capture(page):
     """Resolve paint-time resources before capture-boundary state sampling."""
     page.screenshot(full_page=False, timeout=50000)
-    # Yield one bounded browser task turn, matching the Obscura CLI warm-up.
+    # Yield one bounded browser task turn, matching the Inbrowse CLI warm-up.
     page.wait_for_timeout(1)
     return {
         "performed": True,
@@ -1366,11 +1366,11 @@ def write_results(path, manifest):
     path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
-def compare_page_states(obscura, chromium):
+def compare_page_states(inbrowse, chromium):
     """Return explicit same-page and geometry deltas; never infer a parity verdict."""
-    obscura_document = (obscura or {}).get("document") or {}
+    inbrowse_document = (inbrowse or {}).get("document") or {}
     chromium_document = (chromium or {}).get("document") or {}
-    obscura_geometry = (obscura or {}).get("geometry") or {}
+    inbrowse_geometry = (inbrowse or {}).get("geometry") or {}
     chromium_geometry = (chromium or {}).get("geometry") or {}
 
     def delta(left, right):
@@ -1393,45 +1393,45 @@ def compare_page_states(obscura, chromium):
         "body_scroll_height",
     )
     return {
-        "url_equal": (obscura or {}).get("url") == (chromium or {}).get("url"),
+        "url_equal": (inbrowse or {}).get("url") == (chromium or {}).get("url"),
         "ready_state_equal": (
-            obscura_document.get("ready_state")
+            inbrowse_document.get("ready_state")
             == chromium_document.get("ready_state")
         ),
         "element_count_delta": delta(
-            obscura_document.get("element_count"),
+            inbrowse_document.get("element_count"),
             chromium_document.get("element_count"),
         ),
         "outer_html_utf16_delta": delta(
-            obscura_document.get("outer_html_utf16"),
+            inbrowse_document.get("outer_html_utf16"),
             chromium_document.get("outer_html_utf16"),
         ),
         "body_text_utf16_delta": delta(
-            obscura_document.get("body_text_utf16"),
+            inbrowse_document.get("body_text_utf16"),
             chromium_document.get("body_text_utf16"),
         ),
         "outer_html_fingerprint_equal": (
-            obscura_document.get("outer_html_fnv1a32") is not None
-            and obscura_document.get("outer_html_fnv1a32")
+            inbrowse_document.get("outer_html_fnv1a32") is not None
+            and inbrowse_document.get("outer_html_fnv1a32")
             == chromium_document.get("outer_html_fnv1a32")
         ),
         "normalized_outer_html_utf16_delta": delta(
-            obscura_document.get("normalized_outer_html_utf16"),
+            inbrowse_document.get("normalized_outer_html_utf16"),
             chromium_document.get("normalized_outer_html_utf16"),
         ),
         "normalized_outer_html_fingerprint_equal": (
-            obscura_document.get("normalized_outer_html_fnv1a32") is not None
-            and obscura_document.get("normalized_outer_html_fnv1a32")
+            inbrowse_document.get("normalized_outer_html_fnv1a32") is not None
+            and inbrowse_document.get("normalized_outer_html_fnv1a32")
             == chromium_document.get("normalized_outer_html_fnv1a32")
         ),
         "body_text_fingerprint_equal": (
-            obscura_document.get("body_text_fnv1a32") is not None
-            and obscura_document.get("body_text_fnv1a32")
+            inbrowse_document.get("body_text_fnv1a32") is not None
+            and inbrowse_document.get("body_text_fnv1a32")
             == chromium_document.get("body_text_fnv1a32")
         ),
         "geometry_delta": {
             field: delta(
-                obscura_geometry.get(field),
+                inbrowse_geometry.get(field),
                 chromium_geometry.get(field),
             )
             for field in geometry_fields
@@ -1440,7 +1440,7 @@ def compare_page_states(obscura, chromium):
 
 
 def classify_state_comparability(
-    obscura, chromium, chromium_capture_boundary=None
+    inbrowse, chromium, chromium_capture_boundary=None
 ):
     """Classify whether two screenshots represent comparable live page states.
 
@@ -1449,9 +1449,9 @@ def classify_state_comparability(
     coarse provenance signals that identify gross incomplete-route/load states
     without turning small DOM differences into rendering exclusions.
     """
-    obscura = obscura or {}
+    inbrowse = inbrowse or {}
     chromium = chromium or {}
-    obscura_document = obscura.get("document") or {}
+    inbrowse_document = inbrowse.get("document") or {}
     chromium_document = chromium.get("document") or {}
 
     def count_signal(left, right, minimum_max, minimum_delta, ratio_limit):
@@ -1463,7 +1463,7 @@ def classify_state_comparability(
         ):
             return {
                 "available": False,
-                "obscura": left,
+                "inbrowse": left,
                 "chromium": right,
                 "gross_difference": False,
                 "catastrophic_difference": False,
@@ -1474,7 +1474,7 @@ def classify_state_comparability(
         ratio = minimum / maximum if maximum else 1.0
         return {
             "available": True,
-            "obscura": left,
+            "inbrowse": left,
             "chromium": right,
             "absolute_difference": difference,
             "smaller_to_larger_ratio": round(ratio, 6),
@@ -1491,25 +1491,25 @@ def classify_state_comparability(
         }
 
     element_signal = count_signal(
-        obscura_document.get("element_count"),
+        inbrowse_document.get("element_count"),
         chromium_document.get("element_count"),
         minimum_max=20,
         minimum_delta=15,
         ratio_limit=0.6,
     )
     text_signal = count_signal(
-        obscura_document.get("body_text_utf16"),
+        inbrowse_document.get("body_text_utf16"),
         chromium_document.get("body_text_utf16"),
         minimum_max=256,
         minimum_delta=256,
         ratio_limit=0.6,
     )
 
-    obscura_probes = obscura.get("geometry_probes") or []
+    inbrowse_probes = inbrowse.get("geometry_probes") or []
     chromium_probes = chromium.get("geometry_probes") or []
     probe_pairs = []
-    for index in range(min(len(obscura_probes), len(chromium_probes))):
-        left_probe = obscura_probes[index] or {}
+    for index in range(min(len(inbrowse_probes), len(chromium_probes))):
+        left_probe = inbrowse_probes[index] or {}
         right_probe = chromium_probes[index] or {}
         left = left_probe.get("count")
         right = right_probe.get("count")
@@ -1529,28 +1529,28 @@ def classify_state_comparability(
                     "index": index,
                     "selector": left_probe.get("selector")
                     or right_probe.get("selector"),
-                    "obscura": left,
+                    "inbrowse": left,
                     "chromium": right,
                     "absolute_difference": abs(left - right),
                     "smaller_to_larger_ratio": round(ratio, 6),
                 }
             )
-    obscura_probe_total = sum(pair["obscura"] for pair in probe_pairs)
+    inbrowse_probe_total = sum(pair["inbrowse"] for pair in probe_pairs)
     chromium_probe_total = sum(pair["chromium"] for pair in probe_pairs)
-    maximum_probe_total = max(obscura_probe_total, chromium_probe_total)
+    maximum_probe_total = max(inbrowse_probe_total, chromium_probe_total)
     probe_absolute_difference = sum(
         pair["absolute_difference"] for pair in probe_pairs
     )
     gross_probe_pairs = sum(
         1
         for pair in probe_pairs
-        if max(pair["obscura"], pair["chromium"]) >= 3
+        if max(pair["inbrowse"], pair["chromium"]) >= 3
         and pair["smaller_to_larger_ratio"] < 0.5
     )
     structural_signal = {
         "available": bool(probe_pairs),
         "pairs_compared": len(probe_pairs),
-        "obscura_total": obscura_probe_total,
+        "inbrowse_total": inbrowse_probe_total,
         "chromium_total": chromium_probe_total,
         "summed_absolute_difference": probe_absolute_difference,
         "gross_pair_count": gross_probe_pairs,
@@ -1565,17 +1565,17 @@ def classify_state_comparability(
         ),
     }
 
-    obscura_boundary_stable = obscura.get(
+    inbrowse_boundary_stable = inbrowse.get(
         "state_and_screenshot_share_capture_boundary"
     )
     chromium_boundary_stable = (chromium_capture_boundary or {}).get("stable")
     boundary_instability = (
-        obscura_boundary_stable is False or chromium_boundary_stable is False
+        inbrowse_boundary_stable is False or chromium_boundary_stable is False
     )
     url_mismatch = (
-        bool(obscura.get("url"))
+        bool(inbrowse.get("url"))
         and bool(chromium.get("url"))
-        and obscura.get("url") != chromium.get("url")
+        and inbrowse.get("url") != chromium.get("url")
     )
     gross_signals = [
         name
@@ -1633,7 +1633,7 @@ def classify_state_comparability(
         "gross_provenance_signals": gross_signals,
         "evidence": {
             "capture_boundary": {
-                "obscura_shared": obscura_boundary_stable,
+                "inbrowse_shared": inbrowse_boundary_stable,
                 "chromium_stable": chromium_boundary_stable,
             },
             "url_mismatch": url_mismatch,
@@ -1714,27 +1714,27 @@ GENERATED_ID_NAMESPACE_PATTERN = re.compile(
 )
 
 
-def split_generated_id_variance(obscura_id, chromium_id):
+def split_generated_id_variance(inbrowse_id, chromium_id):
     """Describe one structured ID mismatch without deciding it is volatile."""
-    if not obscura_id or not chromium_id or obscura_id == chromium_id:
+    if not inbrowse_id or not chromium_id or inbrowse_id == chromium_id:
         return None
 
     prefix_length = 0
-    prefix_limit = min(len(obscura_id), len(chromium_id))
+    prefix_limit = min(len(inbrowse_id), len(chromium_id))
     while (
         prefix_length < prefix_limit
-        and obscura_id[prefix_length] == chromium_id[prefix_length]
+        and inbrowse_id[prefix_length] == chromium_id[prefix_length]
     ):
         prefix_length += 1
 
     suffix_length = 0
     suffix_limit = min(
-        len(obscura_id) - prefix_length,
+        len(inbrowse_id) - prefix_length,
         len(chromium_id) - prefix_length,
     )
     while (
         suffix_length < suffix_limit
-        and obscura_id[-1 - suffix_length] == chromium_id[-1 - suffix_length]
+        and inbrowse_id[-1 - suffix_length] == chromium_id[-1 - suffix_length]
     ):
         suffix_length += 1
 
@@ -1742,7 +1742,7 @@ def split_generated_id_variance(obscura_id, chromium_id):
     # stable suffix (`...-7-panel` versus `...-17-panel`). Stable structured
     # suffixes begin at an ID separator; otherwise the whole tail remains salt.
     if suffix_length:
-        raw_suffix = obscura_id[len(obscura_id) - suffix_length :]
+        raw_suffix = inbrowse_id[len(inbrowse_id) - suffix_length :]
         if raw_suffix[0] not in "-_:":
             separator_offsets = [
                 raw_suffix.find(separator)
@@ -1753,28 +1753,28 @@ def split_generated_id_variance(obscura_id, chromium_id):
                 len(raw_suffix) - min(separator_offsets) if separator_offsets else 0
             )
 
-    suffix_start_obscura = len(obscura_id) - suffix_length
+    suffix_start_inbrowse = len(inbrowse_id) - suffix_length
     suffix_start_chromium = len(chromium_id) - suffix_length
-    prefix = obscura_id[:prefix_length]
-    suffix = obscura_id[suffix_start_obscura:] if suffix_length else ""
-    obscura_salt = obscura_id[prefix_length:suffix_start_obscura]
+    prefix = inbrowse_id[:prefix_length]
+    suffix = inbrowse_id[suffix_start_inbrowse:] if suffix_length else ""
+    inbrowse_salt = inbrowse_id[prefix_length:suffix_start_inbrowse]
     chromium_salt = chromium_id[prefix_length:suffix_start_chromium]
-    if not obscura_salt or not chromium_salt:
+    if not inbrowse_salt or not chromium_salt:
         return None
 
     stable_fingerprint = prefix + "<volatile-id-salt>" + suffix
     generated_namespace = GENERATED_ID_NAMESPACE_PATTERN.search(prefix + suffix)
     salt_is_generated = (
         generated_namespace is not None
-        and any(character.isdigit() for character in obscura_salt)
+        and any(character.isdigit() for character in inbrowse_salt)
         and any(character.isdigit() for character in chromium_salt)
-        and len(obscura_salt) <= 32
+        and len(inbrowse_salt) <= 32
         and len(chromium_salt) <= 32
     )
     return {
         "prefix": prefix,
         "suffix": suffix,
-        "obscura_salt": obscura_salt,
+        "inbrowse_salt": inbrowse_salt,
         "chromium_salt": chromium_salt,
         "normalized_fingerprint": stable_fingerprint,
         "generated_namespace": (
@@ -1784,9 +1784,9 @@ def split_generated_id_variance(obscura_id, chromium_id):
     }
 
 
-def compare_geometry_dom_ids(obscura_nodes, chromium_nodes):
+def compare_geometry_dom_ids(inbrowse_nodes, chromium_nodes):
     """Compare IDs, allowing only repeated framework-generated salt changes."""
-    if len(obscura_nodes) != len(chromium_nodes):
+    if len(inbrowse_nodes) != len(chromium_nodes):
         return {
             "comparable": False,
             "mismatches": [],
@@ -1796,24 +1796,24 @@ def compare_geometry_dom_ids(obscura_nodes, chromium_nodes):
 
     mismatches = []
     mapping_fingerprints = {}
-    for index, (obscura_node, chromium_node) in enumerate(
-        zip(obscura_nodes, chromium_nodes)
+    for index, (inbrowse_node, chromium_node) in enumerate(
+        zip(inbrowse_nodes, chromium_nodes)
     ):
-        obscura_id = (obscura_node or {}).get("id") or ""
+        inbrowse_id = (inbrowse_node or {}).get("id") or ""
         chromium_id = (chromium_node or {}).get("id") or ""
-        if obscura_id == chromium_id:
+        if inbrowse_id == chromium_id:
             continue
-        variance = split_generated_id_variance(obscura_id, chromium_id)
+        variance = split_generated_id_variance(inbrowse_id, chromium_id)
         mismatch = {
             "node_index": index,
-            "obscura_id": obscura_id,
+            "inbrowse_id": inbrowse_id,
             "chromium_id": chromium_id,
             "normalized_as_volatile": False,
             "variance": variance,
         }
         mismatches.append(mismatch)
         if variance and variance["generated_salt_candidate"]:
-            mapping = (variance["obscura_salt"], variance["chromium_salt"])
+            mapping = (variance["inbrowse_salt"], variance["chromium_salt"])
             mapping_fingerprints.setdefault(mapping, set()).add(
                 variance["normalized_fingerprint"]
             )
@@ -1826,7 +1826,7 @@ def compare_geometry_dom_ids(obscura_nodes, chromium_nodes):
         variance = mismatch["variance"]
         if not variance or not variance["generated_salt_candidate"]:
             continue
-        mapping = (variance["obscura_salt"], variance["chromium_salt"])
+        mapping = (variance["inbrowse_salt"], variance["chromium_salt"])
         mismatch["normalized_as_volatile"] = (
             len(mapping_fingerprints.get(mapping, ())) >= 2
         )
@@ -1858,17 +1858,17 @@ def geometry_dom_topology(structure):
     }
 
 
-def compare_geometry_dom_structures(obscura_dom, chromium_dom):
+def compare_geometry_dom_structures(inbrowse_dom, chromium_dom):
     """Classify whether two geometry rects address the same DOM structure."""
-    obscura_structure = canonical_geometry_dom_structure(obscura_dom)
+    inbrowse_structure = canonical_geometry_dom_structure(inbrowse_dom)
     chromium_structure = canonical_geometry_dom_structure(chromium_dom)
-    available = obscura_structure is not None and chromium_structure is not None
+    available = inbrowse_structure is not None and chromium_structure is not None
     topology_equal = available and geometry_dom_topology(
-        obscura_structure
+        inbrowse_structure
     ) == geometry_dom_topology(chromium_structure)
     id_comparison = (
         compare_geometry_dom_ids(
-            obscura_structure.get("nodes", []),
+            inbrowse_structure.get("nodes", []),
             chromium_structure.get("nodes", []),
         )
         if available and topology_equal
@@ -1876,7 +1876,7 @@ def compare_geometry_dom_structures(obscura_dom, chromium_dom):
     )
     structures_equal = topology_equal and id_comparison["comparable"]
     truncated = available and (
-        obscura_structure.get("subtree_truncated") is True
+        inbrowse_structure.get("subtree_truncated") is True
         or chromium_structure.get("subtree_truncated") is True
     )
     comparable = structures_equal and not truncated
@@ -1900,7 +1900,7 @@ def compare_geometry_dom_structures(obscura_dom, chromium_dom):
         "reasons": reasons,
         "topology_equal": topology_equal,
         "id_comparison": id_comparison,
-        "obscura": obscura_structure,
+        "inbrowse": inbrowse_structure,
         "chromium": chromium_structure,
     }
 
@@ -1935,32 +1935,32 @@ def summarize_geometry_verdicts(comparisons):
     }
 
 
-def compare_geometry_probes(obscura, chromium):
+def compare_geometry_probes(inbrowse, chromium):
     """Report raw deltas and gate geometry verdicts on target structure."""
-    obscura_probes = (obscura or {}).get("geometry_probes") or []
+    inbrowse_probes = (inbrowse or {}).get("geometry_probes") or []
     chromium_probes = (chromium or {}).get("geometry_probes") or []
     comparisons = []
-    for index in range(max(len(obscura_probes), len(chromium_probes))):
-        obscura_probe = (
-            obscura_probes[index] if index < len(obscura_probes) else None
+    for index in range(max(len(inbrowse_probes), len(chromium_probes))):
+        inbrowse_probe = (
+            inbrowse_probes[index] if index < len(inbrowse_probes) else None
         )
         chromium_probe = (
             chromium_probes[index] if index < len(chromium_probes) else None
         )
-        obscura_rects = (obscura_probe or {}).get("rects") or []
+        inbrowse_rects = (inbrowse_probe or {}).get("rects") or []
         chromium_rects = (chromium_probe or {}).get("rects") or []
         rect_deltas = []
         subtree_comparisons = []
-        for rect_index in range(min(len(obscura_rects), len(chromium_rects))):
-            obscura_rect = obscura_rects[rect_index]
+        for rect_index in range(min(len(inbrowse_rects), len(chromium_rects))):
+            inbrowse_rect = inbrowse_rects[rect_index]
             chromium_rect = chromium_rects[rect_index]
             subtree_comparison = compare_geometry_dom_structures(
-                obscura_rect.get("dom"), chromium_rect.get("dom")
+                inbrowse_rect.get("dom"), chromium_rect.get("dom")
             )
             subtree_comparisons.append(subtree_comparison)
             deltas = {}
             for field in ("x", "y", "width", "height"):
-                left = obscura_rect.get(field)
+                left = inbrowse_rect.get(field)
                 right = chromium_rect.get(field)
                 deltas[field] = (
                     left - right
@@ -1968,24 +1968,24 @@ def compare_geometry_probes(obscura, chromium):
                     and isinstance(right, (int, float))
                     else None
                 )
-            obscura_computed = obscura_rect.get("computed") or {}
+            inbrowse_computed = inbrowse_rect.get("computed") or {}
             chromium_computed = chromium_rect.get("computed") or {}
             computed_differences = {
                 field: {
-                    "obscura": obscura_computed.get(field),
+                    "inbrowse": inbrowse_computed.get(field),
                     "chromium": chromium_computed.get(field),
                 }
                 for field in sorted(
-                    set(obscura_computed) | set(chromium_computed)
+                    set(inbrowse_computed) | set(chromium_computed)
                 )
-                if obscura_computed.get(field) != chromium_computed.get(field)
+                if inbrowse_computed.get(field) != chromium_computed.get(field)
             }
             rect_deltas.append(
                 {
                     "index": rect_index,
                     "delta": deltas,
                     "visibility": {
-                        "obscura": obscura_rect.get("visible"),
+                        "inbrowse": inbrowse_rect.get("visible"),
                         "chromium": chromium_rect.get("visible"),
                     },
                     "target_subtree_comparability": subtree_comparison,
@@ -1994,20 +1994,20 @@ def compare_geometry_probes(obscura, chromium):
                     "computed_differences": computed_differences,
                 }
             )
-        obscura_count = (obscura_probe or {}).get("count")
+        inbrowse_count = (inbrowse_probe or {}).get("count")
         chromium_count = (chromium_probe or {}).get("count")
-        selector_left = (obscura_probe or {}).get("selector")
+        selector_left = (inbrowse_probe or {}).get("selector")
         selector_right = (chromium_probe or {}).get("selector")
         query_valid = (
-            (obscura_probe or {}).get("valid") is True
+            (inbrowse_probe or {}).get("valid") is True
             and (chromium_probe or {}).get("valid") is True
         )
         counts_equal = (
-            isinstance(obscura_count, int)
-            and not isinstance(obscura_count, bool)
+            isinstance(inbrowse_count, int)
+            and not isinstance(inbrowse_count, bool)
             and isinstance(chromium_count, int)
             and not isinstance(chromium_count, bool)
-            and obscura_count == chromium_count
+            and inbrowse_count == chromium_count
         )
         verdict_exclusions = []
         if not query_valid:
@@ -2016,12 +2016,12 @@ def compare_geometry_probes(obscura, chromium):
             verdict_exclusions.append("selector-mismatch")
         if not counts_equal:
             verdict_exclusions.append("target-count-mismatch")
-        elif obscura_count == 0:
+        elif inbrowse_count == 0:
             verdict_exclusions.append("no-matched-targets")
-        if counts_equal and isinstance(obscura_count, int) and obscura_count > 0:
+        if counts_equal and isinstance(inbrowse_count, int) and inbrowse_count > 0:
             expected_rects = min(
-                obscura_count,
-                (obscura_probe or {}).get("rect_limit")
+                inbrowse_count,
+                (inbrowse_probe or {}).get("rect_limit")
                 or GEOMETRY_PROBE_RECT_LIMIT,
             )
             if len(subtree_comparisons) != expected_rects:
@@ -2039,12 +2039,12 @@ def compare_geometry_probes(obscura, chromium):
             {
                 "index": index,
                 "selector": (
-                    (obscura_probe or {}).get("selector")
-                    if obscura_probe is not None
+                    (inbrowse_probe or {}).get("selector")
+                    if inbrowse_probe is not None
                     else (chromium_probe or {}).get("selector")
                 ),
                 "valid": {
-                    "obscura": (obscura_probe or {}).get("valid"),
+                    "inbrowse": (inbrowse_probe or {}).get("valid"),
                     "chromium": (chromium_probe or {}).get("valid"),
                 },
                 "geometry_verdict_valid": geometry_verdict_valid,
@@ -2062,15 +2062,15 @@ def compare_geometry_probes(obscura, chromium):
                     ),
                 },
                 "errors": {
-                    "obscura": (obscura_probe or {}).get("error"),
+                    "inbrowse": (inbrowse_probe or {}).get("error"),
                     "chromium": (chromium_probe or {}).get("error"),
                 },
                 "counts": {
-                    "obscura": obscura_count,
+                    "inbrowse": inbrowse_count,
                     "chromium": chromium_count,
                     "delta": (
-                        obscura_count - chromium_count
-                        if isinstance(obscura_count, int)
+                        inbrowse_count - chromium_count
+                        if isinstance(inbrowse_count, int)
                         and isinstance(chromium_count, int)
                         else None
                     ),
@@ -2082,11 +2082,11 @@ def compare_geometry_probes(obscura, chromium):
     return comparisons
 
 
-def compare_feature_probes(obscura, chromium):
+def compare_feature_probes(inbrowse, chromium):
     """Compare selector-free candidates by category and document element index."""
-    obscura_features = (obscura or {}).get("feature_probes") or {}
+    inbrowse_features = (inbrowse or {}).get("feature_probes") or {}
     chromium_features = (chromium or {}).get("feature_probes") or {}
-    obscura_categories = obscura_features.get("categories") or {}
+    inbrowse_categories = inbrowse_features.get("categories") or {}
     chromium_categories = chromium_features.get("categories") or {}
 
     def numeric_delta(left, right):
@@ -2105,12 +2105,12 @@ def compare_feature_probes(obscura, chromium):
         return [left[index] - right[index] for index in range(8)]
 
     category_comparisons = []
-    for kind in sorted(set(obscura_categories) | set(chromium_categories)):
-        obscura_category = obscura_categories.get(kind) or {}
+    for kind in sorted(set(inbrowse_categories) | set(chromium_categories)):
+        inbrowse_category = inbrowse_categories.get(kind) or {}
         chromium_category = chromium_categories.get(kind) or {}
-        obscura_candidates = {
+        inbrowse_candidates = {
             candidate.get("comparison_index", candidate.get("dom_index")): candidate
-            for candidate in obscura_category.get("candidates") or []
+            for candidate in inbrowse_category.get("candidates") or []
             if isinstance(
                 candidate.get("comparison_index", candidate.get("dom_index")), int
             )
@@ -2124,40 +2124,40 @@ def compare_feature_probes(obscura, chromium):
         }
         candidate_comparisons = []
         for comparison_index in sorted(
-            set(obscura_candidates) | set(chromium_candidates)
+            set(inbrowse_candidates) | set(chromium_candidates)
         ):
-            obscura_candidate = obscura_candidates.get(comparison_index)
+            inbrowse_candidate = inbrowse_candidates.get(comparison_index)
             chromium_candidate = chromium_candidates.get(comparison_index)
-            obscura_computed = (obscura_candidate or {}).get("computed") or {}
+            inbrowse_computed = (inbrowse_candidate or {}).get("computed") or {}
             chromium_computed = (chromium_candidate or {}).get("computed") or {}
             computed_differences = {
                 field: {
-                    "obscura": obscura_computed.get(field),
+                    "inbrowse": inbrowse_computed.get(field),
                     "chromium": chromium_computed.get(field),
                 }
-                for field in sorted(set(obscura_computed) | set(chromium_computed))
-                if obscura_computed.get(field) != chromium_computed.get(field)
+                for field in sorted(set(inbrowse_computed) | set(chromium_computed))
+                if inbrowse_computed.get(field) != chromium_computed.get(field)
             }
-            obscura_quads = (obscura_candidate or {}).get("box_quads") or {}
+            inbrowse_quads = (inbrowse_candidate or {}).get("box_quads") or {}
             chromium_quads = (chromium_candidate or {}).get("box_quads") or {}
             quad_spaces_equal = (
-                obscura_quads.get("coordinate_space") is not None
-                and obscura_quads.get("coordinate_space")
+                inbrowse_quads.get("coordinate_space") is not None
+                and inbrowse_quads.get("coordinate_space")
                 == chromium_quads.get("coordinate_space")
             )
             candidate_comparisons.append(
                 {
                     "comparison_index": comparison_index,
                     "dom_index": {
-                        "obscura": (obscura_candidate or {}).get("dom_index"),
+                        "inbrowse": (inbrowse_candidate or {}).get("dom_index"),
                         "chromium": (chromium_candidate or {}).get("dom_index"),
                     },
                     "present": {
-                        "obscura": obscura_candidate is not None,
+                        "inbrowse": inbrowse_candidate is not None,
                         "chromium": chromium_candidate is not None,
                     },
                     "candidate_reasons": {
-                        "obscura": (obscura_candidate or {}).get(
+                        "inbrowse": (inbrowse_candidate or {}).get(
                             "candidate_reasons"
                         ),
                         "chromium": (chromium_candidate or {}).get(
@@ -2166,24 +2166,24 @@ def compare_feature_probes(obscura, chromium):
                     },
                     "geometry_delta": {
                         field: numeric_delta(
-                            (obscura_candidate or {}).get(field),
+                            (inbrowse_candidate or {}).get(field),
                             (chromium_candidate or {}).get(field),
                         )
                         for field in ("x", "y", "width", "height")
                     },
                     "visibility": {
-                        "obscura": (obscura_candidate or {}).get("visible"),
+                        "inbrowse": (inbrowse_candidate or {}).get("visible"),
                         "chromium": (chromium_candidate or {}).get("visible"),
                     },
                     "computed_difference_count": len(computed_differences),
                     "computed_differences": computed_differences,
                     "box_quads": {
-                        "obscura_available": bool(obscura_quads),
+                        "inbrowse_available": bool(inbrowse_quads),
                         "chromium_available": bool(chromium_quads),
                         "coordinate_spaces_equal": quad_spaces_equal,
                         "content_delta": (
                             quad_delta(
-                                obscura_quads.get("content"),
+                                inbrowse_quads.get("content"),
                                 chromium_quads.get("content"),
                             )
                             if quad_spaces_equal
@@ -2191,7 +2191,7 @@ def compare_feature_probes(obscura, chromium):
                         ),
                         "border_delta": (
                             quad_delta(
-                                obscura_quads.get("border"),
+                                inbrowse_quads.get("border"),
                                 chromium_quads.get("border"),
                             )
                             if quad_spaces_equal
@@ -2200,18 +2200,18 @@ def compare_feature_probes(obscura, chromium):
                     },
                 }
             )
-        obscura_seen = obscura_category.get("matches_seen")
+        inbrowse_seen = inbrowse_category.get("matches_seen")
         chromium_seen = chromium_category.get("matches_seen")
         category_comparisons.append(
             {
                 "kind": kind,
                 "matches_seen": {
-                    "obscura": obscura_seen,
+                    "inbrowse": inbrowse_seen,
                     "chromium": chromium_seen,
-                    "delta": numeric_delta(obscura_seen, chromium_seen),
+                    "delta": numeric_delta(inbrowse_seen, chromium_seen),
                 },
                 "candidates_truncated": {
-                    "obscura": obscura_category.get("candidates_truncated"),
+                    "inbrowse": inbrowse_category.get("candidates_truncated"),
                     "chromium": chromium_category.get("candidates_truncated"),
                 },
                 "candidates": candidate_comparisons,
@@ -2219,23 +2219,23 @@ def compare_feature_probes(obscura, chromium):
         )
     return {
         "bounds": {
-            "obscura": obscura_features.get("bounds"),
+            "inbrowse": inbrowse_features.get("bounds"),
             "chromium": chromium_features.get("bounds"),
         },
         "scan": {
-            "obscura_scanned_elements": obscura_features.get("scanned_elements"),
+            "inbrowse_scanned_elements": inbrowse_features.get("scanned_elements"),
             "chromium_scanned_elements": chromium_features.get("scanned_elements"),
-            "obscura_comparable_scanned_elements": obscura_features.get(
+            "inbrowse_comparable_scanned_elements": inbrowse_features.get(
                 "comparable_scanned_elements"
             ),
             "chromium_comparable_scanned_elements": chromium_features.get(
                 "comparable_scanned_elements"
             ),
-            "obscura_truncated": obscura_features.get("scan_truncated"),
+            "inbrowse_truncated": inbrowse_features.get("scan_truncated"),
             "chromium_truncated": chromium_features.get("scan_truncated"),
         },
         "box_quad_capabilities": {
-            "obscura": obscura_features.get("box_quads"),
+            "inbrowse": inbrowse_features.get("box_quads"),
             "chromium": chromium_features.get("box_quads"),
         },
         "categories": category_comparisons,
@@ -2245,7 +2245,7 @@ def compare_feature_probes(obscura, chromium):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("urls", help="one URL per line; # comments allowed")
-    parser.add_argument("--obscura-bin", required=True)
+    parser.add_argument("--inbrowse-bin", required=True)
     parser.add_argument("--baseline-bin")
     parser.add_argument(
         "--chromium-bin",
@@ -2272,7 +2272,7 @@ def main():
         help=(
             "pause Chromium animations currently exposed through Web Animations "
             "at T=0 immediately before state sampling and screenshot paint; "
-            "matches Obscura's deterministic static animation sample"
+            "matches Inbrowse's deterministic static animation sample"
         ),
     )
     parser.add_argument(
@@ -2298,7 +2298,7 @@ def main():
     args = parser.parse_args()
     if args.settle_ms % 1000:
         parser.error(
-            "--settle-ms must be a whole number of seconds because Obscura's "
+            "--settle-ms must be a whole number of seconds because Inbrowse's "
             "fetch --wait interface accepts integer seconds"
         )
     if args.settle_ms < 0:
@@ -2360,7 +2360,7 @@ def main():
                     "document.getAnimations() results are paused and assigned "
                     "currentTime immediately before state and screenshot capture"
                 ),
-                "obscura": "static renderer animation sample time T=0",
+                "inbrowse": "static renderer animation sample time T=0",
             }
             if args.animation_time_ms is not None
             else {"mode": "live-wall-clock", "sample_ms": None}
@@ -2371,7 +2371,7 @@ def main():
             else None
         ),
         "navigation_timeout_ms": 50000,
-        "obscura": binary_version(args.obscura_bin),
+        "inbrowse": binary_version(args.inbrowse_bin),
         "baseline": binary_version(args.baseline_bin) if args.baseline_bin else None,
         "capture_identity": {
             "normalized": True,
@@ -2379,7 +2379,7 @@ def main():
             "configured_platform": CANONICAL_PLATFORM,
             "configured_ua_platform": CANONICAL_UA_PLATFORM,
             "configured_ua_platform_version": CANONICAL_UA_PLATFORM_VERSION,
-            "obscura_profile": CANONICAL_OBSCURA_PROFILE,
+            "inbrowse_profile": CANONICAL_INBROWSE_PROFILE,
         },
         "capture_media": {
             "normalized": True,
@@ -2387,7 +2387,7 @@ def main():
             "reduced_motion": CANONICAL_REDUCED_MOTION,
             "expected_match_media": EXPECTED_MEDIA_MATCHES,
             "reduced_motion_reason": (
-                "Obscura currently models the browser default "
+                "Inbrowse currently models the browser default "
                 "(no-preference), so Chromium is pinned to the same state"
             ),
         },
@@ -2403,7 +2403,7 @@ def main():
                 "critical geometry/readiness remained stable. DOM SHA-256 "
                 "finalization runs on the host only after paint"
             ),
-            "obscura": (
+            "inbrowse": (
                 "the paired-capture CLI takes one discard paint over the same "
                 "live page, pumps one bounded task turn, then performs the "
                 "final instant scroll reassert before deferred DOM/resource/"
@@ -2434,7 +2434,7 @@ def main():
                 "page states. They are provenance tripwires, not proof that "
                 "equal states contain equal layout or that unequal serialized "
                 "DOM necessarily represents a rendering failure. Normalized DOM "
-                "fingerprints exclude only Obscura's explicitly marked external-"
+                "fingerprints exclude only Inbrowse's explicitly marked external-"
                 "stylesheet mirror nodes, because Chromium's CSSOM does not "
                 "serialize fetched stylesheet text into outerHTML."
             ),
@@ -2450,7 +2450,7 @@ def main():
                 "Both engines take and discard one screenshot before sampling "
                 "resource readiness, then yield one bounded task turn. This "
                 "warms the exact retained render graph instead of comparing "
-                "Obscura's pre-paint state with Chromium's post-load state. "
+                "Inbrowse's pre-paint state with Chromium's post-load state. "
                 "A successful fetch is still not proof of equal decode, selected "
                 "source, or paint output."
             ),
@@ -2466,16 +2466,16 @@ def main():
                 "A candidate proves that a relevant computed value won the "
                 "cascade, not that its visual effect is correct. Candidate "
                 "matching by document element index is meaningful only with "
-                "the adjacent DOM/body-text provenance evidence. Obscura's marked "
+                "the adjacent DOM/body-text provenance evidence. Inbrowse's marked "
                 "external-stylesheet mirror nodes are excluded from that "
                 "comparison index while each engine retains its raw DOM index "
                 "for CDP lookup. Nested element "
-                "scroll metrics are intentionally excluded because Obscura's "
+                "scroll metrics are intentionally excluded because Inbrowse's "
                 "current CLI surface cannot yet provide trustworthy values."
             ),
             "box_quads": (
                 "Chromium content and border quads come from CDP "
-                "DOM.getBoxModel in viewport CSS pixels. Obscura CLI capture "
+                "DOM.getBoxModel in viewport CSS pixels. Inbrowse CLI capture "
                 "does not expose an equivalent node-scoped CDP call at the "
                 "shared screenshot boundary, so its capability is recorded "
                 "as unavailable and candidate quads remain null; bounding "
@@ -2523,18 +2523,18 @@ def main():
             "no aggregate parity verdict"
         ),
     }
-    manifest["obscura_identity_probe"] = probe_obscura_identity(args.obscura_bin)
-    manifest["obscura_css_media_probe"] = probe_obscura_css_media(args.obscura_bin)
+    manifest["inbrowse_identity_probe"] = probe_inbrowse_identity(args.inbrowse_bin)
+    manifest["inbrowse_css_media_probe"] = probe_inbrowse_css_media(args.inbrowse_bin)
     if args.baseline_bin:
-        manifest["baseline_identity_probe"] = probe_obscura_identity(args.baseline_bin)
-        manifest["baseline_css_media_probe"] = probe_obscura_css_media(
+        manifest["baseline_identity_probe"] = probe_inbrowse_identity(args.baseline_bin)
+        manifest["baseline_css_media_probe"] = probe_inbrowse_css_media(
             args.baseline_bin
         )
     results_path = out / "results.json"
     write_results(results_path, manifest)
     probes = [
-        ("obscura JS media", manifest["obscura_identity_probe"].get("media_matches_configured")),
-        ("obscura CSS media", manifest["obscura_css_media_probe"].get("ok")),
+        ("inbrowse JS media", manifest["inbrowse_identity_probe"].get("media_matches_configured")),
+        ("inbrowse CSS media", manifest["inbrowse_css_media_probe"].get("ok")),
     ]
     if args.baseline_bin:
         probes.extend(
@@ -2575,7 +2575,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             for index, url in enumerate(urls):
                 name = f"{index:03d}-{slug(url)}"
-                ours_path = out / f"{name}.obscura.png"
+                ours_path = out / f"{name}.inbrowse.png"
                 chrome_path = out / f"{name}.chrome.png"
                 baseline_path = out / f"{name}.baseline.png"
                 page_result = {
@@ -2607,11 +2607,11 @@ def main():
                 page.on("pageerror", lambda error: chrome_messages.append(f"pageerror: {error}"))
 
                 ours_future = executor.submit(
-                    capture_obscura,
-                    args.obscura_bin,
+                    capture_inbrowse,
+                    args.inbrowse_bin,
                     url,
                     ours_path,
-                    out / f"{name}.obscura.log",
+                    out / f"{name}.inbrowse.log",
                     args.width,
                     args.height,
                     args.settle_ms,
@@ -2622,7 +2622,7 @@ def main():
                 baseline_future = None
                 if args.baseline_bin:
                     baseline_future = executor.submit(
-                        capture_obscura,
+                        capture_inbrowse,
                         args.baseline_bin,
                         url,
                         baseline_path,
@@ -2735,17 +2735,17 @@ def main():
                     ),
                 }
                 context.close()
-                page_result["obscura"] = ours_future.result()
+                page_result["inbrowse"] = ours_future.result()
                 if baseline_future:
                     page_result["baseline"] = baseline_future.result()
 
-                if chrome_ok and page_result["obscura"]["ok"]:
+                if chrome_ok and page_result["inbrowse"]["ok"]:
                     page_result["page_state_comparison"] = compare_page_states(
-                        page_result["obscura"].get("state"),
+                        page_result["inbrowse"].get("state"),
                         chromium_state,
                     )
                     state_comparability = classify_state_comparability(
-                        page_result["obscura"].get("state"),
+                        page_result["inbrowse"].get("state"),
                         chromium_state,
                         chromium_capture_boundary,
                     )
@@ -2755,13 +2755,13 @@ def main():
                     ]
                     page_result["feature_probe_comparison"] = (
                         compare_feature_probes(
-                            page_result["obscura"].get("state"),
+                            page_result["inbrowse"].get("state"),
                             chromium_state,
                         )
                     )
                     if args.geometry_selector:
                         geometry_comparison = compare_geometry_probes(
-                            page_result["obscura"].get("state"),
+                            page_result["inbrowse"].get("state"),
                             chromium_state,
                         )
                         page_result["geometry_probe_comparison"] = (
@@ -2823,9 +2823,9 @@ def main():
                 if (
                     controlled_scroll is not None
                     and chrome_ok
-                    and page_result["obscura"]["ok"]
+                    and page_result["inbrowse"]["ok"]
                 ):
-                    ours_scroll = page_result["obscura"].get("scroll_state") or {}
+                    ours_scroll = page_result["inbrowse"].get("scroll_state") or {}
                     ours_actual = ours_scroll.get("actual") or {}
                     ours_content = ours_scroll.get("content") or {}
                     chrome_geometry = chromium_state.get("geometry") or {}
@@ -2840,13 +2840,13 @@ def main():
                     )
                     page_result["controlled_scroll_comparison"] = {
                         "comparable": comparable,
-                        "obscura_pre_reassert_actual": ours_scroll.get(
+                        "inbrowse_pre_reassert_actual": ours_scroll.get(
                             "pre_reassert_actual"
                         ),
                         "chromium_pre_reassert_actual": (
                             chromium_scroll_state or {}
                         ).get("pre_reassert_actual"),
-                        "obscura_actual": ours_actual,
+                        "inbrowse_actual": ours_actual,
                         "chromium_actual": {
                             "x": chrome_geometry.get("scroll_x"),
                             "y": chrome_geometry.get("scroll_y"),
@@ -2883,7 +2883,7 @@ def main():
                         },
                     }
 
-                if chrome_ok and page_result["obscura"]["ok"]:
+                if chrome_ok and page_result["inbrowse"]["ok"]:
                     chrome_rgb = load_rgb(chrome_path)
                     current_metrics = pair_metrics(load_rgb(ours_path), chrome_rgb)
                     page_result["metrics"] = current_metrics
@@ -3022,7 +3022,7 @@ def main():
     failed = [
         page["name"]
         for page in manifest["pages"]
-        if not page.get("chromium", {}).get("ok") or not page.get("obscura", {}).get("ok")
+        if not page.get("chromium", {}).get("ok") or not page.get("inbrowse", {}).get("ok")
     ]
     if failed:
         print(f"capture failures: {', '.join(failed)}", file=sys.stderr)

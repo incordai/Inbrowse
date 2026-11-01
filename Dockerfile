@@ -12,38 +12,38 @@ WORKDIR /build
 # Cache dependency compilation by copying manifests first
 COPY Cargo.toml Cargo.lock ./
 COPY vendor/ vendor/
-COPY crates/obscura-dom/Cargo.toml       crates/obscura-dom/Cargo.toml
-COPY crates/obscura-net/Cargo.toml       crates/obscura-net/Cargo.toml
-COPY crates/obscura-browser/Cargo.toml   crates/obscura-browser/Cargo.toml
-COPY crates/obscura-cdp/Cargo.toml       crates/obscura-cdp/Cargo.toml
-COPY crates/obscura-js/Cargo.toml        crates/obscura-js/Cargo.toml
-COPY crates/obscura-mcp/Cargo.toml       crates/obscura-mcp/Cargo.toml
-COPY crates/obscura-render/Cargo.toml    crates/obscura-render/Cargo.toml
-COPY crates/obscura-cli/Cargo.toml       crates/obscura-cli/Cargo.toml
-COPY crates/obscura/Cargo.toml           crates/obscura/Cargo.toml
+COPY crates/inbrowse-dom/Cargo.toml       crates/inbrowse-dom/Cargo.toml
+COPY crates/inbrowse-net/Cargo.toml       crates/inbrowse-net/Cargo.toml
+COPY crates/inbrowse/Cargo.toml   crates/inbrowse/Cargo.toml
+COPY crates/inbrowse-cdp/Cargo.toml       crates/inbrowse-cdp/Cargo.toml
+COPY crates/inbrowse-js/Cargo.toml        crates/inbrowse-js/Cargo.toml
+COPY crates/inbrowse-mcp/Cargo.toml       crates/inbrowse-mcp/Cargo.toml
+COPY crates/inbrowse-render/Cargo.toml    crates/inbrowse-render/Cargo.toml
+COPY crates/inbrowse-cli/Cargo.toml       crates/inbrowse-cli/Cargo.toml
+COPY crates/inbrowse-sdk/Cargo.toml           crates/inbrowse-sdk/Cargo.toml
 
 # Create stub src files so cargo can resolve the dependency graph
-RUN for crate in obscura-dom obscura-net obscura-browser obscura-cdp obscura-js obscura-mcp obscura-render obscura; do \
+RUN for crate in inbrowse-dom inbrowse-net inbrowse inbrowse-cdp inbrowse-js inbrowse-mcp inbrowse-render inbrowse; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done && \
-    mkdir -p crates/obscura-cli/src && \
-    echo "fn main() {}" > crates/obscura-cli/src/main.rs && \
-    echo "fn main() {}" > crates/obscura-cli/src/worker.rs
+    mkdir -p crates/inbrowse-cli/src && \
+    echo "fn main() {}" > crates/inbrowse-cli/src/main.rs && \
+    echo "fn main() {}" > crates/inbrowse-cli/src/worker.rs
 
-RUN cargo build --release --features render --bin obscura --bin obscura-worker 2>/dev/null || true
+RUN cargo build --release --features render --bin inbrowse --bin inbrowse-worker 2>/dev/null || true
 
-ARG OBSCURA_VERSION
+ARG INBROWSE_VERSION
 
 # Copy real sources and build
 COPY crates/ crates/
-RUN echo "Building Obscura version ${OBSCURA_VERSION:-from Cargo.toml}" && \
-    touch crates/*/src/*.rs && cargo build --release --features render --bin obscura --bin obscura-worker
+RUN echo "Building Inbrowse version ${INBROWSE_VERSION:-from Cargo.toml}" && \
+    touch crates/*/src/*.rs && cargo build --release --features render --bin inbrowse --bin inbrowse-worker
 
 # ---
 
 # distroless/cc: glibc + libgcc + CA certs only — no shell, no package manager.
 #
-# `:nonroot` runs as uid/gid 65532 instead of root. Obscura executes untrusted
+# `:nonroot` runs as uid/gid 65532 instead of root. Inbrowse executes untrusted
 # page JavaScript in-process through V8, so a V8 exploit lands with the
 # process's privileges; there is no reason for those to be root's. The image
 # needs no privileged operation: it binds an unprivileged port, reads the CA
@@ -55,16 +55,16 @@ RUN echo "Building Obscura version ${OBSCURA_VERSION:-from Cargo.toml}" && \
 # *base* image trades a real ongoing risk for a theoretical one.
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-COPY --from=builder /build/target/release/obscura /obscura
-COPY --from=builder /build/target/release/obscura-worker /obscura-worker
+COPY --from=builder /build/target/release/inbrowse /inbrowse
+COPY --from=builder /build/target/release/inbrowse-worker /inbrowse-worker
 
 EXPOSE 9222
 
 # Bind to 0.0.0.0 *inside the container*: a container-loopback bind is
 # unreachable through `-p`, so this is required for the port to work at all.
 # It is not a licence to expose the port. Non-loopback binds require
-# OBSCURA_CDP_TOKEN; publish to host loopback as an additional boundary.
+# INBROWSE_CDP_TOKEN; publish to host loopback as an additional boundary.
 # The native binary still defaults to 127.0.0.1.
 #
-ENTRYPOINT ["/obscura"]
+ENTRYPOINT ["/inbrowse"]
 CMD ["serve", "--port", "9222", "--host", "0.0.0.0"]

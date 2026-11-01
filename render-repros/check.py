@@ -210,8 +210,8 @@ def main():
     failures = []
     report = {"fixtures": {}}
 
-    for ours_path in sorted(out.glob("*.obscura.png")):
-        name = ours_path.name.removesuffix(".obscura.png")
+    for ours_path in sorted(out.glob("*.inbrowse.png")):
+        name = ours_path.name.removesuffix(".inbrowse.png")
         chromium_path = out / f"{name}.chrome.png"
         if not chromium_path.is_file():
             failures.append(f"{name}: missing Chromium screenshot")
@@ -220,9 +220,9 @@ def main():
         chromium = np.asarray(Image.open(chromium_path).convert("RGB"))
         fixture = {
             "metrics": pair_metrics(ours, chromium),
-            "behavior": {"obscura": [], "chromium": []},
+            "behavior": {"inbrowse": [], "chromium": []},
         }
-        for engine, array in (("obscura", ours), ("chromium", chromium)):
+        for engine, array in (("inbrowse", ours), ("chromium", chromium)):
             if name == "word-spacing":
                 for check in word_spacing_checks(array):
                     fixture["behavior"][engine].append(check)

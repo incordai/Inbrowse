@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Live view for obscura serve.
+// Live view for inbrowse serve.
 //
-// Streams what a headless obscura browser sees to any local browser tab,
+// Streams what a headless inbrowse browser sees to any local browser tab,
 // so you can watch an agent (MCP, Puppeteer, Playwright) work in real time.
 //
 // Usage:
-//   obscura serve --port 9222
+//   inbrowse serve --port 9222
 //   node tools/live-view.mjs [cdpPort] [httpPort]
 //
 // No dependencies. Requires Node 21+ (native WebSocket).
@@ -34,17 +34,17 @@ async function ensureServe() {
     const r = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
     if (r.ok) return;
   } catch {}
-  // try spawning obscura directly (works in normal installs and in proot ubuntu)
+  // try spawning inbrowse directly (works in normal installs and in proot ubuntu)
   try {
-    const child = spawn("obscura", ["serve", "--port", String(cdpPort)], {
+    const child = spawn("inbrowse", ["serve", "--port", String(cdpPort)], {
       stdio: "ignore",
       detached: true,
     });
     child.unref();
   } catch {}
-  // fallback for Termux proot setups where obscura lives inside ubuntu
+  // fallback for Termux proot setups where inbrowse lives inside ubuntu
   try {
-    const child = spawn("proot-distro", ["login", "ubuntu", "--", "/usr/local/bin/obscura", "serve", "--port", String(cdpPort)], {
+    const child = spawn("proot-distro", ["login", "ubuntu", "--", "/usr/local/bin/inbrowse", "serve", "--port", String(cdpPort)], {
       stdio: "ignore",
       detached: true,
     });
@@ -89,7 +89,7 @@ async function listAllPages() {
 const page = `
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Obscura live view</title>
+<head><meta charset="utf-8"><title>Inbrowse live view</title>
 <style>body{margin:0;background:#111;display:grid;place-items:center;height:100vh}
 img{max-width:100%;max-height:100%}
 #st{position:fixed;top:6px;left:10px;color:#8f8;font:13px monospace}</style></head>

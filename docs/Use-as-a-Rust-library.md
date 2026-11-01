@@ -1,24 +1,24 @@
-The `obscura` crate embeds the engine in a Rust program with a `Browser` / `Page` / `Element` API plus a cookie store, no CDP round-trips. It builds V8 from source, so it is a git dependency rather than a crates.io release.
+The `inbrowse-sdk` crate embeds the engine in a Rust program with a `Browser` / `Page` / `Element` API plus a cookie store, no CDP round-trips. It builds V8 from source, so it is a git dependency rather than a crates.io release.
 
 ## Add the dependency
 
 ```toml
 [dependencies]
-obscura = { git = "https://github.com/h4ckf0r0day/obscura" }
+inbrowse-sdk = { git = "https://github.com/incordai/Inbrowse" }
 tokio = { version = "1", features = ["rt", "macros"] }
 anyhow = "1"
 ```
 
-The first build compiles V8 from source, so it is slow and needs the same build tools as [Build from source](Build-from-source.md). Pin a tag for reproducible builds:
+The first build compiles V8 from source, so it is slow and needs the same build tools as [Build from source](Build-from-source.md). Pin a commit for reproducible builds:
 
 ```toml
-obscura = { git = "https://github.com/h4ckf0r0day/obscura", tag = "v0.1.7" }
+inbrowse-sdk = { git = "https://github.com/incordai/Inbrowse", rev = "<commit sha>" }
 ```
 
 ## Quickstart
 
 ```rust
-use obscura::Browser;
+use inbrowse_sdk::Browser;
 use std::time::Duration;
 
 #[tokio::main]
@@ -63,9 +63,9 @@ async fn main() -> anyhow::Result<()> {
 
 `CookieStore`: `set`, `get_all`, `get_for_url`, `save_to_file`, `load_from_file`.
 
-Low-level `obscura-browser` users must call `BrowserContext::set_allow_file_access(true)`
+Low-level `inbrowse` users must call `BrowserContext::set_allow_file_access(true)`
 before sharing the context to read local files. Assigning `allow_file_access` directly
-does not enable the transport. Standalone `obscura-net` clients refuse `file://` by
+does not enable the transport. Standalone `inbrowse-net` clients refuse `file://` by
 default; use their file-access setting only for trusted local-file workflows.
 
 ## Intercept requests
@@ -77,7 +77,7 @@ The interception API observes, blocks, mocks, and rewrites the requests a page m
 `on_request` and `on_response` fire for every request and response (navigation and JS `fetch()`/XHR) and are non-blocking. `on_response` is the main path for capturing the JSON an SPA loads asynchronously. Both return a stable id; pass it to `off_request` / `off_response` to detach the callback when a crawl phase is done. Callbacks are scoped to the page that registered them: they never fire for another page's requests and are dropped with the page.
 
 ```rust
-use obscura::{Browser, ResourceType};
+use inbrowse_sdk::{Browser, ResourceType};
 use std::sync::Arc;
 
 let browser = Browser::new()?;
@@ -98,7 +98,7 @@ page.settle(2000).await;   // let in-page fetch() calls resolve
 `enable_interception()` returns a channel of every JS `fetch()`/XHR request. Resolve each through its `resolver` to pass, block, mock, or rewrite it.
 
 ```rust
-use obscura::{Browser, InterceptResolution};
+use inbrowse_sdk::{Browser, InterceptResolution};
 
 let mut page = browser.new_page().await?;
 let mut rx = page.enable_interception();
@@ -127,7 +127,7 @@ page.settle(2000).await;
 
 A `Continue` with `url: Some(...)` rewrites the target. The new URL is re-checked against the SSRF / private-network gate, so a rewrite cannot reach an internal address that would otherwise need `--allow-private-network`.
 
-`Continue.body` takes raw bytes as `Option<Vec<u8>>`, not a base64 string. Migrate text overrides from `Some(text)` to `Some(text.into_bytes())`. `None` preserves the original request body; `Some(Vec::new())` replaces it with an empty body. CDP clients still send base64 `postData` as specified by the protocol; Obscura decodes it before sending the request.
+`Continue.body` takes raw bytes as `Option<Vec<u8>>`, not a base64 string. Migrate text overrides from `Some(text)` to `Some(text.into_bytes())`. `None` preserves the original request body; `Some(Vec::new())` replaces it with an empty body. CDP clients still send base64 `postData` as specified by the protocol; Inbrowse decodes it before sending the request.
 
 ### Preload scripts
 

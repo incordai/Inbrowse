@@ -1655,6 +1655,210 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
 
 [[package]]
+name = "inbrowse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "futures",
+ "futures-util",
+ "image",
+ "inbrowse-dom",
+ "inbrowse-js",
+ "inbrowse-net",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "inbrowse-cdp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "fast_image_resize",
+ "futures-util",
+ "image",
+ "inbrowse",
+ "inbrowse-dom",
+ "inbrowse-js",
+ "inbrowse-net",
+ "jpeg-encoder",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "inbrowse-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "image",
+ "inbrowse",
+ "inbrowse-cdp",
+ "inbrowse-dom",
+ "inbrowse-js",
+ "inbrowse-mcp",
+ "inbrowse-net",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "inbrowse-dom"
+version = "0.1.0"
+dependencies = [
+ "cssparser",
+ "html5ever",
+ "markup5ever",
+ "precomputed-hash",
+ "selectors",
+ "servo_arc",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "inbrowse-js"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "aes-kw",
+ "anyhow",
+ "base64",
+ "cbc",
+ "ctr",
+ "deno_core",
+ "deno_error",
+ "getrandom 0.2.17",
+ "hkdf",
+ "hmac",
+ "html5ever",
+ "inbrowse-dom",
+ "inbrowse-net",
+ "inbrowse-render",
+ "pbkdf2",
+ "psl",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "inbrowse-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "inbrowse",
+ "inbrowse-dom",
+ "inbrowse-net",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "inbrowse-net"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "encoding_rs",
+ "futures-util",
+ "inbrowse-ssrf",
+ "psl",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-socks",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "url",
+ "webpki-roots 1.0.10",
+ "wreq",
+ "wreq-util",
+]
+
+[[package]]
+name = "inbrowse-render"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "base64",
+ "cosmic-text",
+ "cssparser",
+ "image",
+ "inbrowse-dom",
+ "inbrowse-ssrf",
+ "log",
+ "resvg",
+ "swash",
+ "taffy",
+ "tiny-skia",
+ "ureq",
+ "url",
+ "usvg",
+ "wuff",
+]
+
+[[package]]
+name = "inbrowse-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inbrowse",
+ "inbrowse-net",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "inbrowse-ssrf"
+version = "0.1.0"
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1975,210 +2179,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
 ]
-
-[[package]]
-name = "obscura"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "obscura-browser",
- "obscura-net",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "obscura-browser"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "futures",
- "futures-util",
- "image",
- "obscura-dom",
- "obscura-js",
- "obscura-net",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "obscura-cdp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "fast_image_resize",
- "futures-util",
- "image",
- "jpeg-encoder",
- "libc",
- "obscura-browser",
- "obscura-dom",
- "obscura-js",
- "obscura-net",
- "png",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "obscura-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "image",
- "libc",
- "obscura-browser",
- "obscura-cdp",
- "obscura-dom",
- "obscura-js",
- "obscura-mcp",
- "obscura-net",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "obscura-dom"
-version = "0.1.0"
-dependencies = [
- "cssparser",
- "html5ever",
- "markup5ever",
- "precomputed-hash",
- "selectors",
- "servo_arc",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "obscura-js"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "aes-kw",
- "anyhow",
- "base64",
- "cbc",
- "ctr",
- "deno_core",
- "deno_error",
- "getrandom 0.2.17",
- "hkdf",
- "hmac",
- "html5ever",
- "obscura-dom",
- "obscura-net",
- "obscura-render",
- "pbkdf2",
- "psl",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "obscura-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "obscura-browser",
- "obscura-dom",
- "obscura-net",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "obscura-net"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64",
- "encoding_rs",
- "futures-util",
- "obscura-ssrf",
- "psl",
- "rcgen",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-socks",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
- "webpki-roots 1.0.10",
- "wreq",
- "wreq-util",
-]
-
-[[package]]
-name = "obscura-render"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "base64",
- "cosmic-text",
- "cssparser",
- "image",
- "log",
- "obscura-dom",
- "obscura-ssrf",
- "resvg",
- "swash",
- "taffy",
- "tiny-skia",
- "ureq",
- "url",
- "usvg",
- "wuff",
-]
-
-[[package]]
-name = "obscura-ssrf"
-version = "0.1.0"
 
 [[package]]
 name = "once_cell"

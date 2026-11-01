@@ -1,0 +1,31 @@
+[package]
+name = "inbrowse-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust API for the Inbrowse headless browser"
+readme = "README.md"
+repository = "https://github.com/incordai/Inbrowse"
+license = "Apache-2.0"
+
+[features]
+default = ["api"]
+api = ["inbrowse", "inbrowse-net", "tokio"]
+stealth = ["api", "inbrowse/stealth"]
+render = ["api", "inbrowse/render"]
+
+[dependencies]
+inbrowse = { path = "../inbrowse", optional = true }
+inbrowse-net = { path = "../inbrowse-net", optional = true }
+anyhow = "1"
+tokio = { version = "1", features = ["rt"], optional = true }
+thiserror = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[[example]]
+name = "basic"
+required-features = ["stealth"]
