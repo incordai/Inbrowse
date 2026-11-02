@@ -1,3 +1,13 @@
+<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="main/profile/assets/incord-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="main/profile/assets/incord-logo-light.svg">
+    <img alt="INCORD" src="/assets/incord-logo-light.svg" width="840">
+  </picture>
+</p>
+</div>
+
 <h2 align="center">Inbrowse</h2>
 <p align="center">by <strong>Incord AI</strong></p>
 <p align="center">
