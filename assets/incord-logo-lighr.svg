@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 705 108" width="705" height="108" role="img" aria-label="INCORD">
+<title>INCORD</title>
+<style>.cut{stroke-dasharray:55 160;stroke-dashoffset:55;animation:run 3s linear infinite}
+.k2{animation-delay:.5s}.k3{animation-delay:1s}.k4{animation-delay:1.5s}.k5{animation-delay:2s}.k6{animation-delay:2.5s}
+@keyframes run{0%{stroke-dashoffset:55}16.6%{stroke-dashoffset:-100}100%{stroke-dashoffset:-100}}
+@media (prefers-reduced-motion:reduce){.cut{animation:none;stroke-dasharray:none}}</style>
+<g fill="#0B0D12" fill-rule="evenodd">
+<path d="M0,0 H29 V14 H0 Z M0,17 H29 V100 H0 Z"/>
+<path transform="translate(37,0)" d="M0,0 H86 A28,28 0 0 1 112.4,22 L124,80 H95 L86.2,36 A12,12 0 0 0 74,26 H27 V100 H0 Z M95.6,83 H124.6 L128,100 H99 Z"/>
+<path transform="translate(169,0)" d="M28,0 H70 V26 H40 A13,13 0 0 0 27,39 V74 H119 V100 H0 V28 A28,28 0 0 1 28,0 Z M73,0 H88 V26 H73 Z"/>
+<path transform="translate(306,0)" d="M0,74 V28 A28,28 0 0 1 28,0 H91 A28,28 0 0 1 119,28 V72 A28,28 0 0 1 91,100 H45 V74 H92 V26 H40 A13,13 0 0 0 27,39 V74 Z M27,74 H42 V100 H27 Z"/>
+<path transform="translate(442,0)" d="M0,80 V28 A28,28 0 0 1 28,0 H88 V50 H119 V100 H88 V74 H61 V26 H27 V80 Z M0,83 H27 V100 H0 Z"/>
+<path transform="translate(578,0)" d="M0,0 H74 V26 H27 V74 H92 V26 H119 V72 A28,28 0 0 1 91,100 H0 Z M77,0 H92 V26 H77 Z"/>
+</g>
+<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<g fill="none" stroke="#FF7A1A" stroke-width="2.6" stroke-linecap="round" filter="url(#glow)">
+<line class="cut k1" pathLength="100" x1="0" y1="15.5" x2="29" y2="15.5"/>
+<line class="cut k2" pathLength="100" x1="132.3" y1="81.5" x2="161.3" y2="81.5"/>
+<line class="cut k3" pathLength="100" x1="240.5" y1="0" x2="240.5" y2="26"/>
+<line class="cut k4" pathLength="100" x1="349.5" y1="74" x2="349.5" y2="100"/>
+<line class="cut k5" pathLength="100" x1="442" y1="81.5" x2="469" y2="81.5"/>
+<line class="cut k6" pathLength="100" x1="653.5" y1="0" x2="653.5" y2="26"/>
+</g>
+</svg>

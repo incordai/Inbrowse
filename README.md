@@ -1,4 +1,14 @@
-<h2 align="center">Inbrowse</h2>
+<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="/assets/incord-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="/assets/incord-logo-light.svg">
+    <img alt="INCORD" src="/assets/incord-logo-light.svg" width="840">
+  </picture>
+</p>
+</div>
+
+<h1 align="center">Inbrowse</h1>
 <p align="center">by <strong>Incord AI</strong></p>
 <p align="center">
   <a href="https://github.com/incordai/Inbrowse/releases"><img src="https://img.shields.io/badge/Releases-1a1a1a?style=for-the-badge&logo=github&logoColor=white" alt="Releases" /></a>
