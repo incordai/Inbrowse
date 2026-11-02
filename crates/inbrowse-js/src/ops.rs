@@ -4374,10 +4374,7 @@ async fn fetch_url_inner(
             .keys()
             .any(|k| k.eq_ignore_ascii_case("user-agent"))
         {
-            req = req.header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-            );
+            req = req.header("User-Agent", inbrowse_net::DEFAULT_USER_AGENT);
         }
 
         for (k, v) in &current_headers {

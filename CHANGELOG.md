@@ -15,6 +15,10 @@ All notable changes to Inbrowse are recorded here. The format follows
   embeddable Rust API).
 - Environment variables are named `INBROWSE_*`. The old `OBSCURA_*` names are
   no longer read, so scripts and deployments must be updated.
+- One default browser identity, Chrome 145 on Windows, everywhere: pages,
+  raw downloads (`fetch --dump original`), script `fetch()`/XHR, CDP version
+  info and the stealth TLS fingerprint. Raw downloads and CDP used to report
+  Chrome on Linux while pages reported Chrome 143 on Windows.
 
 ### Added
 

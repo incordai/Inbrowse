@@ -58,8 +58,7 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
 }
 
 #[cfg(feature = "stealth")]
-pub const STEALTH_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+pub const STEALTH_USER_AGENT: &str = crate::client::DEFAULT_USER_AGENT;
 
 // The wreq emulation (Profile::Chrome145, Platform::Windows) sends this exact
 // UA and sec-ch-ua-platform "Windows" on the wire. navigator has to report the

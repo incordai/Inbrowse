@@ -73,6 +73,10 @@ pub fn random_profile() -> &'static BrowserProfile {
 /// timezone fingerprint, so rotation is opt-in:
 ///   INBROWSE_PROFILE=<index>   pin a specific profile from PROFILES
 ///   INBROWSE_ROTATE_PROFILE=1  pick a random profile per context
+///
+/// The default is the Chrome 145 Windows profile, the identity every other
+/// surface reports (`inbrowse_net::DEFAULT_USER_AGENT`: raw downloads, CDP
+/// version info, and the stealth TLS emulation).
 pub fn select_profile() -> &'static BrowserProfile {
     if let Some(idx) = std::env::var("INBROWSE_PROFILE")
         .ok()
@@ -87,7 +91,21 @@ pub fn select_profile() -> &'static BrowserProfile {
     if env_enabled("INBROWSE_ROTATE_PROFILE") {
         return random_profile();
     }
-    &PROFILES[0]
+    &PROFILES[DEFAULT_PROFILE]
+}
+
+/// Index into PROFILES of the default identity (Chrome 145, Windows).
+const DEFAULT_PROFILE: usize = 2;
+
+#[cfg(test)]
+mod default_profile_tests {
+    #[test]
+    fn default_profile_is_the_identity_every_surface_reports() {
+        assert_eq!(
+            super::PROFILES[super::DEFAULT_PROFILE].user_agent,
+            inbrowse_net::DEFAULT_USER_AGENT
+        );
+    }
 }
 
 fn env_enabled(key: &str) -> bool {

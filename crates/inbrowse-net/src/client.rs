@@ -15,6 +15,14 @@ use url::Url;
 use crate::cookies::{same_site, CookieJar, SameSiteContext};
 use crate::interceptor::{InterceptAction, RequestInterceptor};
 
+/// The User-Agent every surface reports unless the caller overrides it: the
+/// same Chrome-on-Windows identity pages see in `navigator.userAgent`.
+/// Used by this client, fetch()/XHR (inbrowse-js ops.rs), CDP
+/// `Browser.getVersion` and `/json/version` (inbrowse-cdp), and aliased as
+/// `STEALTH_USER_AGENT` (wreq_client.rs), so no surface can disagree.
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+
 pub(crate) fn configured_root_paths() -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     if let Some(path) = std::env::var_os("SSL_CERT_FILE").filter(|path| !path.is_empty()) {
@@ -1062,9 +1070,7 @@ impl InbrowseHttpClient {
             client: tokio::sync::OnceCell::new(),
             proxy_url: proxy_url.map(|s| s.to_string()),
             cookie_jar,
-            user_agent: RwLock::new(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36".to_string(),
-            ),
+            user_agent: RwLock::new(DEFAULT_USER_AGENT.to_string()),
             accept_language: RwLock::new("en-US,en;q=0.9".to_string()),
             extra_headers: RwLock::new(HashMap::new()),
             interceptor: RwLock::new(None),

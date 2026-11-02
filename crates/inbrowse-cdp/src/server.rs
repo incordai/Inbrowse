@@ -1158,7 +1158,7 @@ fn handle_http_json_blocking(
         "version" => serde_json::to_string_pretty(&json!({
             "Browser": "Chrome/145.0.0.0",
             "Protocol-Version": "1.3",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+            "User-Agent": inbrowse_net::DEFAULT_USER_AGENT,
             "V8-Version": "14.5.0.0",
             "WebKit-Version": "537.36",
             "webSocketDebuggerUrl": format!("ws://{}/devtools/browser", authority),
@@ -2286,7 +2286,7 @@ fn fast_path_response(text: &str) -> Option<String> {
                 "protocolVersion": "1.3",
                 "product": "Chrome/145.0.0.0",
                 "revision": "@0000000000000000000000000000000000000000",
-                "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "userAgent": inbrowse_net::DEFAULT_USER_AGENT,
                 "jsVersion": "14.5.0.0",
             }))
         }
