@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-40 -40 1083 180" width="2166" height="360" role="img" aria-label="INBROWSE">
+<title>INBROWSE</title>
+<style>
+.c{stroke-dasharray:40 140;stroke-dashoffset:40;animation:run 4.0s linear infinite;filter:drop-shadow(0 0 2px #FF7A1A)}
+@keyframes run{0%{stroke-dashoffset:40}12.5%{stroke-dashoffset:-100}100%{stroke-dashoffset:-100}}
+@media (prefers-reduced-motion:reduce){.c{animation:none;stroke-dasharray:none;opacity:.8}}
+</style>
+
+<g fill="#0B0D12" fill-rule="evenodd">
+<path transform="translate(0,0)" d="M0,0 H29 V14 H0 Z M0,17 H29 V100 H0 Z"/>
+<path transform="translate(37,0)" d="M0,0 H86 A28,28 0 0 1 112.4,22 L124,80 H95 L86.2,36 A12,12 0 0 0 74,26 H27 V100 H0 Z M95.6,83 H124.6 L128,100 H99 Z"/>
+<path transform="translate(171,0)" d="M0,0 H84 A24,24 0 0 1 108,24 V38 H119 V72 A28,28 0 0 1 91,100 H0 Z M27,24 H81 V38 H63 V62 H92 V76 H27 V62 H60 V38 H27 Z"/>
+<path transform="translate(307,0)" d="M0,80 V28 A28,28 0 0 1 28,0 H88 V50 H119 V100 H88 V74 H61 V26 H27 V80 Z M0,83 H27 V100 H0 Z"/>
+<path transform="translate(443,0)" d="M0,74 V28 A28,28 0 0 1 28,0 H91 A28,28 0 0 1 119,28 V72 A28,28 0 0 1 91,100 H45 V74 H92 V26 H40 A13,13 0 0 0 27,39 V74 Z M27,74 H42 V100 H27 Z"/>
+<path transform="translate(579,0)" d="M0,0 V72 A28,28 0 0 0 28,100 H124 A28,28 0 0 0 152,72 V20 H125 V61 A13,13 0 0 1 112,74 H90 V0 H63 V74 H40 A13,13 0 0 1 27,61 V0 Z M125,0 H152 V17 H125 Z"/>
+<path transform="translate(748,0)" d="M28,0 H119 V24 H27 V38 H91 A28,28 0 0 1 119,66 V72 A28,28 0 0 1 91,100 H31 V76 H92 V62 H28 A28,28 0 0 1 0,34 V28 A28,28 0 0 1 28,0 Z M0,76 H28 V100 H0 Z"/>
+<path transform="translate(884,0)" d="M28,0 H119 V24 H27 V38 H70 V62 H27 V76 H119 V100 H0 V28 A28,28 0 0 1 28,0 Z M73,38 H96 V62 H73 Z"/>
+</g>
+<g fill="none" stroke="#FF7A1A" stroke-width="1">
+<line class="c" style="animation-delay:0.0s" pathLength="100" transform="translate(0,0)" x1="0" y1="15.5" x2="29" y2="15.5"/>
+<line class="c" style="animation-delay:0.5s" pathLength="100" transform="translate(37,0)" x1="95.3" y1="81.5" x2="124.3" y2="81.5"/>
+<line class="c" style="animation-delay:1.0s" pathLength="100" transform="translate(171,0)" x1="61.5" y1="38" x2="61.5" y2="62"/>
+<line class="c" style="animation-delay:1.5s" pathLength="100" transform="translate(307,0)" x1="0" y1="81.5" x2="27" y2="81.5"/>
+<line class="c" style="animation-delay:2.0s" pathLength="100" transform="translate(443,0)" x1="43.5" y1="74" x2="43.5" y2="100"/>
+<line class="c" style="animation-delay:2.5s" pathLength="100" transform="translate(579,0)" x1="125" y1="18.5" x2="152" y2="18.5"/>
+<line class="c" style="animation-delay:3.0s" pathLength="100" transform="translate(748,0)" x1="29.5" y1="76" x2="29.5" y2="100"/>
+<line class="c" style="animation-delay:3.5s" pathLength="100" transform="translate(884,0)" x1="71.5" y1="38" x2="71.5" y2="62"/>
+</g>
+</svg>
