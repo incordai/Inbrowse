@@ -64,6 +64,102 @@ SDKROOT="$SDK_PATH" CXXFLAGS="-isystem $SDK_PATH/usr/include/c++/v1" \
   cargo build --release -p inbrowse-cli --bins --features render,stealth
 ```
 
+## Video and audio (`media` feature)
+
+The `media` feature adds frame, audio and caption extraction from video and
+audio files. Most of it is Rust or C that cargo compiles from bundled source
+(H.264 through OpenH264, Opus, AAC). VP8 and VP9 use libvpx, which you install
+once on the build machine.
+
+Link libvpx **statically**. A static build carries libvpx inside the
+`inbrowse` binary, so people who run a release need nothing installed. Without
+`VPX_STATIC=1` the binary links libvpx dynamically and fails to start on
+machines without it.
+
+All three platforms use the same variables:
+
+| Variable | Value |
+|---|---|
+| `VPX_LIB_DIR` | directory holding `libvpx.a` (`vpx.lib` on Windows) |
+| `VPX_INCLUDE_DIR` | directory holding `vpx/vpx_decoder.h` |
+| `VPX_VERSION` | installed libvpx version, for example `1.16.0` |
+| `VPX_STATIC` | `1` |
+
+Set `VPX_LIB_DIR` even when pkg-config could find libvpx. In pkg-config mode,
+a library under `/usr` is linked dynamically even with `VPX_STATIC=1`.
+
+NASM is optional. With NASM on `PATH`, OpenH264 builds its x86 assembly and
+decodes faster. Without it, the build falls back to plain C. Set
+`OPENH264_NO_ASM=1` to skip the assembly on purpose.
+
+### Linux (Debian, Ubuntu)
+
+```bash
+sudo apt-get install build-essential pkg-config libvpx-dev nasm
+
+export VPX_LIB_DIR="$(pkg-config --variable=libdir vpx)"
+export VPX_INCLUDE_DIR="$(pkg-config --variable=includedir vpx)"
+export VPX_VERSION="$(pkg-config --modversion vpx)"
+export VPX_STATIC=1
+ls "$VPX_LIB_DIR/libvpx.a"   # must exist
+
+cargo build --release -p inbrowse-cli --bins --features render,media
+ldd target/release/inbrowse | grep vpx   # must print nothing
+```
+
+On Fedora, install `libvpx-devel` and `nasm`. Check that `libvpx.a` exists;
+if your distribution ships only the shared library, build libvpx from source
+with `--enable-static --disable-shared --enable-pic` and point `VPX_LIB_DIR`
+at the result.
+
+### macOS
+
+```bash
+brew install libvpx nasm pkg-config
+
+export VPX_LIB_DIR="$(brew --prefix libvpx)/lib"
+export VPX_INCLUDE_DIR="$(brew --prefix libvpx)/include"
+export VPX_VERSION="$(pkg-config --modversion vpx)"
+export VPX_STATIC=1
+ls "$VPX_LIB_DIR/libvpx.a"   # must exist
+
+cargo build --release -p inbrowse-cli --bins --features render,media
+otool -L target/release/inbrowse | grep vpx   # must print nothing
+```
+
+Homebrew builds for the macOS version and CPU it runs on. To build a binary for
+older macOS releases, build libvpx yourself with the same
+`MACOSX_DEPLOYMENT_TARGET` you use for Inbrowse.
+
+### Windows
+
+Install libvpx with [vcpkg](https://github.com/microsoft/vcpkg), using the
+`x64-windows-static-md` triplet. That triplet makes a static library built
+against the same C runtime that Rust uses. Run this in PowerShell:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+C:\vcpkg\vcpkg install libvpx:x64-windows-static-md
+
+$env:VPX_LIB_DIR     = "C:\vcpkg\installed\x64-windows-static-md\lib"
+$env:VPX_INCLUDE_DIR = "C:\vcpkg\installed\x64-windows-static-md\include"
+$env:VPX_VERSION     = "1.16.0"   # Version: line of lib\pkgconfig\vpx.pc
+$env:VPX_STATIC      = "1"
+
+cargo build --release -p inbrowse-cli --bins --features render,media
+```
+
+Check the binary from a Developer PowerShell for Visual Studio. The list of
+DLLs it loads must not include libvpx:
+
+```powershell
+dumpbin /dependents target\release\inbrowse.exe
+```
+
+For NASM on Windows, install it from [nasm.us](https://www.nasm.us) and add its
+folder to `PATH`.
+
 ## OpenSSL on older systems
 
 If the build fails on the vendored OpenSSL with an AVX-512 assembler error (common on older VPS hosts):

@@ -281,6 +281,122 @@ enum Command {
         #[arg(long, short = 'o')]
         output: Option<std::path::PathBuf>,
     },
+
+    /// Research sources: posts with engagement counts from Reddit, X, Hacker
+    /// News, GitHub or Polymarket, printed as JSON. API keys come from
+    /// INBROWSE_REDDIT_CLIENT_ID + INBROWSE_REDDIT_CLIENT_SECRET,
+    /// INBROWSE_X_BEARER_TOKEN and INBROWSE_GITHUB_TOKEN; account cookies from
+    /// --cookies or the --storage-dir profile.
+    #[cfg(feature = "social")]
+    Social {
+        #[command(subcommand)]
+        action: SocialAction,
+    },
+
+    /// Take still frames (PNG), 16 kHz mono WAV audio and captions from an
+    /// MP4, WebM, Matroska or WebVTT file, and print a JSON report with the
+    /// file paths.
+    #[cfg(feature = "media")]
+    Media {
+        /// A local path, or an http(s):// or file:// URL to download.
+        target: String,
+
+        /// Folder for the PNG and WAV files. Default: a new folder under
+        /// INBROWSE_MEDIA_DIR or the system temp folder.
+        #[arg(long)]
+        out_dir: Option<std::path::PathBuf>,
+
+        /// Take a frame at least every this many seconds.
+        #[arg(long, default_value_t = 10.0)]
+        every: f64,
+
+        /// Most frames to write (0 to 200).
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(0..=200))]
+        max_frames: u32,
+
+        /// Do not add frames where the picture changes sharply.
+        #[arg(long)]
+        no_scene_changes: bool,
+
+        /// Do not write the audio track.
+        #[arg(long)]
+        no_audio: bool,
+
+        /// Scale frames down so the longer side is at most this many pixels.
+        #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u32).range(16..))]
+        max_side: u32,
+
+        /// Also read the text in each frame with the OCR model in the Incord
+        /// memory engine (INBROWSE_OCR_URL); adds `ocr` to each frame.
+        #[cfg(feature = "ocr")]
+        #[arg(long)]
+        ocr: bool,
+
+        /// Seconds allowed for the download, the extraction and OCR together.
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        timeout: u64,
+
+        /// Write the JSON report here instead of stdout.
+        #[arg(long, short = 'o')]
+        output: Option<std::path::PathBuf>,
+    },
+
+    /// Read the text in an image (PNG, JPEG, WebP, GIF or BMP) with the OCR
+    /// model in the Incord memory engine, and print it as JSON with each
+    /// line's box and confidence. The engine's address comes from
+    /// INBROWSE_OCR_URL (default http://127.0.0.1:9180, where Watchman runs
+    /// it), its key (if any) from INBROWSE_OCR_KEY. Big images
+    /// are split into overlapping tiles, never refused.
+    #[cfg(feature = "ocr")]
+    Ocr {
+        /// A local path, or an http(s):// or file:// URL to download.
+        target: String,
+
+        /// Seconds allowed for the download and OCR together.
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        timeout: u64,
+
+        /// Write the JSON here instead of stdout.
+        #[arg(long, short = 'o')]
+        output: Option<std::path::PathBuf>,
+    },
+}
+
+#[cfg(feature = "social")]
+#[derive(Subcommand, Debug)]
+enum SocialAction {
+    /// Search one source for posts from the last --days days.
+    Search {
+        /// reddit, x, hackernews, github or polymarket.
+        source: String,
+        query: String,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=365))]
+        days: u32,
+        #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// relevance, recent or top.
+        #[arg(long, default_value = "relevance")]
+        sort: String,
+        /// Subreddit (Reddit only).
+        #[arg(long)]
+        community: Option<String>,
+        /// JSON cookie list for signed-in access (same format as a
+        /// --storage-dir cookies.json, or a browser cookie export).
+        #[arg(long)]
+        cookies: Option<std::path::PathBuf>,
+        #[arg(long, short = 'o')]
+        output: Option<std::path::PathBuf>,
+    },
+    /// One post and its top comments (Reddit, Hacker News or GitHub URL).
+    Thread {
+        url: String,
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(0..=50))]
+        comments: u32,
+        #[arg(long)]
+        cookies: Option<std::path::PathBuf>,
+        #[arg(long, short = 'o')]
+        output: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
@@ -337,6 +453,18 @@ fn is_quiet_command(cmd: &Option<Command>) -> bool {
     // `extract` prints JSON on stdout, where log lines would corrupt it.
     #[cfg(feature = "extract")]
     if matches!(cmd, Some(Command::Extract { .. })) {
+        return true;
+    }
+    #[cfg(feature = "media")]
+    if matches!(cmd, Some(Command::Media { .. })) {
+        return true;
+    }
+    #[cfg(feature = "social")]
+    if matches!(cmd, Some(Command::Social { .. })) {
+        return true;
+    }
+    #[cfg(feature = "ocr")]
+    if matches!(cmd, Some(Command::Ocr { .. })) {
         return true;
     }
     matches!(
@@ -740,6 +868,41 @@ async fn run_cli() -> anyhow::Result<()> {
             output,
         }) => {
             run_extract(&target, hint, timeout, global_user_agent.clone(), global_proxy, stealth, output).await?;
+        }
+        #[cfg(feature = "social")]
+        Some(Command::Social { action }) => {
+            run_social(action, global_user_agent.clone(), global_proxy, stealth, global_storage_dir.clone()).await?;
+        }
+        #[cfg(feature = "media")]
+        Some(Command::Media {
+            target,
+            out_dir,
+            every,
+            max_frames,
+            no_scene_changes,
+            no_audio,
+            max_side,
+            #[cfg(feature = "ocr")]
+            ocr,
+            timeout,
+            output,
+        }) => {
+            let options = inbrowse_media::Options {
+                every_secs: every,
+                max_frames: max_frames as usize,
+                scene_changes: !no_scene_changes,
+                audio: !no_audio,
+                max_side,
+                ..inbrowse_media::Options::default()
+            };
+            #[cfg(not(feature = "ocr"))]
+            let ocr = false;
+            run_media(&target, out_dir, options, ocr, timeout, global_user_agent.clone(), global_proxy, stealth, output)
+                .await?;
+        }
+        #[cfg(feature = "ocr")]
+        Some(Command::Ocr { target, timeout, output }) => {
+            run_ocr(&target, timeout, global_user_agent.clone(), global_proxy, stealth, output).await?;
         }
         None => {
             print_banner(args.port);
@@ -1849,6 +2012,245 @@ async fn run_extract(
         Err(_) => anyhow::bail!("Timed out extracting {} after {}s", target, timeout_secs),
     };
     let mut json = serde_json::to_vec(&document)?;
+    json.push(b'\n');
+    write_or_print_bytes(&json, output.as_ref()).await
+}
+
+/// API key for `source` from the user's own environment, as the per-call
+/// `credentials` object the MCP tool takes. Nothing is stored.
+#[cfg(feature = "social")]
+fn social_credentials(source: &str) -> Option<serde_json::Value> {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let (provider, key, secret) = match source {
+        "reddit" => ("reddit", var("INBROWSE_REDDIT_CLIENT_ID")?, var("INBROWSE_REDDIT_CLIENT_SECRET")),
+        "x" | "twitter" => ("x", var("INBROWSE_X_BEARER_TOKEN")?, None),
+        "github" => ("github", var("INBROWSE_GITHUB_TOKEN")?, None),
+        _ => return None,
+    };
+    let mut c = serde_json::json!({ "kind": "api_key", "provider": provider, "key": key });
+    if let Some(secret) = secret {
+        c["secret"] = serde_json::Value::String(secret);
+    }
+    Some(c)
+}
+
+/// `inbrowse social`: the MCP `social_search` / `social_thread` tools on a
+/// browser context built from the CLI flags (inbrowse-mcp `social::call`, one
+/// code path for both). Cookies come from --cookies and/or the --storage-dir
+/// profile; API keys from `social_credentials`.
+#[cfg(feature = "social")]
+async fn run_social(
+    action: SocialAction,
+    user_agent: Option<String>,
+    proxy: Option<String>,
+    stealth: bool,
+    storage_dir: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let (tool, args, cookies, output) = match action {
+        SocialAction::Search {
+            source,
+            query,
+            days,
+            limit,
+            sort,
+            community,
+            cookies,
+            output,
+        } => {
+            let source = source.to_ascii_lowercase();
+            let mut args = serde_json::json!({
+                "source": source, "query": query, "days": days, "limit": limit, "sort": sort
+            });
+            if let Some(c) = community {
+                args["community"] = serde_json::Value::String(c);
+            }
+            if let Some(c) = social_credentials(&source) {
+                args["credentials"] = c;
+            }
+            ("social_search", args, cookies, output)
+        }
+        SocialAction::Thread {
+            url,
+            comments,
+            cookies,
+            output,
+        } => {
+            let host = url::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                .unwrap_or_default();
+            let source = if host.ends_with("reddit.com") || host.ends_with("redd.it") {
+                "reddit"
+            } else if host.ends_with("github.com") {
+                "github"
+            } else {
+                ""
+            };
+            let mut args = serde_json::json!({ "url": url, "comments": comments });
+            if let Some(c) = social_credentials(source) {
+                args["credentials"] = c;
+            }
+            ("social_thread", args, cookies, output)
+        }
+    };
+    let context = BrowserContext::with_storage_and_network(
+        "social".to_string(),
+        proxy,
+        stealth,
+        user_agent,
+        storage_dir,
+        false,
+    );
+    if let Some(path) = cookies {
+        let count = context
+            .cookie_jar
+            .load_from_file(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read cookies from {}: {}", path.display(), e))?;
+        if count == 0 {
+            anyhow::bail!("{} holds no cookies", path.display());
+        }
+    }
+    let context = Arc::new(context);
+    let result = inbrowse_mcp::social::call(tool, &args, &context)
+        .await
+        .expect("social tool name");
+    let text = result.map_err(|e| anyhow::anyhow!(e))?;
+    let mut bytes = text.into_bytes();
+    bytes.push(b'\n');
+    write_or_print_bytes(&bytes, output.as_ref()).await
+}
+
+/// `inbrowse media`: read or download one video, audio or WebVTT file, write
+/// frames and audio with inbrowse-media, and print the report as JSON with an
+/// added `out_dir`. Downloads go through `fetch_original_response`, as in
+/// `run_extract` (its sibling for documents).
+#[cfg(feature = "media")]
+#[allow(clippy::too_many_arguments)]
+async fn run_media(
+    target: &str,
+    out_dir: Option<std::path::PathBuf>,
+    mut options: inbrowse_media::Options,
+    ocr: bool,
+    timeout_secs: u64,
+    user_agent: Option<String>,
+    proxy: Option<String>,
+    stealth: bool,
+    output: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    // Backstop as in run_extract: a decoder stuck in native code cannot be
+    // cancelled by the deadline below.
+    let hard = Duration::from_secs(timeout_secs.saturating_add(5));
+    std::thread::spawn(move || {
+        std::thread::sleep(hard);
+        eprintln!("inbrowse: hard timeout exceeded ({}s); forcing exit", hard.as_secs());
+        std::process::exit(124);
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+
+    let is_url = url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+    let (bytes, hint) = if is_url {
+        let resp = fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
+        if resp.status >= 400 {
+            anyhow::bail!("{} returned HTTP {}", target, resp.status);
+        }
+        let hint = resp
+            .url
+            .path_segments()
+            .and_then(|mut s| s.next_back())
+            .map(String::from);
+        (resp.body, hint)
+    } else {
+        let path = std::path::Path::new(target);
+        let len = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
+            .len();
+        if len > options.max_input_bytes as u64 {
+            anyhow::bail!("{} is {} bytes; the limit is {}", path.display(), len, options.max_input_bytes);
+        }
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+        (bytes, path.file_name().map(|n| n.to_string_lossy().into_owned()))
+    };
+
+    let out_dir = match out_dir {
+        Some(dir) => dir,
+        None => inbrowse_media::new_output_dir()?,
+    };
+    options.deadline = Some(deadline);
+    let dir = out_dir.clone();
+    let work = tokio::task::spawn_blocking(move || {
+        inbrowse_media::extract(bytes.into(), hint.as_deref(), &dir, &options)
+    });
+    // Decoding stops itself at the deadline; the margin lets it write what it has.
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now()) + Duration::from_secs(3);
+    let report = match timeout(remaining, work).await {
+        Ok(joined) => joined.map_err(|e| anyhow::anyhow!("media task failed: {}", e))??,
+        Err(_) => anyhow::bail!("Timed out reading {} after {}s", target, timeout_secs),
+    };
+    let mut value = serde_json::to_value(&report)?;
+    if let Some(map) = value.as_object_mut() {
+        map.insert("out_dir".into(), serde_json::Value::String(out_dir.to_string_lossy().into_owned()));
+    }
+    // Same code path as the MCP `media_extract` tool's `ocr` option.
+    #[cfg(feature = "ocr")]
+    if ocr {
+        inbrowse_mcp::ocr::annotate_frames(&mut value, Some(deadline)).await;
+    }
+    #[cfg(not(feature = "ocr"))]
+    let _ = ocr;
+    let mut json = serde_json::to_vec(&value)?;
+    json.push(b'\n');
+    write_or_print_bytes(&json, output.as_ref()).await
+}
+
+/// `inbrowse ocr`: read or download one image and print its text as JSON,
+/// through the same functions as the MCP `image_ocr` tool (inbrowse-mcp
+/// `ocr`, inbrowse-ocr). Downloads go through `fetch_original_response`, as
+/// in `run_extract` and `run_media`.
+#[cfg(feature = "ocr")]
+async fn run_ocr(
+    target: &str,
+    timeout_secs: u64,
+    user_agent: Option<String>,
+    proxy: Option<String>,
+    stealth: bool,
+    output: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let hard = Duration::from_secs(timeout_secs.saturating_add(5));
+    std::thread::spawn(move || {
+        std::thread::sleep(hard);
+        eprintln!("inbrowse: hard timeout exceeded ({}s); forcing exit", hard.as_secs());
+        std::process::exit(124);
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let limit = inbrowse_mcp::ocr::MAX_INPUT_BYTES;
+
+    let is_url = url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+    let bytes = if is_url {
+        let resp = fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
+        if resp.status >= 400 {
+            anyhow::bail!("{} returned HTTP {}", target, resp.status);
+        }
+        resp.body
+    } else {
+        let path = std::path::Path::new(target);
+        let len = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
+            .len();
+        if len > limit {
+            anyhow::bail!("{} is {} bytes; the limit is {}", path.display(), len, limit);
+        }
+        tokio::fs::read(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
+    };
+    let result = inbrowse_mcp::ocr::recognize(&bytes, Some(deadline))
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut json = serde_json::to_vec(&inbrowse_mcp::ocr::result_json(target, &result))?;
     json.push(b'\n');
     write_or_print_bytes(&json, output.as_ref()).await
 }

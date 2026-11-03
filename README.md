@@ -76,8 +76,37 @@ Inbrowse is a headless browser engine written in Rust by Incord AI, built for we
 | Feature | What changed |
 |---|---|
 | **`inbrowse extract`** | Text from a PDF, Word, PowerPoint, OpenDocument, spreadsheet, CSV or text file, local or downloaded, as JSON with one section per page, slide or sheet. See the [CLI reference](docs/CLI-reference.md). |
+| **`inbrowse media`** | Still frames (PNG, at an interval and at scene changes), 16 kHz mono WAV audio and captions from MP4, M4A, WebM, Matroska and WebVTT files. Decodes H.264, VP8, VP9, AAC and Opus with nothing extra to install. |
+| **`inbrowse ocr`** | The text in an image, with each line's box and confidence, read by the OCR model in the Incord memory engine. Big images are split into overlapping tiles, never refused. `inbrowse media --ocr` reads the text in each frame. |
+| **`inbrowse social`** | Posts with engagement counts from Reddit, X, Hacker News, GitHub and Polymarket, ranked and de-duplicated, signed in with an API key, your cookies, or anonymously. |
 | **`fetch --font-dir`** | One-shot screenshots can load system fonts, as `serve` and `mcp` already could. |
 | **`--dump markdown` tables** | Tables are valid GFM: a header row, a `\|---\|` separator, one line per row, and the caption as a paragraph. |
+
+Each of these is also an MCP tool (`document_extract`, `media_extract`,
+`image_ocr`, `social_search`, `social_thread`).
+
+## Works with Watchman
+
+Inbrowse works on its own, and it also works with
+[Watchman](https://github.com/incordai/Watchman-GUI), the Incord AI desktop app
+that runs the services Inbrowse leans on:
+
+| Service | What Watchman provides |
+|---|---|
+| **OCR** | The Incord memory engine Watchman runs holds the OCR model. `inbrowse ocr`, `image_ocr` and `media --ocr` call it at `http://127.0.0.1:9180` by default, so with Watchman running there is nothing to set up. |
+| **Cookies** | Watchman keeps the sign-in cookies for Reddit, X, LinkedIn and other sources, and warns you about the account risk before you use one. |
+| **API keys** | Watchman keeps the API keys for the research sources (Reddit app id and secret, X bearer token, GitHub token) and the engine key. |
+
+Inbrowse never stores cookies or keys itself: Watchman hands them over for each
+call, and Inbrowse never logs or echoes them.
+
+Without Watchman, every feature still works from the CLI or MCP. Point
+`INBROWSE_OCR_URL` at any running Incord memory engine, pass cookies with
+`--cookies`, and set API keys in environment variables
+(`INBROWSE_REDDIT_CLIENT_ID`, `INBROWSE_REDDIT_CLIENT_SECRET`,
+`INBROWSE_X_BEARER_TOKEN`, `INBROWSE_GITHUB_TOKEN`, `INBROWSE_OCR_KEY`) or pass
+them per call as the MCP tools' `credentials`. See the
+[CLI reference](docs/CLI-reference.md).
 
 ## Install
 
@@ -547,6 +576,11 @@ Optional flags (both transports):
 | `browser_network_requests` | List network requests made by the current page |
 | `browser_console_messages` | Return console messages logged by the page |
 | `browser_close` | Close the page and reset browser state |
+| `document_extract` | Text of a PDF, Office, OpenDocument, spreadsheet, CSV or text file (`source` URL, or a local path on stdio) |
+| `media_extract` | Frames, 16 kHz mono WAV and captions from a video, audio or WebVTT file; `ocr: true` adds each frame's text (`media` feature) |
+| `image_ocr` | Text in an image, with line boxes and confidence, from the OCR model in the Incord memory engine ([Watchman](https://github.com/incordai/Watchman-GUI) runs it) |
+| `social_search` | Recent posts with engagement counts from Reddit, X, Hacker News, GitHub or Polymarket |
+| `social_thread` | One Reddit, Hacker News or GitHub post with its top comments |
 
 The MCP server exposes still-image and PDF output. Use CDP when you need the
 streaming `Page.startScreencast` protocol.

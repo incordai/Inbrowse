@@ -171,6 +171,136 @@ inputs over 100 MiB, archives that unpack past 256 MiB or list more than 10,000
 entries are refused, and a parser failure is reported as an error. The command
 is part of the default `extract` cargo feature.
 
+## `inbrowse social`
+
+Research sources from the command line, the same code as the MCP
+`social_search` and `social_thread` tools ([Use the MCP server](Use-the-MCP-server.md)).
+
+```
+inbrowse social search <SOURCE> <QUERY>   reddit | x | hackernews | github | polymarket
+    --days <N>          Window in days, 1 to 365 (default 30)
+    --limit <N>         Most items, 1 to 100 (default 25)
+    --sort <ORDER>      relevance, recent or top (default relevance)
+    --community <SUB>   Subreddit (Reddit only)
+    --cookies <FILE>    JSON cookie list for signed-in access
+-o, --output <FILE>     Write the JSON to a file
+
+inbrowse social thread <URL>              Reddit, Hacker News or GitHub post
+    --comments <N>      Top comments, 0 to 50 (default 10)
+    --cookies <FILE>
+-o, --output <FILE>
+```
+
+```bash
+inbrowse social search hackernews "rust borrow checker" --days 7
+INBROWSE_REDDIT_CLIENT_ID=... INBROWSE_REDDIT_CLIENT_SECRET=... \
+  inbrowse social search reddit "local llm" --community LocalLLaMA --sort top
+inbrowse social search x "inbrowse" --cookies x-cookies.json
+inbrowse social thread https://news.ycombinator.com/item?id=50069499
+```
+
+API keys are read from your own environment and used for that run only:
+`INBROWSE_REDDIT_CLIENT_ID` and `INBROWSE_REDDIT_CLIENT_SECRET` (a free app
+from reddit.com/prefs/apps), `INBROWSE_X_BEARER_TOKEN` (X's paid API, last 7
+days) and `INBROWSE_GITHUB_TOKEN`. Signed-in access uses cookies from
+`--cookies` (the same JSON list as a `--storage-dir` `cookies.json`) or from the
+`--storage-dir` profile. X without an API key needs the account's `auth_token`
+and `ct0` cookies. Using an account's cookies acts as that account and can get
+it restricted; keep volume low. Errors start with `login_required`,
+`account_challenge`, `rate_limited:<seconds>`, `quota_exceeded`, `blocked`,
+`invalid` or `failed`.
+
+## `inbrowse media <PATH|URL>`
+
+Take still frames, speech-ready audio and captions from one video, audio or
+WebVTT file, and print a JSON report. Reads MP4, M4A, WebM and Matroska files,
+decoding H.264, VP8 and VP9 video and AAC and Opus audio. Other codecs (H.265,
+AV1, MP3, FLAC, Vorbis) are listed in `tracks` with `"supported": false` but not
+decoded. MPEG-TS and FLV files are not read yet.
+
+```
+    --out-dir <DIR>          Folder for the PNG and WAV files (default: a new
+                             folder under INBROWSE_MEDIA_DIR or the temp folder)
+    --every <SECS>           Take a frame at least this often (default 10)
+    --max-frames <N>         Most frames, 0 to 200 (default 20)
+    --no-scene-changes       Only take interval frames
+    --no-audio               Skip the audio track
+    --max-side <PX>          Scale frames so the longer side fits (default 2048)
+    --ocr                    Also read the text in each frame (see `inbrowse ocr`)
+    --timeout <SECS>         Download, extraction and OCR (default 120)
+-o, --output <FILE>          Write the JSON to a file
+```
+
+```bash
+inbrowse media talk.mp4
+inbrowse media https://example.com/clip.webm --every 5 --out-dir clip
+```
+
+```json
+{"container":"mp4","duration_secs":62.0,
+ "tracks":[{"kind":"video","codec":"h264","width":1280,"height":720,"supported":true},
+           {"kind":"audio","codec":"aac","sample_rate":48000,"channels":2,"supported":true}],
+ "audio":{"format":"wav","sample_rate":16000,"channels":1,"duration_secs":62.0,"path":"…/audio-16k-mono.wav"},
+ "frames":[{"time_secs":0.0,"reason":"interval","width":1280,"height":720,"path":"…/frame-0000-0ms.png"}],
+ "captions":[],"warnings":[],"out_dir":"…"}
+```
+
+Frames are taken every `--every` seconds and where the picture changes sharply
+(`"reason": "scene_change"`). If the file is too long for `--max-frames` at that
+interval, the interval is widened and a warning says so. Audio is the first
+decodable audio track, mixed to mono and resampled to 16 kHz. Captions come from
+WebVTT and `tx3g` subtitle tracks, or from a `.vtt` input.
+
+The output folder is not deleted; remove it when done. Inputs over 100 MiB are
+refused and only the first two hours are read. URLs are downloaded like
+`inbrowse extract`. The command needs the `media` cargo feature, which needs
+libvpx at build time; release binaries include it. See
+[Build from source](Build-from-source.md#video-and-audio-media-feature).
+
+With `--ocr`, each frame gains `"ocr": {"text": …, "lines": […]}`, read as
+`inbrowse ocr` reads an image. Raise `--timeout` for long files: OCR shares it.
+
+## `inbrowse ocr <PATH|URL>`
+
+Read the text in one image (PNG, JPEG, WebP, GIF or BMP) and print it as JSON.
+The OCR model runs in the Incord memory engine, not in Inbrowse;
+[Watchman](https://github.com/incordai/Watchman-GUI) runs the engine locally:
+
+| Variable | Meaning |
+|---|---|
+| `INBROWSE_OCR_URL` | The engine's address (default `http://127.0.0.1:9180`, where Watchman runs it) |
+| `INBROWSE_OCR_KEY` | Sent as `Authorization: Bearer`, when the engine wants a key |
+| `INBROWSE_OCR_TIMEOUT` | Seconds for one engine request (default 120) |
+
+```
+    --timeout <SECS>         Download plus OCR (default 120)
+-o, --output <FILE>          Write the JSON to a file
+```
+
+```bash
+inbrowse ocr receipt.jpg
+INBROWSE_OCR_URL=http://10.0.0.5:9180 inbrowse ocr https://example.com/scan.png
+```
+
+```json
+{"source":"receipt.jpg","untrusted":true,"text":"TOTAL 42.00\nThank you",
+ "lines":[{"text":"TOTAL 42.00","box":[40,610,220,28],"confidence":0.97}],
+ "width":800,"height":1200,"tiles":1,"model":"…","elapsed_ms":310,"warnings":[]}
+```
+
+`box` is `[x, y, width, height]` in pixels of the whole image. No image is
+refused for its size: one the engine cannot take whole (over 16 MB, over 64
+megapixels, wider than 43,690 px, or not PNG or JPEG) is decoded and sent as
+overlapping tiles, and lines read twice along a seam are merged. A tile the
+engine still refuses is halved again; only a region that stays too large after
+that is skipped, with a warning naming it. Inputs up to 256 MiB are read.
+
+Errors start with `ocr_unavailable` (the engine is not running, has no OCR
+endpoint, refused the key, or could not load its model),
+`ocr_rejected` (not a readable image) or `ocr_timed_out`. A busy or still-loading
+engine is retried after the wait it asks for. The command needs the default
+`ocr` cargo feature.
+
 ## Worker navigation responses
 
 `inbrowse-worker` accepts newline-delimited JSON commands on stdin and emits one

@@ -1,0 +1,28 @@
+[package]
+name = "inbrowse-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Frames, audio and captions from video and audio files for Inbrowse"
+
+[features]
+default = []
+# VP8 and VP9 through libvpx. Needs libvpx on the build machine; see
+# docs/Build-from-source.md. Without it, VP8/VP9 tracks are listed but not decoded.
+vpx = ["dep:libvpx-native-sys"]
+
+[dependencies]
+# Decoders: H.264 (OpenH264, compiled from bundled source), AAC and Opus.
+moq-video = { version = "=0.1.18", default-features = false, features = ["openh264"] }
+moq-audio = { version = "=0.1.18", default-features = false, features = ["aac"] }
+hang = "=0.21.19"
+moq-net = "=0.3.18"
+# Demuxers and resampler, pinned to the versions moq already resolves.
+mp4-atom = "=0.15.0"
+webm-iterable = "=0.7.1"
+rubato = "=5.0.1"
+libvpx-native-sys = { version = "=5.0.17", optional = true }
+bytes = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

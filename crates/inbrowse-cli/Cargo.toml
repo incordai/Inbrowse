@@ -14,11 +14,19 @@ name = "inbrowse-worker"
 path = "src/worker.rs"
 
 [features]
-default = ["extract"]
+default = ["extract", "social", "ocr"]
 stealth = ["inbrowse/stealth", "inbrowse-net/stealth", "inbrowse-mcp/stealth"]
 render = ["inbrowse/render", "inbrowse-cdp/render", "inbrowse-mcp/render"]
 # `inbrowse extract`: text from PDF, Office, OpenDocument and spreadsheet files.
-extract = ["dep:inbrowse-extract"]
+extract = ["dep:inbrowse-extract", "inbrowse-mcp/extract"]
+# `inbrowse media`: frames, audio and captions from video files. Needs libvpx
+# on the build machine for VP8/VP9; see docs/Build-from-source.md.
+media = ["dep:inbrowse-media", "inbrowse-media/vpx", "inbrowse-mcp/media"]
+# `inbrowse social`: research sources (Reddit, X, Hacker News, GitHub, Polymarket).
+social = ["inbrowse-mcp/social"]
+# `inbrowse ocr` and `inbrowse media --ocr`: text from images through the OCR
+# model in the Incord memory engine (INBROWSE_OCR_URL).
+ocr = ["inbrowse-mcp/ocr"]
 
 [dependencies]
 inbrowse = { workspace = true }
@@ -28,6 +36,7 @@ inbrowse-dom = { workspace = true }
 inbrowse-net = { workspace = true }
 inbrowse-js = { workspace = true }
 inbrowse-extract = { workspace = true, optional = true }
+inbrowse-media = { workspace = true, optional = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

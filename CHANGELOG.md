@@ -27,6 +27,25 @@ All notable changes to Inbrowse are recorded here. The format follows
   per page, slide or sheet. Inputs over 100 MiB and archives that unpack past
   256 MiB or list more than 10,000 entries are refused. Provided by the new
   `inbrowse-extract` crate and the default `extract` cargo feature.
+- MCP `document_extract`: the `inbrowse extract` reader as a tool. Takes an
+  http(s) URL, or a local path on the stdio server only.
+- `inbrowse media <PATH|URL>` and MCP `media_extract`: still frames (PNG, at an
+  interval and at scene changes), 16 kHz mono WAV audio and captions from MP4,
+  M4A, WebM, Matroska and WebVTT files. Decodes H.264, VP8, VP9, AAC and Opus.
+  New `inbrowse-media` crate and `media` cargo feature; VP8/VP9 need libvpx at
+  build time, linked statically.
+- MCP `social_search` and `social_thread`: posts with engagement counts from
+  Reddit, X, Hacker News, GitHub and Polymarket, ranked and de-duplicated,
+  signing in with a per-call API key, the session's cookies, or anonymously.
+  New `inbrowse-social` crate and default `social` feature of `inbrowse-mcp`.
+- `inbrowse ocr <PATH|URL>`, MCP `image_ocr`, and `--ocr` / `ocr: true` on
+  media frames: text from images through the OCR model in the Incord memory
+  engine (`INBROWSE_OCR_URL`). Images too large for the engine are sent as
+  overlapping tiles and merged. New `inbrowse-ocr` crate and default `ocr`
+  feature; no model or native library ships with Inbrowse.
+- README "Works with Watchman": Watchman runs the engine that serves OCR and
+  keeps the cookies and API keys the research tools use; Inbrowse stores
+  neither, and everything also works from the CLI or MCP without it.
 - `NOTICE`, `CODE_OF_CONDUCT.md` and this changelog.
 
 ### Fixed

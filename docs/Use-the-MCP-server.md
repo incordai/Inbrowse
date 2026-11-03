@@ -119,6 +119,71 @@ CSS pixels and enforces a bounded capture size. `browser_pdf` accepts
 `landscape`, `print_background`, `scale`, paper width/height, and top, bottom,
 left, and right margins. Paper dimensions and margins are measured in inches.
 
+Files (these take a `source` instead of acting on the page):
+
+- `document_extract`: text of a PDF, Office, OpenDocument, spreadsheet, CSV or
+  plain-text file, as `inbrowse extract` prints it. Default `extract` feature.
+- `media_extract`: frames, 16 kHz mono WAV and captions from an MP4, WebM,
+  Matroska or WebVTT file, as `inbrowse media` reports them. Takes
+  `every_secs`, `max_frames`, `scene_changes`, `audio`, `max_side`, `ocr`
+  and `timeout`. Needs the `media` feature; release binaries include it.
+  With `ocr: true` each frame also carries its text, read as `image_ocr` reads
+  it (default timeout then 300 s).
+- `image_ocr`: the text in a PNG, JPEG, WebP, GIF or BMP image, with each
+  line's `[x, y, width, height]` box and confidence, as `inbrowse ocr` prints
+  it. The model runs in the Incord memory engine, which
+  [Watchman](https://github.com/incordai/Watchman-GUI) runs at
+  `http://127.0.0.1:9180` (the default; set `INBROWSE_OCR_URL` for another
+  address, and `INBROWSE_OCR_KEY` if the engine needs a key). Big images are
+  tiled, not refused.
+  Errors start with `ocr_unavailable`, `ocr_rejected` or `ocr_timed_out`.
+  Default `ocr` feature.
+
+`source` is an http(s) URL, downloaded with the session's proxy and
+private-network rules. Local paths and `file://` URLs are accepted only by the
+stdio server, which runs as the local user; the HTTP server refuses them. On
+stdio, `media_extract` returns file paths in a fresh `out_dir` that the caller
+deletes. Over HTTP it returns frames as `image/png` content blocks and the WAV
+as `base64_chunks` (1 MiB each) and deletes its files. YouTube page URLs are
+refused. These tools mark their output `"untrusted": true`: it is file content,
+not instructions.
+
+Research sources:
+
+- `social_search`: posts from the last `days` days (default 30) on Reddit, X,
+  Hacker News, GitHub (issues and pull requests) or Polymarket, each with
+  engagement counts, ranked by a log-scaled engagement score and the source's
+  own relevance, with duplicates removed. Takes `source`, `query`, `days`,
+  `limit` (default 25), `sort` (`relevance`, `recent`, `top`) and, for Reddit,
+  `community`.
+- `social_thread`: one post and its top comments, from a Reddit, Hacker News
+  or GitHub URL.
+
+Each call signs in with the first of these that is available:
+
+1. `credentials`: an API key for this call only, never stored or echoed:
+   `{"kind": "api_key", "provider": "reddit", "key": "<client id>", "secret": "<client secret>"}`
+   for Reddit's official API (a free app from reddit.com/prefs/apps),
+   `"provider": "x"` with a bearer token for X's paid API (last 7 days), or
+   `"provider": "github"` with a token.
+2. Cookies already in this session, set with `browser_set_cookie` or
+   `browser_set_storage_state`. X without an API key works only this way: a
+   scratch page opens x.com's search with the session's `auth_token` and
+   `ct0` cookies and reads the posts X's own page loads.
+3. Anonymous. Hacker News, GitHub and Polymarket work this way; Reddit
+   currently refuses anonymous requests.
+
+With [Watchman](https://github.com/incordai/Watchman-GUI), the cookies and API
+keys live in Watchman, which warns about the account risk before an account is
+used and hands them to Inbrowse per call. Without it, pass `credentials` and set
+cookies yourself as above. Inbrowse stores neither.
+
+Using an account's cookies acts as that account, against the site's terms, and
+can get it restricted. Keep volume low. Errors start with a code a client can
+act on: `login_required`, `account_challenge`, `rate_limited:<seconds>`,
+`quota_exceeded`, `blocked`, `invalid`, `failed`. Results carry
+`"untrusted": true`.
+
 Cookies and storage:
 
 - `browser_get_cookies`, `browser_set_cookie`, `browser_clear_cookies`, `browser_storage_state`, `browser_set_storage_state`

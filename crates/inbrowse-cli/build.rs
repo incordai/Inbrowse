@@ -74,4 +74,26 @@ fn main() {
         .unwrap_or_else(local_version);
 
     println!("cargo:rustc-env=INBROWSE_BUILD_VERSION={version}");
+
+    delay_load_media_dlls();
+}
+
+/// The video decoder crate (moq-video, via inbrowse-media) imports Media
+/// Foundation and Direct3D 11 on Windows for its hardware decoder, which
+/// Inbrowse never uses (inbrowse-media decodes in software). Loaded at
+/// startup, `mfplat.dll` stops the whole binary from starting on Windows N
+/// editions without the Media Feature Pack, and both cost startup time.
+/// Delay-loading means they load only if ever called.
+fn delay_load_media_dlls() {
+    let windows_msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if !windows_msvc || env::var_os("CARGO_FEATURE_MEDIA").is_none() {
+        return;
+    }
+    // Only `inbrowse` links the decoder; `inbrowse-worker` would warn that it
+    // imports nothing from these.
+    for dll in ["mfplat.dll", "d3d11.dll"] {
+        println!("cargo:rustc-link-arg-bin=inbrowse=/DELAYLOAD:{dll}");
+    }
+    println!("cargo:rustc-link-arg-bin=inbrowse=delayimp.lib");
 }

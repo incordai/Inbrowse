@@ -6,9 +6,18 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["extract", "social", "ocr"]
 stealth = ["inbrowse/stealth", "inbrowse-net/stealth"]
 render = ["inbrowse/render", "dep:base64"]
+# `document_extract` tool (inbrowse-extract).
+extract = ["dep:inbrowse-extract"]
+# `media_extract` tool (inbrowse-media). VP8/VP9 need its `vpx` feature.
+media = ["dep:inbrowse-media", "dep:base64"]
+# `social_search` / `social_thread` tools (inbrowse-social). No native deps.
+social = ["dep:inbrowse-social"]
+# `image_ocr` tool and `media_extract`'s `ocr` option (inbrowse-ocr). The model
+# runs in the Incord memory engine (INBROWSE_OCR_URL); nothing native here.
+ocr = ["dep:inbrowse-ocr"]
 
 [dependencies]
 inbrowse = { workspace = true }
@@ -21,3 +30,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 base64 = { workspace = true, optional = true }
+inbrowse-extract = { workspace = true, optional = true }
+inbrowse-media = { workspace = true, optional = true }
+inbrowse-social = { workspace = true, optional = true }
+inbrowse-ocr = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Test images for the `image_ocr` tests; already in the lockfile.
+image = { version = "0.25", default-features = false, features = ["png"] }

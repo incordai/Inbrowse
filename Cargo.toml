@@ -12,6 +12,9 @@ members = [
     "crates/inbrowse-cli",
     "crates/inbrowse-sdk",
     "crates/inbrowse-extract",
+    "crates/inbrowse-media",
+    "crates/inbrowse-social",
+    "crates/inbrowse-ocr",
 ]
 
 [workspace.package]
@@ -30,6 +33,9 @@ inbrowse-js = { path = "crates/inbrowse-js" }
 inbrowse-mcp = { path = "crates/inbrowse-mcp" }
 inbrowse-render = { path = "crates/inbrowse-render" }
 inbrowse-extract = { path = "crates/inbrowse-extract" }
+inbrowse-media = { path = "crates/inbrowse-media" }
+inbrowse-social = { path = "crates/inbrowse-social" }
+inbrowse-ocr = { path = "crates/inbrowse-ocr" }
 
 html5ever = "0.39"
 markup5ever = "0.39"
