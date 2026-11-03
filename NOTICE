@@ -1,12 +1,11 @@
 Inbrowse
 Copyright 2026 Incord AI
 
-Inbrowse is a fork of obscura (https://github.com/h4ckf0r0day/obscura),
-Copyright the obscura contributors, licensed under the Apache License,
-Version 2.0. Incord AI has modified the obscura source files in this
-repository, including renaming the project, its crates, binaries,
-environment variables and internal identifiers from "obscura" to
-"inbrowse", and has added new files.
+Inbrowse is a fork of an Apache-2.0 licensed project, credited in the
+License section of README.md, and remains copyright its contributors.
+Incord AI has modified the original source files in this repository,
+including renaming the project, its crates, binaries, environment
+variables and internal identifiers to "inbrowse", and has added new files.
 
-Both the original obscura code and the Incord AI changes are distributed
-under the Apache License, Version 2.0; see the LICENSE file.
+Both the original code and the Incord AI changes are distributed under the
+Apache License, Version 2.0; see the LICENSE file.
