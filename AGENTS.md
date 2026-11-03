@@ -49,10 +49,11 @@ single V8 isolate per process, so the runtime tests fail under it. `nextest`
 runs each test in its own process, which is the only supported way.
 
 The authoritative behavioral gate is the **obstacle course** in the companion
-repo `obscura-benchmark` (33 capability + speed stages, must stay 33/33):
+repo [`Inbrowse-benchmark`](https://github.com/incordai/Inbrowse-benchmark)
+(33 capability + speed stages, must stay 33/33):
 
 ```bash
-OBSCURA_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
+INBROWSE_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
 ```
 
 It serves local fixtures, so it is deterministic and offline. WPT conformance

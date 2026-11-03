@@ -180,15 +180,15 @@ jobs:
       - name: Checkout pinned obstacle course
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: h4ckf0r0day/obscura-benchmark
-          ref: 2d08d9a8e860e423b47209434a9fba9c75e6eee6
-          path: obscura-benchmark
+          repository: incordai/Inbrowse-benchmark
+          ref: 9c45e7475704bcf559a9a971d5e54497f40b5e78
+          path: inbrowse-benchmark
           persist-credentials: false
 
       - name: Require all 33 obstacle stages
         run: |
-          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
-            python3 obscura-benchmark/obstacle-course/run.py \
+          INBROWSE_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
+            python3 inbrowse-benchmark/obstacle-course/run.py \
               --json --runs 1 --warmup 0 > "$RUNNER_TEMP/inbrowse-ci/obstacle-candidate.json"
 
       - name: Upload obstacle evidence
@@ -258,9 +258,9 @@ jobs:
       - name: Checkout pinned obstacle course
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: h4ckf0r0day/obscura-benchmark
-          ref: 2d08d9a8e860e423b47209434a9fba9c75e6eee6
-          path: obscura-benchmark
+          repository: incordai/Inbrowse-benchmark
+          ref: 9c45e7475704bcf559a9a971d5e54497f40b5e78
+          path: inbrowse-benchmark
           persist-credentials: false
 
       - name: Download candidate binary
@@ -317,12 +317,12 @@ jobs:
           results_root="$RUNNER_TEMP/inbrowse-ci-results"
           mkdir -p "$results_root"
           set +e
-          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-base" \
-            python3 obscura-benchmark/obstacle-course/run.py \
+          INBROWSE_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-base" \
+            python3 inbrowse-benchmark/obstacle-course/run.py \
               --json --runs 3 --warmup 1 > "$results_root/obstacle-base.json"
           base_status=$?
-          OBSCURA_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
-            python3 obscura-benchmark/obstacle-course/run.py \
+          INBROWSE_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
+            python3 inbrowse-benchmark/obstacle-course/run.py \
               --json --runs 3 --warmup 1 > "$results_root/obstacle-pr.json"
           pr_status=$?
           set -e

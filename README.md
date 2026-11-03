@@ -365,7 +365,7 @@ Page load:
 | JS + XHR + fetch | **84 ms** | ~800 ms |
 | Dynamic scripts | **78 ms** | ~700 ms |
 
-The full benchmark suite (WPT conformance, obstacle course, real-world corpus, and vs-Chrome speed) lives in a separate repo: https://github.com/h4ckf0r0day/obscura-benchmark
+The full benchmark suite (WPT conformance, obstacle course, real-world corpus, and vs-Chrome speed) lives in a separate repo, with each track's results published as it runs: https://github.com/incordai/Inbrowse-benchmark
 
 ## Host privacy
 
