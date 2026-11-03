@@ -1,0 +1,53 @@
+{
+  "name": "inbrowse",
+  "displayName": "Inbrowse",
+  "version": "0.3.0",
+  "description": "A fast headless browser for Claude Code: pages with JavaScript, forms and tabs; PDF, Office and spreadsheet text; video frames, audio and captions; OCR; research posts from Reddit, X, Hacker News, GitHub and Polymarket",
+  "author": { "name": "Incord AI", "url": "https://github.com/incordai" },
+  "homepage": "https://github.com/incordai/Inbrowse",
+  "repository": "https://github.com/incordai/Inbrowse",
+  "license": "Apache-2.0",
+  "keywords": ["browser", "headless", "scraping", "mcp", "pdf", "ocr", "video", "research"],
+  "mcpServers": {
+    "inbrowse": {
+      "command": "${user_config.inbrowse_path}",
+      "args": ["mcp"],
+      "env": {
+        "INBROWSE_OCR_URL": "${user_config.ocr_url}",
+        "INBROWSE_OCR_KEY": "${user_config.ocr_key}"
+      }
+    }
+  },
+  "userConfig": {
+    "inbrowse_path": {
+      "type": "file",
+      "title": "Inbrowse binary",
+      "description": "The inbrowse executable, version 0.3.0 or later. The default, inbrowse, means it is on your PATH.",
+      "default": "inbrowse"
+    },
+    "ocr_url": {
+      "type": "string",
+      "title": "OCR engine address",
+      "description": "The Incord memory engine that reads text in images. Watchman runs it at this address.",
+      "default": "http://127.0.0.1:9180"
+    },
+    "ocr_key": {
+      "type": "string",
+      "title": "OCR engine key",
+      "description": "Key for the OCR engine, only if it asks for one. Stored in the system's secure storage.",
+      "sensitive": true
+    },
+    "route_webfetch": {
+      "type": "boolean",
+      "title": "Read WebFetch through Inbrowse",
+      "description": "Answer Claude Code's WebFetch with the page as Inbrowse renders it, JavaScript run, in a tab of its own. Off: WebFetch works as built in.",
+      "default": true
+    },
+    "prefer_inbrowse": {
+      "type": "boolean",
+      "title": "Tell the model to prefer Inbrowse",
+      "description": "Add a short system-prompt section naming the Inbrowse tools for pages, documents, media, images and research sources.",
+      "default": true
+    }
+  }
+}

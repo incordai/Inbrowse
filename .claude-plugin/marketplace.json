@@ -1,0 +1,14 @@
+{
+  "name": "inbrowse",
+  "owner": { "name": "Incord AI", "url": "https://github.com/incordai" },
+  "description": "Claude Code plugins from Inbrowse, the headless browser by Incord AI",
+  "plugins": [
+    {
+      "name": "inbrowse",
+      "source": "./plugin/inbrowse",
+      "description": "Inbrowse in Claude Code: browser with JavaScript, document and video reading, OCR, and research sources, as an MCP server with skills",
+      "category": "browser",
+      "tags": ["browser", "mcp", "scraping", "pdf", "ocr", "research"]
+    }
+  ]
+}

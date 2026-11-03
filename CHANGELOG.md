@@ -6,6 +6,15 @@ All notable changes to Inbrowse are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code plugin `inbrowse` (`plugin/inbrowse`) and a marketplace at the
+  repository root: `claude plugin marketplace add incordai/Inbrowse`, then
+  `claude plugin install inbrowse@inbrowse`. It runs the MCP server, adds the
+  `browse-web`, `read-files` and `social-research` skills, and answers WebFetch
+  through Inbrowse. The binary path, OCR engine address and key are plugin
+  options.
+
 ## [0.3.0] - 2026-11-03
 
 ### Changed

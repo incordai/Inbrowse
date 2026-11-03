@@ -545,6 +545,22 @@ Optional flags (both transports):
 | `--font-dir <DIR>` | Load additional fonts before rendering (repeatable; render build) |
 | `--stealth` | Enable anti-detection mode |
 
+### Claude Code plugin
+
+The `inbrowse` plugin adds the MCP server to Claude Code with skills for
+browsing, reading files and research, and answers Claude Code's WebFetch
+through Inbrowse. Put the `inbrowse` binary on your `PATH` first (or set the
+plugin's **Inbrowse binary** option to its path; the plugin ships no
+executable), then:
+
+```bash
+claude plugin marketplace add incordai/Inbrowse
+claude plugin install inbrowse@inbrowse
+```
+
+`/mcp` then lists `inbrowse` with its tools. Options and details are in
+[plugin/inbrowse/README.md](plugin/inbrowse/README.md).
+
 ### Claude Desktop config
 
 ```json
