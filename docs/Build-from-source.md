@@ -97,7 +97,9 @@ decodes faster. Without it, the build falls back to plain C. Set
 ```bash
 sudo apt-get install build-essential pkg-config libvpx-dev nasm
 
-export VPX_LIB_DIR="$(pkg-config --variable=libdir vpx)"
+# Ask the package where libvpx.a is: Debian and Ubuntu's vpx.pc reports
+# libdir=/usr/lib, but the library is in /usr/lib/<arch>-linux-gnu.
+export VPX_LIB_DIR="$(dirname "$(dpkg -L libvpx-dev | grep '/libvpx\.a$')")"
 export VPX_INCLUDE_DIR="$(pkg-config --variable=includedir vpx)"
 export VPX_VERSION="$(pkg-config --modversion vpx)"
 export VPX_STATIC=1

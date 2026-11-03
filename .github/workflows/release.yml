@@ -66,13 +66,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y pkg-config libvpx-dev nasm
+          # Ubuntu's vpx.pc reports libdir=/usr/lib, but the library is in
+          # /usr/lib/<arch>-linux-gnu, so ask the package where libvpx.a is.
+          VPX_A="$(dpkg -L libvpx-dev | grep '/libvpx\.a$')"
+          if [ ! -f "$VPX_A" ]; then
+            echo "::error::libvpx-dev has no libvpx.a"
+            exit 1
+          fi
           {
-            echo "VPX_LIB_DIR=$(pkg-config --variable=libdir vpx)"
+            echo "VPX_LIB_DIR=$(dirname "$VPX_A")"
             echo "VPX_INCLUDE_DIR=$(pkg-config --variable=includedir vpx)"
             echo "VPX_VERSION=$(pkg-config --modversion vpx)"
             echo "VPX_STATIC=1"
           } >> "$GITHUB_ENV"
-          test -f "$(pkg-config --variable=libdir vpx)/libvpx.a"
 
       - name: Install libvpx (macOS)
         if: runner.os == 'macOS'
