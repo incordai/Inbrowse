@@ -15,6 +15,11 @@ All notable changes to Inbrowse are recorded here. The format follows
   through Inbrowse. The binary path, OCR engine address and key are plugin
   options.
 
+### Fixed
+
+- `inbrowse serve` printed the upstream project's name in its startup banner;
+  it now reads Inbrowse. The render test font is renamed to match.
+
 ## [0.3.0] - 2026-11-03
 
 ### Changed
@@ -24,8 +29,8 @@ All notable changes to Inbrowse are recorded here. The format follows
   `inbrowse-cdp`, `inbrowse-cli`, `inbrowse-dom`, `inbrowse-js`, `inbrowse-mcp`,
   `inbrowse-net`, `inbrowse-render`, `inbrowse-ssrf` and `inbrowse-sdk` (the
   embeddable Rust API).
-- Environment variables are named `INBROWSE_*`. The old `OBSCURA_*` names are
-  no longer read, so scripts and deployments must be updated.
+- Environment variables are named `INBROWSE_*`. The previous names are no
+  longer read, so scripts and deployments must be updated.
 - One default browser identity, Chrome 145 on Windows, everywhere: pages,
   raw downloads (`fetch --dump original`), script `fetch()`/XHR, CDP version
   info and the stealth TLS fingerprint. Raw downloads and CDP used to report
@@ -66,8 +71,8 @@ All notable changes to Inbrowse are recorded here. The format follows
 - Several tests that waited a fixed time for a child frame or event no longer
   fail when the machine is busy.
 
-Inbrowse is based on obscura; the `v0.1.0` to `v0.2.5` tags in this repository
-are obscura releases.
+The `v0.1.0` to `v0.2.5` tags in this repository are releases of the upstream
+project credited in the README.
 
 [Unreleased]: https://github.com/incordai/Inbrowse/compare/v0.3.0...main
 [0.3.0]: https://github.com/incordai/Inbrowse/releases/tag/v0.3.0

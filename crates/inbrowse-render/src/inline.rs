@@ -4306,7 +4306,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
 
         // The family name is stored in the fixture's name table (PROVENANCE.txt).
-        assert!(engine.loaded_families.contains_key("obscura vf test"));
+        assert!(engine.loaded_families.contains_key("inbrowse vf test"));
     }
 
     #[test]

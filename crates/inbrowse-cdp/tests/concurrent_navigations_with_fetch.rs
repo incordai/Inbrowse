@@ -1,7 +1,7 @@
 //! Issue #19 hard repro: 5 parallel clients with Fetch interception enabled
 //! must not abort V8.
 //!
-//! Per maintainer comment on PR #36 (https://github.com/h4ckf0r0day/obscura/pull/36#issuecomment-4328238087):
+//! Per an upstream maintainer comment on PR #36:
 //!
 //!   "Tested locally and the V8 fatal still reproduces when Fetch.enable
 //!    interception is on with concurrent navigations:
