@@ -6,6 +6,8 @@ All notable changes to Inbrowse are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
 ### Changed
 
 - The project is now **Inbrowse** by Incord AI. The binaries are `inbrowse` and
@@ -58,4 +60,5 @@ All notable changes to Inbrowse are recorded here. The format follows
 Inbrowse is based on obscura; the `v0.1.0` to `v0.2.5` tags in this repository
 are obscura releases.
 
-[Unreleased]: https://github.com/incordai/Inbrowse/commits/main
+[Unreleased]: https://github.com/incordai/Inbrowse/compare/v0.3.0...main
+[0.3.0]: https://github.com/incordai/Inbrowse/releases/tag/v0.3.0
