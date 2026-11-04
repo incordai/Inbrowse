@@ -360,11 +360,16 @@ fn progressive(
         .entries
         .iter()
         .flat_map(|e| std::iter::repeat_n(e.sample_delta, e.sample_count as usize));
+    // Composition offsets are read as signed 32-bit whatever the box version.
+    // Version 0 is unsigned by the spec, but encoders store B-frame offsets
+    // like -1000 there too; read unsigned, each one put its sample about 2^32
+    // ticks (39.8 hours at 30000/s) late. A real offset past 2^31 ticks would
+    // be longer than any file this reads.
     let mut offsets = stbl
         .ctts
         .iter()
         .flat_map(|c| c.entries.iter())
-        .flat_map(|e| std::iter::repeat_n(e.sample_offset, e.sample_count as usize));
+        .flat_map(|e| std::iter::repeat_n(e.sample_offset as i32, e.sample_count as usize));
     let sync = stbl.stss.as_ref().map(|s| s.entries.as_slice());
     let mut sync_at = 0usize;
 
@@ -404,4 +409,24 @@ fn progressive(
         ));
     }
     Ok(samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2 s, 10 fps H.264 file with B-frames whose ctts is version 0 but holds
+    /// negative offsets (-1024 at a 10240 timescale); recipe in
+    /// tests/fixtures/README.md.
+    #[test]
+    fn negative_offsets_in_a_version_0_ctts_are_signed() {
+        let data = Bytes::from_static(include_bytes!("../tests/fixtures/h264_ctts_v0_negative.mp4"));
+        let mut warnings = Vec::new();
+        let demuxed = read(&data, &mut warnings).unwrap();
+        let mut pts: Vec<i64> = demuxed.tracks[0].samples.iter().map(|s| s.pts_us).collect();
+        assert_eq!(pts.len(), 20);
+        pts.sort_unstable();
+        let expected: Vec<i64> = (0..20).map(|n| n * 100_000).collect();
+        assert_eq!(pts, expected, "{warnings:?}");
+    }
 }

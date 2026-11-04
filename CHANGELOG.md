@@ -19,6 +19,10 @@ All notable changes to Inbrowse are recorded here. The format follows
 
 - `inbrowse serve` printed the upstream project's name in its startup banner;
   it now reads Inbrowse. The render test font is renamed to match.
+- `inbrowse media` and MCP `media_extract` gave some MP4 frames a time about
+  40 hours past the end of the video, and picked the wrong picture for them.
+  Negative B-frame offsets stored in a version 0 `ctts` box are now read as
+  signed.
 
 ## [0.3.0] - 2026-11-03
 

@@ -20,3 +20,21 @@ ffmpeg -filter_complex "$V" -f lavfi -i "$A" -map '[v]' -map 0:a \
   -c:v libvpx -b:v 50k -g 10 -c:a libopus -b:a 24k vp8_opus.webm
 ffmpeg -f lavfi -i "$A" -c:a aac -b:a 32k aac_only.m4a
 ```
+
+`h264_ctts_v0_negative.mp4` has no audio and one 2-second keyframe group. It
+stores negative B-frame composition offsets in a version 0 `ctts` box, as some
+encoders do although the spec makes version 0 unsigned. ffmpeg writes such
+offsets only in a version 1 box, so the version byte is then set to 0; the
+offsets themselves are unchanged:
+
+```bash
+ffmpeg -filter_complex "$V" -map '[v]' -c:v libx264 -profile:v high -bf 2 \
+  -pix_fmt yuv420p -g 20 -sc_threshold 0 -movflags +negative_cts_offsets v1.mp4
+python3 - <<'EOF'
+data = bytearray(open("v1.mp4", "rb").read())
+at = data.find(b"ctts")
+assert data[at + 4] == 1
+data[at + 4] = 0
+open("h264_ctts_v0_negative.mp4", "wb").write(data)
+EOF
+```
