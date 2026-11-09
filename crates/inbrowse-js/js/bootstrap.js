@@ -2916,7 +2916,25 @@ function _attributePositionKey(node) {
   return _attributePositionOrder.get(node);
 }
 
-class Node {
+// The base of every event target, as in browsers: Node, the Window global
+// (wired where Window is defined) and the non-DOM targets (WebSocket,
+// BroadcastChannel, MediaQueryList, FontFaceSet) all inherit these three
+// methods. Exposed as globalThis.EventTarget next to the other DOM globals.
+// Listener state lives in _eventTargetListeners, so `new EventTarget()` needs
+// no backing node.
+class EventTarget {
+  addEventListener(type, callback, options) {
+    _eventTargetAdd(this, type, callback, options);
+  }
+  removeEventListener(type, callback, options) {
+    _eventTargetRemove(this, type, callback, options);
+  }
+  dispatchEvent(event) {
+    return _eventTargetDispatch(this, event);
+  }
+}
+
+class Node extends EventTarget {
   static ELEMENT_NODE = 1;
   static ATTRIBUTE_NODE = 2;
   static TEXT_NODE = 3;
@@ -2936,7 +2954,7 @@ class Node {
   static DOCUMENT_POSITION_CONTAINED_BY = 16;
   static DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32;
 
-  constructor(nid) { this._nid = nid; }
+  constructor(nid) { super(); this._nid = nid; }
   get nodeType() { return +_dom("node_type", this._nid); }
   get nodeName() { return _domParse("node_name", this._nid) || ""; }
   get ownerDocument() { return _nodeDocumentOf(this); }
@@ -3210,15 +3228,6 @@ class Node {
     return true;
   }
   isSameNode(other) { return !!other && this._nid === other._nid; }
-  addEventListener(type, callback, options) {
-    _eventTargetAdd(this, type, callback, options);
-  }
-  removeEventListener(type, callback, options) {
-    _eventTargetRemove(this, type, callback, options);
-  }
-  dispatchEvent(event) {
-    return _eventTargetDispatch(this, event);
-  }
 }
 class CharacterData extends Node {
   get data() {
@@ -8108,6 +8117,16 @@ Object.defineProperty(globalThis, 'constructor', {
   configurable: true,
   enumerable: false,
 });
+// The global inherits Window.prototype -> EventTarget.prototype, as in
+// browsers, so `window instanceof EventTarget` holds and a patch made on
+// EventTarget.prototype reaches window. The Shady DOM polyfill (YouTube's
+// webcomponents-sd.js) saves each native method under a `__shady_native_`
+// name there and then calls window.__shady_native_addEventListener; without
+// this chain that call threw and the page's components never rendered. The
+// global keeps its own add/remove/dispatchEvent (defined near the top) so a
+// bare `addEventListener(...)` call with no receiver still targets window.
+Object.setPrototypeOf(globalThis.Window.prototype, EventTarget.prototype);
+Object.setPrototypeOf(globalThis, globalThis.Window.prototype);
 
 
 // Remove the static _iframeRegistry and replace with dynamic getters.
@@ -14976,7 +14995,7 @@ for (const _proto of [Document.prototype, DocumentFragment.prototype]) {
   _proto.prepend = Element.prototype.prepend;
   _proto.replaceChildren = Element.prototype.replaceChildren;
 }
-globalThis.EventTarget = Node;
+globalThis.EventTarget = EventTarget;
 globalThis.HTMLCollection = class HTMLCollection extends Array {
   item(i) {
     i = i >>> 0;
@@ -17939,9 +17958,9 @@ if (typeof FileReader === 'undefined') {
 // forever otherwise. Fire `open` after a microtask so the consumer at least
 // proceeds; subsequent messages never arrive, which is no worse than the
 // current "no signal whatsoever" behaviour.
-// Minimal EventTarget shared by socket-like classes. Real `EventTarget` is
-// currently aliased to `Node`, which would drag DOM-tree assumptions into a
-// `WebSocket`. Defining a private shim avoids that.
+// Minimal per-instance listener box shared by socket-like classes. Their
+// prototypes still link to EventTarget.prototype, so `instanceof EventTarget`
+// holds; these own methods shadow the inherited ones.
 function _makeListenerBox(self) {
   const map = new Map();
   self.addEventListener = function (type, fn) {
@@ -18298,8 +18317,8 @@ if (typeof BroadcastChannel === 'undefined') {
     }
     get [Symbol.toStringTag]() { return 'BroadcastChannel'; }
   };
-  // EventTarget is currently Node-backed in this runtime; link the prototype
-  // without invoking Node's DOM-node constructor or exposing a fake `_nid`.
+  // Link the prototype so BroadcastChannel inherits EventTarget's methods and
+  // `instanceof EventTarget` holds.
   Object.setPrototypeOf(globalThis.BroadcastChannel.prototype, globalThis.EventTarget.prototype);
 }
 

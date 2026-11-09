@@ -23,6 +23,12 @@ All notable changes to Inbrowse are recorded here. The format follows
   40 hours past the end of the video, and picked the wrong picture for them.
   Negative B-frame offsets stored in a version 0 `ctts` box are now read as
   signed.
+- `EventTarget` is now its own base class, as in browsers, instead of an alias
+  of `Node`. `Node` and the `window` global inherit from it, so
+  `window instanceof EventTarget` holds and a method added to
+  `EventTarget.prototype` reaches `window`. YouTube's Shady DOM polyfill relies
+  on that and threw `window.__shady_native_addEventListener is not a function`,
+  so the page's components never rendered.
 
 ## [0.3.0] - 2026-11-03
 
