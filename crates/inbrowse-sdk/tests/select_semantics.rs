@@ -69,7 +69,8 @@ async fn select_defaults_match_browser_semantics() {
                 changes_after_assignment: changes,
             };
         })()"#,
-    );
+    )
+    .unwrap();
 
     assert_eq!(probes["single_value_after_set"], "b");
     assert_eq!(probes["single_index"], 1);
@@ -94,7 +95,8 @@ async fn select_without_explicit_selection_defaults_to_first_option() {
             var single = document.getElementById('single');
             return { index: single.selectedIndex, value: single.value };
         })()"#,
-    );
+    )
+    .unwrap();
 
     assert_eq!(probes["index"], 0);
     assert_eq!(probes["value"], "a");

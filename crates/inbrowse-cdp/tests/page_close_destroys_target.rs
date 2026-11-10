@@ -92,7 +92,7 @@ async fn page_close_runs_beforeunload_and_waits_for_dialog_resolution() {
     cdp(&mut ctx, 6, "Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "a", "code": "KeyA"}), session).await;
     cdp(&mut ctx, 2, "Page.close", json!({}), session).await;
     let page = ctx.get_page_mut(&page_id).expect("a confirmation must not destroy the target");
-    assert_eq!(page.evaluate("closeAttempts").as_f64(), Some(1.0));
+    assert_eq!(page.evaluate("closeAttempts").unwrap(), json!(1));
     let opening = emitted(&ctx, "Page.javascriptDialogOpening");
     assert_eq!(opening.len(), 1);
     assert_eq!(opening[0]["type"], "beforeunload");
@@ -102,7 +102,7 @@ async fn page_close_runs_beforeunload_and_waits_for_dialog_resolution() {
     assert!(ctx.get_page(&page_id).is_some(), "dismissing must keep the page");
     assert_eq!(emitted(&ctx, "Page.javascriptDialogClosed")[0]["result"], false);
     cdp(&mut ctx, 4, "Page.close", json!({}), session).await;
-    assert_eq!(ctx.get_page_mut(&page_id).unwrap().evaluate("closeAttempts").as_f64(), Some(2.0));
+    assert_eq!(ctx.get_page_mut(&page_id).unwrap().evaluate("closeAttempts").unwrap(), json!(2));
     cdp(&mut ctx, 5, "Page.handleJavaScriptDialog", json!({"accept": true}), session).await;
     assert!(ctx.get_page(&page_id).is_none());
     assert_eq!(emitted(&ctx, "Target.targetDestroyed").len(), 1);
@@ -190,7 +190,7 @@ async fn assert_stop_loading_cancels_images(native: bool) {
         cdp(&mut ctx, 2, "Page.stopLoading", json!({}), session).await;
         ctx.get_page_mut(&page_id).unwrap().js.as_mut().unwrap().run_event_loop_bounded(10).await.unwrap();
         let page = ctx.get_page_mut(&page_id).unwrap();
-        if native { assert_eq!(page.evaluate("imageErrors").as_f64(), Some(2.0)); }
+        if native { assert_eq!(page.evaluate("imageErrors").unwrap(), json!(2)); }
         assert!(!page.has_pending_render_resources(), "stop must cancel pending image loads");
         page.queue_pending_render_resources();
         assert!(!page.has_pending_render_resources(), "the autonomous pump must not restart canceled loads");

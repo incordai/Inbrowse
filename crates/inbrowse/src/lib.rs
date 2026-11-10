@@ -20,7 +20,7 @@ pub use inbrowse_js::{
     validate_capture_region, AnimationSample, AnimationSampleMode, AnimationSampleTime,
     CaptureError, CaptureRegion,
 };
-pub use page::{url_matches_cdp_pattern, NetworkEvent, Page, PageError};
+pub use page::{url_matches_cdp_pattern, EvalError, NetworkEvent, Page, PageError};
 #[cfg(feature = "render")]
 pub use pdf::{RasterPdfError, RasterPdfOptions, RasterPdfPageRange};
 // Re-exported so the embeddable `inbrowse-sdk` crate (which depends on inbrowse,

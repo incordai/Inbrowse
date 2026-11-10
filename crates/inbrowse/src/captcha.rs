@@ -131,7 +131,7 @@ const DETECT_JS: &str = r#"(function(){
 /// Detect a token captcha on the current page. `None` if there's no recognized
 /// token captcha (the common case — callers then proceed normally).
 pub fn detect(page: &mut Page) -> Option<Challenge> {
-    let raw = match page.evaluate(DETECT_JS) {
+    let raw = match page.evaluate_or_null(DETECT_JS) {
         Value::String(s) => s,
         _ => return None,
     };
@@ -390,7 +390,7 @@ const DETECT_CHALLENGE_JS: &str = r#"(function(){
 
 /// Detect a type-B anti-bot challenge interstitial on the current page.
 pub fn detect_challenge(page: &mut Page) -> Option<ChallengeKind> {
-    match page.evaluate(DETECT_CHALLENGE_JS) {
+    match page.evaluate_or_null(DETECT_CHALLENGE_JS) {
         Value::String(s) => ChallengeKind::from_tag(&s),
         _ => None,
     }

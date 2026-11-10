@@ -5,12 +5,12 @@ fn runtimes_can_be_used_and_dropped_out_of_creation_order() {
     let mut first = InbrowseJsRuntime::new();
     let mut second = InbrowseJsRuntime::new();
 
-    assert_eq!(first.evaluate("1 + 1").unwrap(), serde_json::json!(2.0),);
-    assert_eq!(second.evaluate("2 + 2").unwrap(), serde_json::json!(4.0),);
+    assert_eq!(first.evaluate("1 + 1").unwrap(), serde_json::json!(2),);
+    assert_eq!(second.evaluate("2 + 2").unwrap(), serde_json::json!(4),);
 
     drop(first);
 
-    assert_eq!(second.evaluate("3 + 3").unwrap(), serde_json::json!(6.0),);
+    assert_eq!(second.evaluate("3 + 3").unwrap(), serde_json::json!(6),);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -29,8 +29,8 @@ async fn runtime_futures_can_be_interleaved_on_one_thread() {
         tokio::join!(first.run_event_loop(), second.run_event_loop());
     first_result.unwrap();
     second_result.unwrap();
-    assert_eq!(first.evaluate("done").unwrap(), serde_json::json!(1.0));
-    assert_eq!(second.evaluate("done").unwrap(), serde_json::json!(2.0));
+    assert_eq!(first.evaluate("done").unwrap(), serde_json::json!(1));
+    assert_eq!(second.evaluate("done").unwrap(), serde_json::json!(2));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -54,10 +54,10 @@ async fn module_loads_can_be_interleaved_on_one_thread() {
     second_result.unwrap();
     assert_eq!(
         first.evaluate("moduleResult").unwrap(),
-        serde_json::json!(11.0)
+        serde_json::json!(11)
     );
     assert_eq!(
         second.evaluate("moduleResult").unwrap(),
-        serde_json::json!(22.0)
+        serde_json::json!(22)
     );
 }

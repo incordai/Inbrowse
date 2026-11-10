@@ -260,6 +260,7 @@ async fn unparsable_continue_rewrite_is_blocked() {
         page.settle(500).await;
         outcome = page
             .evaluate("document.title")
+            .unwrap()
             .as_str()
             .unwrap_or("")
             .to_string();

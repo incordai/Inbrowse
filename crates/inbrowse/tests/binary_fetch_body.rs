@@ -111,18 +111,18 @@ async fn assert_binary_fetch_body(stealth: bool) {
                 });
         })()
         "#,
-    );
+    ).unwrap();
 
     for _ in 0..20 {
         page.settle(100).await;
-        let status = page.evaluate("document.body.getAttribute('data-binary-fetch')");
+        let status = page.evaluate("document.body.getAttribute('data-binary-fetch')").unwrap();
         if status != serde_json::json!("pending") {
             break;
         }
     }
 
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-binary-fetch')"),
+        page.evaluate("document.body.getAttribute('data-binary-fetch')").unwrap(),
         serde_json::json!("done")
     );
     assert_eq!(

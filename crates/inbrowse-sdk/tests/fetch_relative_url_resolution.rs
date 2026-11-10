@@ -107,20 +107,20 @@ async fn fetch_and_xhr_resolve_relative_urls_that_contain_double_slashes() {
                 .then(function(t) {{ record('f_abs', t); }}, function(e) {{ record('f_abs', 'REJECTED'); }});
         }})()"#,
     );
-    page.evaluate(&script);
+    page.evaluate(&script).unwrap();
 
     for _ in 0..40 {
         page.settle(250).await;
-        if page.evaluate("document.body.getAttribute('data-done')") == serde_json::json!("1") {
+        if page.evaluate("document.body.getAttribute('data-done')").unwrap() == serde_json::json!("1") {
             break;
         }
     }
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-done')"),
+        page.evaluate("document.body.getAttribute('data-done')").unwrap(),
         serde_json::json!("1"),
         "probes did not finish"
     );
-    let raw = page.evaluate("document.getElementById('probe-results').textContent");
+    let raw = page.evaluate("document.getElementById('probe-results').textContent").unwrap();
     let results: serde_json::Value =
         serde_json::from_str(raw.as_str().unwrap_or("")).unwrap_or(serde_json::Value::Null);
 

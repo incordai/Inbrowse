@@ -81,12 +81,12 @@ async fn spawn_ws_server() -> u16 {
 async fn wait_for(page: &mut Page, expr: &str) -> serde_json::Value {
     for _ in 0..50 {
         page.settle(100).await;
-        let v = page.evaluate(expr);
+        let v = page.evaluate(expr).unwrap();
         if v != json!(null) && v != json!(false) {
             return v;
         }
     }
-    page.evaluate(expr)
+    page.evaluate(expr).unwrap()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -129,10 +129,10 @@ async fn round_trip(stealth: bool) {
             ws.onerror = () => log.push('error');
             return 1;
         }})()"#
-    ));
+    )).unwrap();
 
     assert_eq!(wait_for(&mut page, "window.done === true").await, json!(true));
-    let log = page.evaluate("log.join(' | ')");
+    let log = page.evaluate("log.join(' | ')").unwrap();
     let log = log.as_str().unwrap();
     assert_eq!(
         log,
@@ -194,9 +194,9 @@ async fn failed_connection_fires_error_then_close_1006() {
             ws.onclose = (e) => {{ log.push('close:' + e.code + ':' + e.wasClean); window.done = true; }};
             return 1;
         }})()"#
-    ));
+    )).unwrap();
     assert_eq!(wait_for(&mut page, "window.done === true").await, json!(true));
-    assert_eq!(page.evaluate("log.join(',')"), json!("error:3,close:1006:false"));
+    assert_eq!(page.evaluate("log.join(',')").unwrap(), json!("error:3,close:1006:false"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -221,7 +221,7 @@ async fn constructor_and_close_validate_like_chrome() {
             ws.close();
             return out.join(',');
         })()"#,
-    );
+    ).unwrap();
     assert_eq!(
         result,
         json!("SyntaxError,SyntaxError,SyntaxError,true,InvalidStateError,InvalidAccessError,1,3,[object WebSocket]")

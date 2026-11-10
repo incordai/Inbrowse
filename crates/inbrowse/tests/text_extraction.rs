@@ -43,15 +43,15 @@ async fn inner_text_follows_rendered_text_rules() {
     ))
     .await;
     assert_eq!(
-        page.evaluate("document.body.innerText"),
+        page.evaluate("document.body.innerText").unwrap(),
         json!("Title\n\nPara with spaces\n\nA bold word\none\ntwo\na\tb\nc\td\n  keep\n  this\nend\nline")
     );
     // An element that is not rendered reports its text content.
-    assert_eq!(page.evaluate("document.querySelector('script').innerText"), json!("var secret = 1;"));
-    assert_eq!(page.evaluate("document.querySelector('h1').outerText"), json!("Title"));
+    assert_eq!(page.evaluate("document.querySelector('script').innerText").unwrap(), json!("var secret = 1;"));
+    assert_eq!(page.evaluate("document.querySelector('h1').outerText").unwrap(), json!("Title"));
     // Setting innerText turns line breaks into <br>.
     assert_eq!(
-        page.evaluate("(function(){ const d = document.createElement('div'); d.innerText = 'x\\ny'; return d.innerHTML; })()"),
+        page.evaluate("(function(){ const d = document.createElement('div'); d.innerText = 'x\\ny'; return d.innerHTML; })()").unwrap(),
         json!("x<br>y")
     );
 }
@@ -66,7 +66,7 @@ async fn inner_text_skips_elements_hidden_by_stylesheets() {
         "<div style=\"white-space:pre\">a  b</div></body></html>"
     ))
     .await;
-    assert_eq!(page.evaluate("document.body.innerText"), json!("shown\na  b"));
+    assert_eq!(page.evaluate("document.body.innerText").unwrap(), json!("shown\na  b"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -79,7 +79,7 @@ async fn markdown_tables_are_valid_gfm() {
         "<tr><td colspan=\"2\">wide</td></tr></tbody></table><p>after</p></body></html>"
     ))
     .await;
-    let md = page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS);
+    let md = page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS).unwrap();
     assert_eq!(
         md,
         json!("| Item | Qty |\n|---|---|\n| Apples \\| red | 3 |\n| wide |  |\n\nTable 1: totals\n\nafter")
@@ -88,7 +88,7 @@ async fn markdown_tables_are_valid_gfm() {
     let mut page = page_for("<html><body><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></body></html>").await;
     // No header row: the first row becomes the header, short rows are padded.
     assert_eq!(
-        page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS),
+        page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS).unwrap(),
         json!("| a | b |\n|---|---|\n| c |  |")
     );
 }

@@ -251,6 +251,53 @@ pub enum PendingNavigationOutcome {
     SameDocument,
 }
 
+/// Why [`Page::evaluate_checked`] produced no value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EvalError {
+    /// The source threw, failed to parse, or returned a promise that
+    /// rejected. Holds V8's description: the message and, for an `Error`, its
+    /// stack.
+    Thrown(String),
+    /// The run, or the wait for its promise, outlasted the budget.
+    TimedOut(std::time::Duration),
+    /// The result has no JSON form (a `BigInt`).
+    NotSerializable(String),
+    /// The page has no JavaScript runtime yet; navigate first.
+    NoRuntime,
+    /// The engine failed outside the page's code, e.g. the V8 heap limit.
+    Engine(String),
+}
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Thrown(description) => f.write_str(description),
+            Self::TimedOut(budget) => {
+                write!(f, "JavaScript evaluation exceeded {}ms", budget.as_millis())
+            }
+            Self::NotSerializable(message) => f.write_str(message),
+            Self::NoRuntime => f.write_str("the page has no JavaScript runtime; navigate first"),
+            Self::Engine(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for EvalError {}
+
+/// Why a started CDP evaluation produced no result while awaiting it.
+#[derive(Debug)]
+enum CdpAwaitError {
+    /// Its promise did not settle before the deadline.
+    Unsettled,
+    Engine(String),
+}
+
+impl CdpAwaitError {
+    fn no_runtime() -> Self {
+        Self::Engine("JavaScript runtime unavailable".to_string())
+    }
+}
+
 pub struct Page {
     pub id: String,
     pub frame_id: String,
@@ -4378,104 +4425,109 @@ impl Page {
         }
     }
 
-    /// Like [`Self::evaluate`] but bounded by a V8 watchdog so a runaway
-    /// expression cannot hang the process. A non-zero `timeout` of zero falls
-    /// back to the unbounded path.
-    pub fn evaluate_with_timeout(
-        &mut self,
-        expression: &str,
-        timeout: std::time::Duration,
-    ) -> serde_json::Value {
-        if let Some(js) = &mut self.js {
-            match js.evaluate_with_timeout(expression, timeout) {
-                Ok(val) => val,
-                Err(e) => {
-                    tracing::debug!(
-                        "JS eval error/timeout for '{}': {}",
-                        truncate_on_char_boundary(expression, 80),
-                        e
-                    );
-                    serde_json::Value::Null
-                }
-            }
-        } else {
-            self.evaluate(expression)
-        }
-    }
-
     /// Run a script and preserve JavaScript execution errors. The caller owns its deadline.
     pub fn evaluate_script(&mut self, script: &str) -> Result<serde_json::Value, String> {
         self.js.as_mut().ok_or("JavaScript runtime unavailable")?.evaluate_script(script)
     }
 
-    pub fn evaluate(&mut self, expression: &str) -> serde_json::Value {
+    /// Evaluate engine-written source (a probe, a helper the engine itself
+    /// composes) and return its JSON value; a thrown or syntax error is an
+    /// `Err`. Read as in `InbrowseJsRuntime::evaluate`: an object literal, a
+    /// block whose completion value is the result, or a function body when the
+    /// source has a top-level `return`. Without a runtime only
+    /// the title and URL reads are answered. Caller-typed source belongs in
+    /// [`Self::evaluate_checked`].
+    pub fn evaluate(&mut self, expression: &str) -> Result<serde_json::Value, String> {
         if let Some(js) = &mut self.js {
-            match js.evaluate(expression) {
-                Ok(val) => val,
-                Err(e) => {
-                    tracing::debug!(
-                        "JS eval error for '{}': {}",
-                        truncate_on_char_boundary(expression, 80),
-                        e
-                    );
-                    serde_json::Value::Null
-                }
+            return js.evaluate(expression);
+        }
+        match expression.trim() {
+            "document.title" => Ok(serde_json::Value::String(self.title.clone())),
+            "document.URL" | "document.location.href" | "window.location.href" => {
+                Ok(serde_json::Value::String(self.url_string()))
             }
-        } else {
-            match expression.trim() {
-                "document.title" => serde_json::Value::String(self.title.clone()),
-                "document.URL" | "document.location.href" | "window.location.href" => {
-                    serde_json::Value::String(self.url_string())
-                }
-                _ => serde_json::Value::Null,
-            }
+            _ => Err("JavaScript runtime unavailable".to_string()),
         }
     }
 
-    pub async fn evaluate_for_cdp(
+    /// [`Self::evaluate`] for a probe whose failure legitimately reads as
+    /// "no value": a feature check on an arbitrary page, a best-effort sample
+    /// or DOM nudge whose caller proceeds either way. The error is logged at
+    /// debug level and `null` returned. Not for results shown to a user.
+    pub fn evaluate_or_null(&mut self, expression: &str) -> serde_json::Value {
+        self.evaluate(expression).unwrap_or_else(|error| {
+            tracing::debug!(
+                "JS probe failed for '{}': {}",
+                truncate_on_char_boundary(expression, 80),
+                error
+            );
+            serde_json::Value::Null
+        })
+    }
+
+    /// Evaluate caller-typed JavaScript the way the DevTools console does and
+    /// return its JSON value. Entry point for every user-facing evaluation:
+    /// CLI `fetch --eval` (inbrowse-cli main.rs `run_fetch`), the scrape
+    /// worker (inbrowse-cli worker.rs `WorkerCommand::Evaluate`), MCP
+    /// `browser_evaluate` (inbrowse-mcp lib.rs `tool_evaluate`) and the SDK
+    /// (inbrowse-sdk page.rs `Page::evaluate_awaited`). Sibling: CDP
+    /// `Runtime.evaluate` (inbrowse-cdp domains/runtime.rs) runs the same
+    /// [`Self::evaluate_for_cdp_with_timeout`] but keeps remote objects and
+    /// the protocol's own source reading.
+    ///
+    /// - Source wrapped in braces that parses as an object literal is one;
+    ///   anything else is a classic script and its completion value is the
+    ///   result (`InbrowseJsRuntime::console_source`).
+    /// - A returned promise is awaited.
+    /// - `timeout` bounds the synchronous run and the promise wait together,
+    ///   through one V8 watchdog.
+    /// - A value JSON cannot hold is converted as `JSON.stringify` converts
+    ///   it: `undefined`, functions, symbols, `NaN` and the infinities become
+    ///   `null`, `-0` becomes `0`, and a `BigInt` is an error.
+    pub async fn evaluate_checked(
         &mut self,
         expression: &str,
-        return_by_value: bool,
-        await_promise: bool,
-    ) -> inbrowse_js::runtime::RemoteObjectInfo {
-        if self.js.is_some() {
-            match self
-                .evaluate_for_cdp_with_timeout(expression, return_by_value, await_promise,
-                    inbrowse_js::runtime::DEFAULT_CDP_AWAIT_TIMEOUT_MS)
-                .await
-            {
-                Ok(info) => info,
-                Err(e) => {
-                    tracing::debug!("evaluate_for_cdp error: {}", e);
-                    inbrowse_js::runtime::RemoteObjectInfo {
-                        thrown: false,
-                        unserializable_value: None,
-                        js_type: "undefined".into(),
-                        subtype: None,
-                        class_name: String::new(),
-                        description: String::new(),
-                        object_id: None,
-                        value: None,
-                    }
-                }
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, EvalError> {
+        let js = self.js.as_mut().ok_or(EvalError::NoRuntime)?;
+        let source = js.console_source(expression);
+        let watchdog = js.arm_watchdog(timeout);
+        let result = match js.start_cdp_evaluation(&source, true, true) {
+            Ok(evaluation) => self
+                .await_cdp_evaluation_typed(evaluation, true, duration_millis_u64(timeout).max(1))
+                .await,
+            Err(error) => Err(CdpAwaitError::Engine(error)),
+        };
+        // By-value results hold no handles, but an exception or a timed-out
+        // promise can leave one behind.
+        self.release_object_group();
+        let js = self.js.as_mut().ok_or(EvalError::NoRuntime)?;
+        if js.disarm_watchdog(watchdog) {
+            // Termination can prevent the first cleanup; retry under a fresh bounded guard.
+            let cleanup = js.arm_watchdog(timeout);
+            self.release_object_group();
+            if let Some(js) = self.js.as_mut() {
+                js.disarm_watchdog(cleanup);
             }
-        } else {
-            let val = self.evaluate(expression);
-            inbrowse_js::runtime::RemoteObjectInfo {
-                thrown: false,
-                unserializable_value: None,
-                js_type: match &val {
-                    serde_json::Value::String(_) => "string".into(),
-                    serde_json::Value::Number(_) => "number".into(),
-                    serde_json::Value::Bool(_) => "boolean".into(),
-                    _ => "undefined".into(),
-                },
-                subtype: None,
-                class_name: String::new(),
-                description: String::new(),
-                object_id: None,
-                value: Some(val),
-            }
+            return Err(EvalError::TimedOut(timeout));
+        }
+        let info = match result {
+            Ok(info) => info,
+            Err(CdpAwaitError::Unsettled) => return Err(EvalError::TimedOut(timeout)),
+            Err(CdpAwaitError::Engine(error)) => return Err(EvalError::Engine(error)),
+        };
+        if info.thrown {
+            return Err(EvalError::Thrown(info.description));
+        }
+        if let Some(value) = info.value {
+            return Ok(value);
+        }
+        match info.unserializable_value.as_deref() {
+            Some("-0") => Ok(serde_json::Value::from(0)),
+            Some(text) if info.js_type == "bigint" => Err(EvalError::NotSerializable(format!(
+                "BigInt value {text} can't be serialized in JSON"
+            ))),
+            _ => Ok(serde_json::Value::Null),
         }
     }
 
@@ -4490,7 +4542,9 @@ impl Page {
             let evaluation = js.start_cdp_evaluation(expression, return_by_value, await_promise)?;
             self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.evaluate").await
         } else {
-            let value = self.evaluate(expression);
+            // Before the first navigation there is no runtime; a client probing
+            // the blank page gets the title/URL answer or `undefined`.
+            let value = self.evaluate_or_null(expression);
             Ok(inbrowse_js::runtime::RemoteObjectInfo {
                 thrown: false,
                 unserializable_value: None,
@@ -4506,55 +4560,6 @@ impl Page {
                 object_id: None,
                 value: Some(value),
             })
-        }
-    }
-
-    pub async fn call_function_on_for_cdp(
-        &mut self,
-        function_declaration: &str,
-        object_id: Option<&str>,
-        args: &[serde_json::Value],
-        return_by_value: bool,
-        await_promise: bool,
-    ) -> inbrowse_js::runtime::RemoteObjectInfo {
-        if self.js.is_some() {
-            match self
-                .call_function_on_for_cdp_with_timeout(
-                    function_declaration,
-                    object_id,
-                    args,
-                    return_by_value,
-                    await_promise,
-                    inbrowse_js::runtime::DEFAULT_CDP_AWAIT_TIMEOUT_MS,
-                )
-                .await
-            {
-                Ok(info) => info,
-                Err(e) => {
-                    tracing::debug!("callFunctionOn error: {}", e);
-                    inbrowse_js::runtime::RemoteObjectInfo {
-                        thrown: false,
-                        unserializable_value: None,
-                        js_type: "undefined".into(),
-                        subtype: None,
-                        class_name: String::new(),
-                        description: String::new(),
-                        object_id: None,
-                        value: None,
-                    }
-                }
-            }
-        } else {
-            inbrowse_js::runtime::RemoteObjectInfo {
-                thrown: false,
-                unserializable_value: None,
-                js_type: "undefined".into(),
-                subtype: None,
-                class_name: String::new(),
-                description: String::new(),
-                object_id: None,
-                value: None,
-            }
         }
     }
 
@@ -4578,6 +4583,8 @@ impl Page {
         self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.callFunctionOn").await
     }
 
+    /// [`Self::await_cdp_evaluation_typed`] with the error as protocol text,
+    /// for `Runtime.evaluate` / `Runtime.callFunctionOn`.
     async fn await_cdp_evaluation(
         &mut self,
         evaluation: inbrowse_js::runtime::CdpEvaluation,
@@ -4585,6 +4592,25 @@ impl Page {
         timeout_ms: u64,
         method: &str,
     ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, String> {
+        self.await_cdp_evaluation_typed(evaluation, return_by_value, timeout_ms)
+            .await
+            .map_err(|error| match error {
+                CdpAwaitError::Unsettled => {
+                    format!("{method} promise did not settle within {timeout_ms}ms")
+                }
+                CdpAwaitError::Engine(error) => error,
+            })
+    }
+
+    /// Drive the page until a started CDP evaluation's promise settles, then
+    /// read its result. Callers: [`Self::await_cdp_evaluation`] and
+    /// [`Self::evaluate_checked`].
+    async fn await_cdp_evaluation_typed(
+        &mut self,
+        evaluation: inbrowse_js::runtime::CdpEvaluation,
+        return_by_value: bool,
+        timeout_ms: u64,
+    ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, CdpAwaitError> {
         let pending = match evaluation {
             inbrowse_js::runtime::CdpEvaluation::Complete(info) => return Ok(info),
             inbrowse_js::runtime::CdpEvaluation::Pending(pending) => pending,
@@ -4594,22 +4620,22 @@ impl Page {
             loop {
                 let queued = !self.pending_frame_work.is_empty();
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                let js = self.js.as_mut().ok_or("JavaScript runtime unavailable")?;
+                let js = self.js.as_mut().ok_or_else(CdpAwaitError::no_runtime)?;
                 let mut ready = false;
                 let progressed = js.resolve_promises_until(|js| {
                     ready = js.cdp_evaluation_ready(&pending);
                     ready || queued || js.has_pending_frame_tasks()
                 }, duration_millis_u64(remaining)).await;
                 if ready { return Ok(()); }
-                if !progressed { return Err(format!("{method} promise did not settle within {timeout_ms}ms")); }
+                if !progressed { return Err(CdpAwaitError::Unsettled); }
                 self.advance_frames().await;
             }
         };
         let result = tokio::time::timeout_at(deadline, wait).await
-            .unwrap_or_else(|_| Err(format!("{method} promise did not settle within {timeout_ms}ms")));
-        let js = self.js.as_mut().ok_or("JavaScript runtime unavailable")?;
+            .unwrap_or(Err(CdpAwaitError::Unsettled));
+        let js = self.js.as_mut().ok_or_else(CdpAwaitError::no_runtime)?;
         match result {
-            Ok(()) => js.finish_cdp_evaluation(pending, return_by_value),
+            Ok(()) => js.finish_cdp_evaluation(pending, return_by_value).map_err(CdpAwaitError::Engine),
             Err(error) => { js.cancel_cdp_evaluation(pending); Err(error) }
         }
     }
@@ -5128,7 +5154,7 @@ mod tests {
             document.compatMode, document.doctype,
             Array.from(document.childNodes, node => node.nodeType),
             document.documentElement.nodeName, document.head.nodeName, document.body.nodeName
-        ])()"#), serde_json::json!(["BackCompat", null, [1], "HTML", "HEAD", "BODY"]));
+        ])()"#).unwrap(), serde_json::json!(["BackCompat", null, [1], "HTML", "HEAD", "BODY"]));
         assert!(page.with_dom(|dom| dom.is_quirks()).unwrap());
     }
 
@@ -5293,7 +5319,7 @@ mod tests {
         assert_eq!(page.http_client.active_requests(), 1);
         release.send(()).unwrap();
         fetch.await.unwrap();
-        assert_eq!(page.js.as_mut().unwrap().evaluate("1 + 1").unwrap(), serde_json::json!(2.0));
+        assert_eq!(page.js.as_mut().unwrap().evaluate("1 + 1").unwrap(), serde_json::json!(2));
     }
     fn install_linked_stylesheet(
         runtime: &mut inbrowse_js::runtime::InbrowseJsRuntime,
@@ -5453,7 +5479,7 @@ mod tests {
         page.evaluate(&format!(
             "location.href = {}",
             serde_json::to_string(&file_url).expect("json string")
-        ));
+        )).unwrap();
         assert!(page.has_pending_navigation(), "the page queued a navigation");
 
         let navigated = page
@@ -5466,7 +5492,7 @@ mod tests {
         // The location setter published the target before the block; the
         // page must not keep reporting (or later adopt) a document it never
         // loaded.
-        assert_eq!(page.evaluate("location.href"), serde_json::json!(web_url));
+        assert_eq!(page.evaluate("location.href").unwrap(), serde_json::json!(web_url));
         assert!(!page.sync_virtual_url());
         assert_eq!(page.url_string(), web_url);
 
@@ -6109,21 +6135,21 @@ mod tests {
         let mut page = page_without_chain_limit("history-across-documents");
         page.navigate(one).await.unwrap();
         page.navigate(two).await.unwrap();
-        assert_eq!(page.evaluate("history.length"), serde_json::json!(2.0));
+        assert_eq!(page.evaluate("history.length").unwrap(), serde_json::json!(2));
 
-        page.evaluate("history.back()");
+        page.evaluate("history.back()").unwrap();
         assert!(page.process_pending_navigation().await.unwrap());
         assert_eq!(page.url_string(), one);
         assert_eq!((page.history.len(), page.history_index), (2, 0));
-        assert_eq!(page.evaluate("history.length"), serde_json::json!(2.0));
+        assert_eq!(page.evaluate("history.length").unwrap(), serde_json::json!(2));
 
-        page.evaluate("history.go(1)");
+        page.evaluate("history.go(1)").unwrap();
         assert!(page.process_pending_navigation().await.unwrap());
         assert_eq!(page.url_string(), two);
         assert_eq!((page.history.len(), page.history_index), (2, 1));
 
         // Out-of-range traversal stays put.
-        page.evaluate("history.go(5)");
+        page.evaluate("history.go(5)").unwrap();
         assert!(!page.process_pending_navigation().await.unwrap());
         assert_eq!(page.url_string(), two);
     }
@@ -6138,21 +6164,21 @@ mod tests {
         let mut page = page_without_chain_limit("history-same-document");
         page.navigate(one).await.unwrap();
         page.navigate(two).await.unwrap();
-        page.evaluate("history.back()");
+        page.evaluate("history.back()").unwrap();
         page.process_pending_navigation().await.unwrap();
         assert_eq!(page.url_string(), one);
 
-        page.evaluate("history.pushState(null, '', '#a')");
-        assert_eq!(page.evaluate("history.length"), serde_json::json!(2.0));
+        page.evaluate("history.pushState(null, '', '#a')").unwrap();
+        assert_eq!(page.evaluate("history.length").unwrap(), serde_json::json!(2));
         // Recording the pushState URL on the page must not double count it.
         page.sync_virtual_url();
-        assert_eq!(page.evaluate("history.length"), serde_json::json!(2.0));
+        assert_eq!(page.evaluate("history.length").unwrap(), serde_json::json!(2));
 
-        page.evaluate("history.go(-2)");
+        page.evaluate("history.go(-2)").unwrap();
         assert!(!page.process_pending_navigation().await.unwrap());
-        page.evaluate("history.back()");
+        page.evaluate("history.back()").unwrap();
         assert!(!page.process_pending_navigation().await.unwrap());
-        assert_eq!(page.evaluate("location.hash"), serde_json::json!(""));
+        assert_eq!(page.evaluate("location.hash").unwrap(), serde_json::json!(""));
     }
 
     #[test]
@@ -6737,7 +6763,7 @@ mod tests {
                 .unwrap()
                 .evaluate("globalThis.__runs")
                 .unwrap(),
-            serde_json::json!(32.0),
+            serde_json::json!(32),
             "a cached response must still execute for every script element",
         );
         assert_eq!(script_requests.load(Ordering::SeqCst), 1);
@@ -6766,7 +6792,7 @@ mod tests {
                 .unwrap()
                 .evaluate("globalThis.__runs")
                 .unwrap(),
-            serde_json::json!(24.0),
+            serde_json::json!(24),
         );
         assert_eq!(script_requests.load(Ordering::SeqCst), 24);
     }
@@ -6794,7 +6820,7 @@ mod tests {
                 .unwrap()
                 .evaluate("globalThis.__runs")
                 .unwrap(),
-            serde_json::json!(32.0),
+            serde_json::json!(32),
             "Fetch.enable patterns pause matching requests; they are not blocked URLs",
         );
     }
@@ -6866,7 +6892,7 @@ mod tests {
                 sessionStorage.setItem('s1', 'session-value');
                 return 'seeded';
             })()"#,
-        );
+        ).unwrap();
 
         // Same origin, different path: a new document, and therefore a new realm.
         page.navigate(&format!("{origin_a}/second")).await.unwrap();
@@ -6880,7 +6906,7 @@ mod tests {
                     has: 'l1' in localStorage,
                     keys: Object.keys(localStorage),
                 })"#,
-            );
+            ).unwrap();
         assert_eq!(
             after.get("local").and_then(|v| v.as_str()),
             Some("local-value"),
@@ -6909,7 +6935,7 @@ mod tests {
                     local: localStorage.getItem('l1'),
                     session: sessionStorage.getItem('s1'),
                 })"#,
-            );
+            ).unwrap();
         assert!(
             other["local"].is_null() && other["session"].is_null(),
             "a different origin must not see this origin's storage: {other:?}"
@@ -6917,9 +6943,9 @@ mod tests {
 
         // Coming back, the original origin's data is still there.
         page.navigate(&origin_a).await.unwrap();
-        let back = page.evaluate("localStorage.getItem('l1')");
+        let back = page.evaluate("localStorage.getItem('l1')").unwrap();
         assert_eq!(back.as_str(), Some("local-value"));
-        assert_eq!(page.evaluate("sessionStorage.getItem('s1')").as_str(), Some("session-value"));
+        assert_eq!(page.evaluate("sessionStorage.getItem('s1')").unwrap().as_str(), Some("session-value"));
     }
 
     #[tokio::test]
@@ -6939,9 +6965,9 @@ mod tests {
                 tx.objectStore('items').put({value:'kept'},1);
                 tx.oncomplete = () => idbSaved = true;
             };
-        })()"#);
+        })()"#).unwrap();
         first.js.as_mut().unwrap().run_event_loop_bounded(500).await.unwrap();
-        assert_eq!(first.evaluate("idbSaved"), serde_json::json!(true));
+        assert_eq!(first.evaluate("idbSaved").unwrap(), serde_json::json!(true));
         let read = r#"(() => {
             globalThis.idbRead = 'pending';
             const r = indexedDB.open('shared',1);
@@ -6952,23 +6978,23 @@ mod tests {
             };
         })()"#;
         first.navigate(&origin_b).await.unwrap();
-        first.evaluate(read);
+        first.evaluate(read).unwrap();
         first.js.as_mut().unwrap().run_event_loop_bounded(500).await.unwrap();
-        assert_eq!(first.evaluate("idbRead"), serde_json::Value::Null);
+        assert_eq!(first.evaluate("idbRead").unwrap(), serde_json::Value::Null);
         first.navigate(&origin_a).await.unwrap();
-        first.evaluate(read);
+        first.evaluate(read).unwrap();
         first.js.as_mut().unwrap().run_event_loop_bounded(500).await.unwrap();
-        assert_eq!(first.evaluate("idbRead"), serde_json::json!("kept"));
+        assert_eq!(first.evaluate("idbRead").unwrap(), serde_json::json!("kept"));
         let mut second = storage_page("idb-second", context);
         second.navigate(&origin_a).await.unwrap();
-        second.evaluate(read);
+        second.evaluate(read).unwrap();
         second.js.as_mut().unwrap().run_event_loop_bounded(500).await.unwrap();
-        assert_eq!(second.evaluate("idbRead"), serde_json::json!("kept"));
+        assert_eq!(second.evaluate("idbRead").unwrap(), serde_json::json!("kept"));
         let mut isolated = storage_page("idb-isolated", std::sync::Arc::new(crate::BrowserContext::new("idb-private".into())));
         isolated.navigate(&origin_a).await.unwrap();
-        isolated.evaluate(read);
+        isolated.evaluate(read).unwrap();
         isolated.js.as_mut().unwrap().run_event_loop_bounded(500).await.unwrap();
-        assert_eq!(isolated.evaluate("idbRead"), serde_json::Value::Null);
+        assert_eq!(isolated.evaluate("idbRead").unwrap(), serde_json::Value::Null);
     }
 
     #[tokio::test]
@@ -6991,7 +7017,7 @@ mod tests {
                 sessionStorage.setItem('tab', 'from-tab-one');
                 return 'ok';
             })()"#,
-        );
+        ).unwrap();
 
         // A second page of the same context shares localStorage but not
         // sessionStorage, which is the split the storage bug got wrong.
@@ -7003,7 +7029,7 @@ mod tests {
                     local: localStorage.getItem('shared'),
                     session: sessionStorage.getItem('tab'),
                 })"#,
-            );
+            ).unwrap();
         assert_eq!(
             view.get("local").and_then(|v| v.as_str()),
             Some("from-tab-one"),
@@ -7013,16 +7039,16 @@ mod tests {
             view.get("session") == Some(&serde_json::Value::Null),
             "sessionStorage must not cross tabs: {view:?}"
         );
-        assert_eq!(second.evaluate("(() => { localStorage.setItem('shared', 'from-tab-two'); sessionStorage.setItem('tab', 'from-tab-two'); return localStorage.getItem('shared'); })()"),
+        assert_eq!(second.evaluate("(() => { localStorage.setItem('shared', 'from-tab-two'); sessionStorage.setItem('tab', 'from-tab-two'); return localStorage.getItem('shared'); })()").unwrap(),
             serde_json::json!("from-tab-two"));
         second.suspend_js();
         first.suspend_js();
         first.resume_js();
-        assert_eq!(first.evaluate("[localStorage.getItem('shared'), sessionStorage.getItem('tab')]"),
+        assert_eq!(first.evaluate("[localStorage.getItem('shared'), sessionStorage.getItem('tab')]").unwrap(),
             serde_json::json!(["from-tab-two", "from-tab-one"]));
         first.suspend_js();
         second.resume_js();
-        assert_eq!(second.evaluate("sessionStorage.getItem('tab')").as_str(), Some("from-tab-two"));
+        assert_eq!(second.evaluate("sessionStorage.getItem('tab')").unwrap().as_str(), Some("from-tab-two"));
     }
 
     /// `/` puts its iframe inside a closed shadow root, `/plain.html` puts the
@@ -8013,7 +8039,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.value, Some(serde_json::json!(42.0)));
+        assert_eq!(result.value, Some(serde_json::json!(42)));
     }
 
     #[test]
@@ -8100,7 +8126,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.value, Some(serde_json::json!(2.0)));
+        assert_eq!(result.value, Some(serde_json::json!(2)));
     }
 
     fn import_map_test_page(name: &str, base: &str, html: &str) -> super::Page {
@@ -8619,7 +8645,7 @@ mod tests {
                     "globalThis.__lifecycleOrder.filter(value => value === 'window-onload').length",
                 )
                 .unwrap(),
-            serde_json::json!(1.0),
+            serde_json::json!(1),
             "window.onload must fire exactly once",
         );
     }
@@ -8741,7 +8767,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(6500),
             "frame discovery must bound synchronous microtasks, not rely on a Tokio timeout: {:?}",
             started.elapsed());
-        assert_eq!(page.js.as_mut().unwrap().evaluate("1 + 1").unwrap(), serde_json::json!(2.0),
+        assert_eq!(page.js.as_mut().unwrap().evaluate("1 + 1").unwrap(), serde_json::json!(2),
             "the page must remain usable after an overrun");
     }
 
@@ -9747,7 +9773,7 @@ mod tests {
                     hiddenRoot.innerText,
                 ];
             })()"#,
-        );
+        ).unwrap();
         assert_eq!(
             actual,
             serde_json::json!(["AD\n\nE\n\n\nF", "A\nB\nC", "A\n\nB", "A\nB", "QRS", "TU"]),
@@ -10457,7 +10483,7 @@ mod tests {
         assert_eq!(
             page.evaluate(
                 "return (document.getElementById('second').scrollIntoView(), window.scrollY)"
-            )
+            ).unwrap()
             .as_f64(),
             Some(80.0)
         );

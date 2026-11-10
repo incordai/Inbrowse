@@ -447,12 +447,12 @@ fn handle_tools_list(id: Value) -> RpcResponse {
             },
             {
                 "name": "browser_evaluate",
-                "description": "Evaluate a JavaScript expression in the page context and return the result",
+                "description": "Run JavaScript in the page the way the DevTools console does and return the result: statements return their last value, {a: 1} is an object, and a returned promise is awaited. A thrown error, a rejected promise or a syntax error is a tool error.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "expression": { "type": "string", "description": "JavaScript expression to evaluate; a promise it returns is awaited" },
-                        "timeoutMs": { "type": "number", "description": "How long to wait for a returned promise, in milliseconds (default: 5000)" }
+                        "expression": { "type": "string", "description": "JavaScript to run: an expression or statements; a promise it returns is awaited" },
+                        "timeoutMs": { "type": "number", "description": "Limit for the run and the wait for a returned promise together, in milliseconds (default: 5000)" }
                     },
                     "required": ["expression"]
                 }
@@ -1532,23 +1532,15 @@ async fn tool_evaluate(args: &Value, state: &mut BrowserState) -> Result<String,
     let timeout_ms = args.get("timeoutMs").and_then(Value::as_u64).unwrap_or(5_000).max(1);
     let budget = std::time::Duration::from_millis(timeout_ms);
     std::time::Instant::now().checked_add(budget).ok_or("timeoutMs is too large")?;
-    let page = state.page_mut();
-    let watchdog = page.js.as_mut().ok_or("Navigate before evaluating JavaScript")?.arm_watchdog(budget);
-    let result = page.evaluate_for_cdp_with_timeout(expression, true, true, timeout_ms).await;
-    // MCP never exposes remote handles. Release results, including exceptions.
-    page.release_object_group();
-    if page.js.as_mut().expect("evaluation runtime").disarm_watchdog(watchdog) {
-        // Termination can prevent the first cleanup; retry under a fresh bounded guard.
-        let cleanup = page.js.as_mut().expect("evaluation runtime").arm_watchdog(budget);
-        page.release_object_group();
-        page.js.as_mut().expect("evaluation runtime").disarm_watchdog(cleanup);
-        return Err(format!("JavaScript evaluation exceeded {timeout_ms}ms"));
-    }
-    let result = result?;
-    if result.thrown {
-        return Err(result.description);
-    }
-    let result = result.value.unwrap_or(Value::Null);
+    // Same evaluation as `fetch --eval` and the scrape worker
+    // (inbrowse Page::evaluate_checked); MCP never exposes remote handles.
+    let result = match state.page_mut().evaluate_checked(expression, budget).await {
+        Ok(value) => value,
+        Err(inbrowse::EvalError::NoRuntime) => {
+            return Err("Navigate before evaluating JavaScript".to_string())
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     state.settle_synthetic_navigation().await?;
     Ok(match &result {
         Value::String(s) => s.clone(),
@@ -2685,14 +2677,14 @@ mod tests {
         let reference = reference.to_string();
         assert!(snapshot.lines().any(|line| line.starts_with("ref=") && line.contains("Work email")), "associated labels must name fields: {snapshot}");
         tool_click(&json!({"ref":reference}), &mut state).await.unwrap();
-        assert_eq!(state.page_mut().evaluate("window.saved"), json!(true));
+        assert_eq!(state.page_mut().evaluate("window.saved").unwrap(), json!(true));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn snapshot_exposes_live_states_without_password_values() {
         let mut state = BrowserState::new(None, None, false);
         state.page_mut().navigate("data:text/html,<input id=c type=checkbox checked aria-label=Consent><input id=f value=old aria-label=Account><input id=p type=password aria-label=Password><button disabled>Blocked</button><div role=tab aria-selected=true>Overview</div><button aria-expanded=false>Details</button>").await.unwrap();
-        state.page_mut().evaluate("(function(){document.getElementById('c').checked=false;document.getElementById('f').value='fresh';document.getElementById('p').value='private-password';return true;})()");
+        state.page_mut().evaluate("(function(){document.getElementById('c').checked=false;document.getElementById('f').value='fresh';document.getElementById('p').value='private-password';return true;})()").unwrap();
         let snapshot = tool_snapshot(&json!({}), &mut state).unwrap();
         for (label, detail) in [("Consent", "checked=false"), ("Account", "value=\"fresh\""), ("Blocked", "disabled=true"), ("Overview", "selected=true"), ("Details", "expanded=false")] {
             assert!(snapshot.lines().any(|line| line.starts_with("ref=") && line.contains(label) && line.contains(detail)), "missing {label} {detail}: {snapshot}");
@@ -2762,10 +2754,10 @@ mod tests {
         });
         let mut state = BrowserState::new(None, None, false);
         state.page_mut().navigate("data:text/html,<p>Content</p>").await.unwrap();
-        assert_eq!(state.page_mut().evaluate("(function(){globalThis.savedStringify=JSON.stringify;JSON.stringify=function(){while(true){}};return true;})()"), json!(true));
+        assert_eq!(state.page_mut().evaluate("(function(){globalThis.savedStringify=JSON.stringify;JSON.stringify=function(){while(true){}};return true;})()").unwrap(), json!(true));
         let result = tool_extract(&json!({"schema":{"text":"p"}}), &mut state);
-        state.page_mut().evaluate("(function(){JSON.stringify=savedStringify;return true;})()");
-        assert_eq!(state.page_mut().evaluate("6 * 7").as_f64(), Some(42.0), "the terminated page must remain usable");
+        state.page_mut().evaluate("(function(){JSON.stringify=savedStringify;return true;})()").unwrap();
+        assert_eq!(state.page_mut().evaluate("6 * 7").unwrap(), json!(42), "the terminated page must remain usable");
         stop.send(()).unwrap();
         backstop.join().unwrap();
         assert!(result.is_err(), "serialization overrun must be a tool error");
@@ -2790,7 +2782,7 @@ mod tests {
         for (expression, result) in responses {
             assert_eq!(result["isError"], json!(true), "failure must not be successful data: {expression}: {result}");
         }
-        assert_eq!(tool_evaluate(&json!({"expression": "6 * 7"}), &mut state).await.unwrap().parse::<f64>().unwrap(), 42.0);
+        assert_eq!(tool_evaluate(&json!({"expression": "6 * 7"}), &mut state).await.unwrap(), "42");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2800,10 +2792,11 @@ mod tests {
         for expression in ["null", "undefined", "Promise.resolve(null)"] {
             assert_eq!(tool_evaluate(&json!({"expression": expression}), &mut state).await.unwrap(), "null");
         }
-        assert_eq!(tool_evaluate(&json!({"expression": "var mcpAnswer = 21; mcpAnswer * 2", "timeoutMs": 30}), &mut state).await.unwrap().parse::<f64>().unwrap(), 42.0);
-        state.page_mut().evaluate("globalThis.evaluations = 0");
+        assert_eq!(tool_evaluate(&json!({"expression": "var mcpAnswer = 21; mcpAnswer * 2", "timeoutMs": 30}), &mut state).await.unwrap(), "42");
+        assert_eq!(tool_evaluate(&json!({"expression": "{answer: 7}"}), &mut state).await.unwrap(), "{\n  \"answer\": 7\n}");
+        state.page_mut().evaluate("globalThis.evaluations = 0").unwrap();
         tool_evaluate(&json!({"expression": "globalThis.evaluations++; undefined", "timeoutMs": 30}), &mut state).await.unwrap();
-        assert_eq!(state.page_mut().evaluate("globalThis.evaluations").as_f64(), Some(1.0));
+        assert_eq!(state.page_mut().evaluate("globalThis.evaluations").unwrap(), json!(1));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2818,7 +2811,7 @@ mod tests {
         ] {
             let mut state = BrowserState::new(None, None, false);
             state.page_mut().navigate("data:text/html,<button id=action>Continue</button>").await.unwrap();
-            assert_eq!(state.page_mut().evaluate(&format!("(function(){{{setup} return true;}})()")), json!(true));
+            assert_eq!(state.page_mut().evaluate(&format!("(function(){{{setup} return true;}})()")).unwrap(), json!(true));
             let response = dispatch("tools/call", json!(1), &json!({"name":tool,"arguments":arguments}), &mut state).await;
             results.push((tool, response.result.unwrap()));
         }
@@ -2835,7 +2828,7 @@ mod tests {
             "fields":[{"selector":"#q","value":"kept"},{"selector":"#missing","value":"bad"}],
             "submit_selector":"#go"
         }}), &mut state).await;
-        assert_eq!(state.page_mut().evaluate("window.submits").as_f64(), Some(0.0), "a partial form must not be submitted");
+        assert_eq!(state.page_mut().evaluate("window.submits").unwrap(), json!(0), "a partial form must not be submitted");
         assert_eq!(response.result.unwrap()["isError"], json!(true));
         let response = dispatch("tools/call", json!(2), &json!({"name":"browser_fill_form", "arguments":{
             "fields":[], "submit_ref":"unknown"
@@ -2871,17 +2864,17 @@ mod tests {
         ]}}), &mut state).expect("restore before the first navigation");
         for (origin, local, session) in [(&first, "first", "first-session"), (&second, "second", "second-session")] {
             state.page_mut().navigate(origin).await.expect("fixture page");
-            assert_eq!(state.page_mut().evaluate("[localStorage.getItem('token'), sessionStorage.getItem('tab')]"),
+            assert_eq!(state.page_mut().evaluate("[localStorage.getItem('token'), sessionStorage.getItem('tab')]").unwrap(),
                 json!([local, session]), "restored values must belong to {origin}");
         }
         tool_set_storage_state(&json!({"state": {"origins": [
             {"origin": first, "localStorage": [["token", "updated-first"]]}
         ]}}), &mut state).expect("restore an inactive origin");
-        assert_eq!(state.page_mut().evaluate("localStorage.getItem('token')"), json!("second"));
+        assert_eq!(state.page_mut().evaluate("localStorage.getItem('token')").unwrap(), json!("second"));
         state.page_mut().navigate(&first).await.expect("return to first origin");
-        assert_eq!(state.page_mut().evaluate("localStorage.getItem('token')"), json!("updated-first"));
+        assert_eq!(state.page_mut().evaluate("localStorage.getItem('token')").unwrap(), json!("updated-first"));
         tool_tab_new(&json!({"url": first}), &mut state).await.expect("second tab");
-        assert_eq!(state.page_mut().evaluate("[localStorage.getItem('token'), sessionStorage.getItem('tab')]"),
+        assert_eq!(state.page_mut().evaluate("[localStorage.getItem('token'), sessionStorage.getItem('tab')]").unwrap(),
             json!(["updated-first", null]), "restoring a session must not share sessionStorage across tabs");
     }
 
@@ -2893,7 +2886,7 @@ mod tests {
         let mut state = BrowserState::new(None, None, false);
         for (origin, value) in [(&first, "first"), (&second, "second")] {
             state.page_mut().navigate(origin).await.expect("fixture page");
-            state.page_mut().evaluate(&format!("(function(){{localStorage.setItem('token', '{value}'); sessionStorage.setItem('tab', '{value}-session'); return true;}})()"));
+            state.page_mut().evaluate(&format!("(function(){{localStorage.setItem('token', '{value}'); sessionStorage.setItem('tab', '{value}-session'); return true;}})()")).unwrap();
         }
         let exported: Value = serde_json::from_str(&tool_storage_state(&mut state).expect("export")).unwrap();
         let origins = exported["origins"].as_array().expect("origins");
@@ -2938,7 +2931,7 @@ mod tests {
         let (origin, _) = spawn_form_recording_server();
         let mut state = BrowserState::new(None, None, false);
         state.page_mut().navigate(&origin).await.expect("fixture page");
-        state.page_mut().evaluate(r#"(function(){localStorage.setItem('\0key', '\0"value"'); sessionStorage.setItem('\0tab', '\0session'); return true;})()"#);
+        state.page_mut().evaluate(r#"(function(){localStorage.setItem('\0key', '\0"value"'); sessionStorage.setItem('\0tab', '\0session'); return true;})()"#).unwrap();
         let exported: Value = serde_json::from_str(&tool_storage_state(&mut state).expect("export")).unwrap();
         assert_eq!(exported["origins"][0]["localStorage"], json!([["\0key", "\0\"value\""]]));
         assert_eq!(exported["origins"][0]["sessionStorage"], json!([["\0tab", "\0session"]]));
@@ -2946,7 +2939,7 @@ mod tests {
         let mut restored = BrowserState::new(None, None, false);
         tool_set_storage_state(&json!({"state": exported}), &mut restored).expect("restore");
         restored.page_mut().navigate(&origin).await.expect("restored page");
-        assert_eq!(restored.page_mut().evaluate(r#"[localStorage.getItem('\0key'), sessionStorage.getItem('\0tab')]"#),
+        assert_eq!(restored.page_mut().evaluate(r#"[localStorage.getItem('\0key'), sessionStorage.getItem('\0tab')]"#).unwrap(),
             json!(["\0\"value\"", "\0session"]));
     }
 
@@ -2966,14 +2959,14 @@ mod tests {
             )}), &mut state).await.expect("framework rerender");
 
             let result = tool_click(&json!({"ref": reference}), &mut state).await;
-            let clicks = state.page_mut().evaluate("window.clicks");
-            assert_eq!(clicks.as_f64(), Some(0.0), "stale ref must not click a clone: {mutation}, {result:?}");
+            let clicks = state.page_mut().evaluate("window.clicks").unwrap();
+            assert_eq!(clicks, json!(0), "stale ref must not click a clone: {mutation}, {result:?}");
             assert!(result.is_err(), "stale ref must request a fresh snapshot");
 
             tool_snapshot(&json!({}), &mut state).expect("fresh snapshot");
             let reference = state.interactive_refs.keys().next().expect("fresh ref").clone();
             tool_click(&json!({"ref": reference}), &mut state).await.expect("fresh ref works");
-            assert_eq!(state.page_mut().evaluate("window.clicks").as_f64(), Some(1.0));
+            assert_eq!(state.page_mut().evaluate("window.clicks").unwrap(), json!(1));
         }
     }
 
@@ -2989,7 +2982,7 @@ mod tests {
         }), &mut state).await.expect("insert another action");
         tool_snapshot(&json!({}), &mut state).expect("new snapshot");
         let result = tool_click(&json!({"ref": reference}), &mut state).await;
-        assert_eq!(state.page_mut().evaluate("window.clicks").as_f64(), Some(0.0), "old ref must not act on a new target: {result:?}");
+        assert_eq!(state.page_mut().evaluate("window.clicks").unwrap(), json!(0), "old ref must not act on a new target: {result:?}");
         assert!(result.is_err());
     }
 
@@ -3004,15 +2997,15 @@ mod tests {
             "(function(){window.clicked=''; var button=document.getElementById('target'); button.addEventListener('click',function(){window.clicked=this.id}); document.body.appendChild(button); return true;})()"
         }), &mut state).await.expect("reorder same node");
         tool_click(&json!({"ref": reference}), &mut state).await.expect("same node ref");
-        assert_eq!(state.page_mut().evaluate("window.clicked"), json!("target"));
+        assert_eq!(state.page_mut().evaluate("window.clicked").unwrap(), json!("target"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn first_evaluation_and_promise_results_work_without_prior_state() {
         let mut state = BrowserState::new(None, None, false);
         state.page_mut().navigate("data:text/html,<p>Evaluate</p>").await.unwrap();
-        assert_eq!(tool_evaluate(&json!({"expression":"1 + 1"}), &mut state).await.unwrap().parse::<f64>().unwrap(), 2.0);
-        assert_eq!(tool_evaluate(&json!({"expression":"Promise.resolve(3)"}), &mut state).await.unwrap().parse::<f64>().unwrap(), 3.0);
+        assert_eq!(tool_evaluate(&json!({"expression":"1 + 1"}), &mut state).await.unwrap(), "2");
+        assert_eq!(tool_evaluate(&json!({"expression":"Promise.resolve(3)"}), &mut state).await.unwrap(), "3");
     }
 
     // #1015: case-folding can change byte length (Turkish "İ" -> "i̇"), so a
@@ -3412,7 +3405,7 @@ mod tests {
             .expect("fetch URL should serialize");
         state.page_mut().evaluate(&format!(
             "fetch({fetch_url}).then(() => document.body.id = 'fetch-complete')"
-        ));
+        )).unwrap();
         tool_wait_for(
             &json!({ "selector": "#fetch-complete", "timeout": 2 }),
             &mut state,
@@ -3469,7 +3462,7 @@ mod tests {
                     }
                 });
             })()"#,
-        );
+        ).unwrap();
 
         tool_fill(
             &json!({ "selector": "#field", "value": "filled" }),
@@ -3500,7 +3493,7 @@ mod tests {
                 lastInputTarget: window.__lastInputTarget,
                 lastInputTrusted: window.__lastInputTrusted
             })"#,
-        );
+        ).unwrap();
         assert_eq!(
             actual,
             json!(r#"{"domValue":"form-filled","controlledState":"form-filled","controlledUpdates":3,"lastInputTarget":"field","lastInputTrusted":true}"#),
@@ -3551,7 +3544,7 @@ mod tests {
                     }
                 });
             })()"#,
-        );
+        ).unwrap();
 
         tool_fill_form(
             &json!({
@@ -3573,7 +3566,7 @@ mod tests {
                 selValue: document.getElementById('sel').value,
                 selectTrusted: window.__selectTrusted
             })"#,
-        );
+        ).unwrap();
         assert_eq!(
             actual,
             json!(r#"{"domChecked":true,"checkedCommitted":true,"checkTrusted":true,"selValue":"b","selectTrusted":true}"#),

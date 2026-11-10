@@ -14,9 +14,36 @@ All notable changes to Inbrowse are recorded here. The format follows
   `browse-web`, `read-files` and `social-research` skills, and answers WebFetch
   through Inbrowse. The binary path, OCR engine address and key are plugin
   options.
+- SDK `Page::evaluate_awaited(js, timeout)`: the `fetch --eval` reading, with a
+  returned promise awaited and one time bound for the run and the wait.
+
+### Changed
+
+- **Breaking:** `fetch --eval` now fails (stderr message, non-zero exit) when
+  the script throws, a returned promise rejects, the source does not parse, or
+  it runs out of time. It used to print `null` and exit 0, so a failure looked
+  like a result (#31).
+- **Breaking (SDK):** `Page::evaluate`, `Page::content`, `Page::query_selector`,
+  `Element::text` and `Element::attribute` return `Result`. A JavaScript failure
+  is `Error::JsEval` instead of `null`, an empty string or `None`.
+- `scrape --eval` reports a failed evaluation in the URL's `error` field and
+  keeps its title; the text format prints the error.
+- CDP DOM and Input commands whose page-side step throws now answer with that
+  error instead of success, and `DOM.focus` / `DOM.setFileInputFiles` on a node
+  that is not an element is an error.
 
 ### Fixed
 
+- `fetch --eval` evaluates like the DevTools console, the same as MCP
+  `browser_evaluate` and `scrape`: statements return their last value
+  (`"var a = 1; a + 1"` is `2`), `{a: 1}` is an object, and a returned promise
+  is awaited. Anything containing a statement separator used to fail to parse
+  and print `null` without running (#7).
+- Integral numbers print as integers everywhere (`42`, not `42.0`), matching
+  `JSON.stringify` and Chrome, in `fetch --eval`, `scrape`, MCP
+  `browser_evaluate` and CDP by-value results (#8).
+- `scrape --eval` had no limit on synchronous script time; it now shares the
+  evaluation watchdog.
 - `inbrowse serve` printed the upstream project's name in its startup banner;
   it now reads Inbrowse. The render test font is renamed to match.
 - `inbrowse media` and MCP `media_extract` gave some MP4 frames a time about

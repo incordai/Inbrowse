@@ -12,11 +12,11 @@ async fn main() -> anyhow::Result<()> {
     let mut page = browser.new_page().await?;
     page.goto("https://example.com").await?;
     println!("URL: {}", page.url());
-    println!("Content length: {}", page.content().len());
+    println!("Content length: {}", page.content()?.len());
 
     let el = page.wait_for_selector("a", Duration::from_secs(5)).await?;
-    println!("Link text: {}", el.text());
-    println!("Link href: {:?}", el.attribute("href"));
+    println!("Link text: {}", el.text()?);
+    println!("Link href: {:?}", el.attribute("href")?);
 
     Ok(())
 }

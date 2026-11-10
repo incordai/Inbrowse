@@ -42,6 +42,19 @@ Load a URL and print its content or an evaluated expression.
 -v, --verbose                Enable verbose logging
 ```
 
+`--eval` reads its source the way the DevTools console does, the same as
+`scrape --eval` and the MCP `browser_evaluate` tool:
+
+- Statements return their last value: `-e "var a = 1; a + 1"` prints `2`.
+- Source wrapped in braces is an object literal: `-e "{a: 1}"` prints
+  `{"a":1}`.
+- A returned promise is awaited: `-e "fetch('/api').then(r => r.status)"`.
+- `--timeout` bounds the run and the wait for the promise together.
+- Numbers print as `JSON.stringify` writes them (`42`, not `42.0`); a string
+  prints without quotes.
+- A thrown error, a rejected promise, a syntax error or a timeout prints the
+  JavaScript error on stderr and exits non-zero. Nothing is printed on stdout.
+
 `--screenshot` requires a render-enabled build. It uses a 1280×720 viewport by
 default and may be combined with `--eval`; the expression runs before capture,
 which is useful for scrolling or preparing page state. It is not available in

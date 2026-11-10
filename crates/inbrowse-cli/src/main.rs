@@ -1608,6 +1608,8 @@ async fn run_fetch(
                  }})()"
             ))
         })
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("capture scroll setup failed: {error}"))?
     } else {
         None
     };
@@ -1617,19 +1619,15 @@ async fn run_fetch(
 
     if !eval_at_capture_boundary {
         if let Some(ref expr) = eval {
-            // Bound the eval by the same budget as navigation so a runaway
-            // expression (infinite loop, never-settling sync work) cannot hang.
-            let result = page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs));
+            let result = evaluate_user_expression(&mut page, &context, expr, timeout_secs).await?;
 
             // A bare --eval (no --selector, --dump, or --screenshot) returns the
-            // eval value directly, so synchronous expressions
-            // (JSON.stringify, ...) are unchanged. Screenshot captures continue
-            // below so an evaluation such as scrollTo() affects the painted
-            // viewport instead of being silently ignored.
+            // eval value directly. Screenshot captures continue below so an
+            // evaluation such as scrollTo() affects the painted viewport
+            // instead of being silently ignored.
             if !dump_specified && selector.is_none() && screenshot.is_none() {
                 let rendered = match result {
                     serde_json::Value::String(s) => s,
-                    serde_json::Value::Null => "null".to_string(),
                     other => other.to_string(),
                 };
                 write_or_print(rendered, output.as_ref()).await?;
@@ -1785,23 +1783,30 @@ async fn run_fetch(
                          phase:'immediately-before-capture-state-and-screenshot'}}\
                          }})()"
                     ))
-                });
+                })
+                .transpose()
+                .map_err(|error| anyhow::anyhow!("capture scroll reassertion failed: {error}"))?;
             if eval_at_capture_boundary {
                 if let Some(ref expr) = eval {
-                    deferred_eval_output =
-                        Some(page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs)));
+                    deferred_eval_output = Some(
+                        evaluate_user_expression(&mut page, &context, expr, timeout_secs).await?,
+                    );
                 }
             }
-            let capture_state = deferred_eval_output.as_ref().map(|_| {
-                page.evaluate(
-                    "(()=>({\
-                     scrollX:window.scrollX,scrollY:window.scrollY,\
-                     innerWidth:window.innerWidth,innerHeight:window.innerHeight,\
-                     scrollWidth:document.documentElement?document.documentElement.scrollWidth:0,\
-                     scrollHeight:document.documentElement?document.documentElement.scrollHeight:0\
-                     }))()",
-                )
-            });
+            let capture_state = deferred_eval_output
+                .as_ref()
+                .map(|_| {
+                    page.evaluate(
+                        "(()=>({\
+                         scrollX:window.scrollX,scrollY:window.scrollY,\
+                         innerWidth:window.innerWidth,innerHeight:window.innerHeight,\
+                         scrollWidth:document.documentElement?document.documentElement.scrollWidth:0,\
+                         scrollHeight:document.documentElement?document.documentElement.scrollHeight:0\
+                         }))()",
+                    )
+                })
+                .transpose()
+                .map_err(|error| anyhow::anyhow!("capture state sample failed: {error}"))?;
             match capture_screenshot(&page) {
                 Some(bytes) => std::fs::write(path, &bytes)?,
                 None => anyhow::bail!("screenshot failed: page has no DOM to render"),
@@ -1869,7 +1874,7 @@ async fn run_fetch(
         DumpFormat::Html => dump_html(&page),
         DumpFormat::Text => dump_text(&mut page),
         DumpFormat::Links => dump_links(&page),
-        DumpFormat::Markdown => dump_markdown(&mut page),
+        DumpFormat::Markdown => dump_markdown(&mut page)?,
         DumpFormat::Assets => dump_assets(&page),
         DumpFormat::Cookies => dump_cookies(&page),
         // Handled above via the short-circuit branch; unreachable here.
@@ -2492,9 +2497,37 @@ fn dump_text(page: &mut Page) -> String {
     .unwrap_or_default()
 }
 
-fn dump_markdown(page: &mut Page) -> String {
-    let result = page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS);
-    result.as_str().unwrap_or_default().to_string()
+/// Run a `--eval` expression for `run_fetch` through `Page::evaluate_checked`
+/// (DevTools console semantics, promise awaited, `timeout_secs` for the run and
+/// the wait together). A thrown error, rejected promise, syntax error or
+/// timeout fails the command with the JavaScript message; storage is saved
+/// first, since whatever the script wrote before it threw did happen.
+async fn evaluate_user_expression(
+    page: &mut Page,
+    context: &BrowserContext,
+    expression: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<serde_json::Value> {
+    match page
+        .evaluate_checked(expression, Duration::from_secs(timeout_secs))
+        .await
+    {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            context.save_storage();
+            Err(anyhow::anyhow!("--eval failed: {error}"))
+        }
+    }
+}
+
+fn dump_markdown(page: &mut Page) -> anyhow::Result<String> {
+    let result = page
+        .evaluate(inbrowse::HTML_TO_MARKDOWN_JS)
+        .map_err(|error| anyhow::anyhow!("markdown conversion failed: {error}"))?;
+    result
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("markdown conversion did not return text"))
 }
 
 fn is_html_whitespace(c: char) -> bool {
@@ -2773,7 +2806,10 @@ async fn run_parallel_scrape(
                         .unwrap_or("")
                         .to_string();
 
-                    let eval_result = if let Some(ref expr) = *eval {
+                    // The worker answers {ok, result} or {ok: false, error};
+                    // an eval failure keeps the page's title and is reported
+                    // in the URL's `error` field.
+                    let (eval_result, eval_error) = if let Some(ref expr) = *eval {
                         let eval_cmd = serde_json::json!({"cmd": "evaluate", "expression": expr});
                         let mut line = serde_json::to_string(&eval_cmd).unwrap();
                         line.push('\n');
@@ -2787,16 +2823,23 @@ async fn run_parallel_scrape(
                         let mut resp_line = String::new();
                         match timeout(read_timeout, reader.read_line(&mut resp_line)).await {
                             Ok(Ok(bytes)) if bytes > 0 => {
-                                let resp: serde_json::Value =
-                                    serde_json::from_str(resp_line.trim())
-                                        .unwrap_or(serde_json::json!({"ok": false}));
-                                resp["result"].clone()
+                                let resp: serde_json::Value = serde_json::from_str(resp_line.trim())
+                                    .map_err(|error| format!("Invalid worker response: {error}"))?;
+                                if resp["ok"].as_bool() == Some(true) {
+                                    (resp["result"].clone(), None)
+                                } else {
+                                    let error = resp["error"]
+                                        .as_str()
+                                        .unwrap_or("evaluation failed without a message")
+                                        .to_string();
+                                    (serde_json::Value::Null, Some(error))
+                                }
                             }
                             Ok(Ok(_)) | Ok(Err(_)) => return Err("Read failed".to_string()),
                             Err(_) => return Err("timeout".to_string()),
                         }
                     } else {
-                        serde_json::Value::Null
+                        (serde_json::Value::Null, None)
                     };
 
                     let shutdown_cmd = serde_json::json!({"cmd": "shutdown"});
@@ -2806,13 +2849,17 @@ async fn run_parallel_scrape(
                     let _ = stdin.flush().await;
                     let _ = timeout(shutdown_timeout, child.wait()).await;
 
-                    Ok(serde_json::json!({
+                    let mut record = serde_json::json!({
                         "url": url,
                         "title": title,
                         "eval": eval_result,
                         "time_ms": task_start.elapsed().as_millis(),
                         "worker": i,
-                    }))
+                    });
+                    if let Some(error) = eval_error {
+                        record["error"] = serde_json::Value::String(error);
+                    }
+                    Ok(record)
                 })
                 .await
                 {
@@ -2860,7 +2907,9 @@ async fn run_parallel_scrape(
             let title = r["title"].as_str().unwrap_or("");
             let time = r["time_ms"].as_u64().unwrap_or(0);
             let eval = &r["eval"];
-            if eval.is_null() {
+            if let Some(error) = r["error"].as_str() {
+                println!("{}ms\t{}\terror: {}", time, url, error);
+            } else if eval.is_null() {
                 println!("{}ms\t{}\t{}", time, url, title);
             } else {
                 println!("{}ms\t{}\t{}", time, url, eval);

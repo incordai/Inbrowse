@@ -215,7 +215,7 @@ mod tests {
         for _ in 0..2 {
             let page = ctx.get_session_page_mut(&session).unwrap();
             page.navigate("data:text/html,<body>probe</body>").await.unwrap();
-            assert_eq!(page.evaluate(script), json!([true, true]));
+            assert_eq!(page.evaluate(script).unwrap(), json!([true, true]));
         }
         for invalid in [
             json!({"features": null}),
@@ -224,18 +224,18 @@ mod tests {
             json!({"features": [{"name":"prefers-color-scheme", "value":"invalid"}]}),
         ] {
             assert!(handle("setEmulatedMedia", &invalid, &mut ctx, &session).await.is_err());
-            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([true, true]));
+            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script).unwrap(), json!([true, true]));
         }
         handle("setEmulatedMedia", &json!({}), &mut ctx, &session).await.unwrap();
-        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
+        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script).unwrap(), json!([false, false]));
         handle("setEmulatedMedia", &both, &mut ctx, &session).await.unwrap();
         for value in ["light", "no-preference", ""] {
             handle("setEmulatedMedia", &json!({"features":[{"name":"prefers-color-scheme", "value":value}]}), &mut ctx, &session).await.unwrap();
-            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
+            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script).unwrap(), json!([false, false]));
             handle("setEmulatedMedia", &both, &mut ctx, &session).await.unwrap();
         }
         handle("setEmulatedMedia", &json!({"features":[]}), &mut ctx, &session).await.unwrap();
-        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
+        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script).unwrap(), json!([false, false]));
     }
 
 
@@ -272,7 +272,8 @@ mod tests {
                 "return [innerWidth, innerHeight, visualViewport.width,\
                          visualViewport.height, screen.width, screen.height,\
                          screen.availWidth, screen.availHeight, devicePixelRatio];"
-            ),
+            )
+            .unwrap(),
             json!([1024, 768, 1024, 768, 1440, 900, 1440, 900, 2])
         );
     }
@@ -310,7 +311,8 @@ mod tests {
         assert_eq!(
             ctx.get_session_page_mut(&session_id)
                 .unwrap()
-                .evaluate("[navigator.language, navigator.languages]"),
+                .evaluate("[navigator.language, navigator.languages]")
+                .unwrap(),
             json!(["de-DE", ["de-DE", "de"]])
         );
 
@@ -325,7 +327,8 @@ mod tests {
         assert_eq!(
             ctx.get_session_page_mut(&session_id)
                 .unwrap()
-                .evaluate("[navigator.language, navigator.languages]"),
+                .evaluate("[navigator.language, navigator.languages]")
+                .unwrap(),
             json!(["de-DE", ["de-DE", "de"]])
         );
     }
@@ -364,7 +367,8 @@ mod tests {
             page.evaluate(
                 "return [innerWidth, innerHeight, screen.width !== 1111,\
                          screen.height !== 777];"
-            ),
+            )
+            .unwrap(),
             json!([800, 600, true, true])
         );
     }
@@ -427,9 +431,9 @@ mod tests {
         let page = ctx.get_session_page_mut(&session_id).unwrap();
         page.set_viewport((1111.0, 777.0));
         page.set_device_scale_factor(1.5);
-        let baseline_screen = page.evaluate(
-            "return [screen.width, screen.height, screen.availWidth, screen.availHeight];",
-        );
+        let baseline_screen = page
+            .evaluate("return [screen.width, screen.height, screen.availWidth, screen.availHeight];")
+            .unwrap();
 
         handle(
             "setDeviceMetricsOverride",
@@ -484,7 +488,8 @@ mod tests {
         assert_eq!(
             page.evaluate(
                 "return [screen.width, screen.height, screen.availWidth, screen.availHeight];"
-            ),
+            )
+            .unwrap(),
             baseline_screen
         );
     }
@@ -544,7 +549,8 @@ mod tests {
         assert_eq!(
             page.evaluate(
                 "return [screen.width, screen.height, screen.availWidth, screen.availHeight];"
-            ),
+            )
+            .unwrap(),
             json!([700, 500, 700, 500])
         );
     }

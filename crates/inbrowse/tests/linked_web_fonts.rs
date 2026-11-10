@@ -61,7 +61,7 @@ async fn probe_width(font_origin_cors: bool, cross_origin: bool) -> f64 {
     let ctx = Arc::new(BrowserContext::with_storage_and_network("fonts".into(), None, false, None, None, true));
     let mut page = Page::new("fonts-page".into(), ctx);
     page.navigate(&format!("{page_origin}/")).await.unwrap();
-    page.evaluate("document.getElementById('p').getBoundingClientRect().width")
+    page.evaluate("document.getElementById('p').getBoundingClientRect().width").unwrap()
         .as_f64()
         .unwrap()
 }
@@ -73,7 +73,7 @@ async fn fallback_width() -> f64 {
     let ctx = Arc::new(BrowserContext::with_storage_and_network("fonts".into(), None, false, None, None, true));
     let mut page = Page::new("fallback-page".into(), ctx);
     page.navigate(&format!("{origin}/")).await.unwrap();
-    page.evaluate("document.getElementById('p').getBoundingClientRect().width")
+    page.evaluate("document.getElementById('p').getBoundingClientRect().width").unwrap()
         .as_f64()
         .unwrap()
 }

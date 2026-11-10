@@ -145,9 +145,12 @@ screenshots or reports.
   pass reference-node vs parent nid in a way that's easy to break. If you touch
   mutation methods, verify `before()`, `after()`, `replaceWith()`, and
   `replaceChild()` on connected elements.
-- **Multi-statement `--eval` starting with `const` returns `null`** (V8 gives
-  `const` an empty completion value). Wrap snippets in an IIFE:
-  `(function(){ ...; return result; })()`.
+- **Two evaluation readings.** User-typed JavaScript (`fetch --eval`, scrape,
+  MCP `browser_evaluate`, SDK `evaluate_awaited`) goes through
+  `Page::evaluate_checked`: DevTools console rules, completion values, promises
+  awaited, errors are errors. Engine-written probes use `Page::evaluate`
+  (block or function body, returns `Result`); use `evaluate_or_null` only where
+  a failed probe legitimately means "no value".
 - **`canAccessOpener` must be in every `TargetInfo` payload**, or strict CDP
   clients (chromiumoxide) panic.
 - **The DOM reparenting guards in `tree.rs` are load-bearing.** `append_child` /

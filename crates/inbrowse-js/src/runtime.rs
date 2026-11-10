@@ -395,6 +395,32 @@ fn js_string_literal(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+/// A JS number as JSON, written the way a nested number already is. Nested
+/// values go through `JSON.stringify`: `NaN` and the infinities become `null`,
+/// `-0` becomes `0`, and an integral value below 1e21 is printed as plain
+/// digits (`42`, not `42.0`) using the shortest digits that round-trip
+/// (`2**60` is `1152921504606847000`); serde_json then reads those digits as an
+/// integer when they fit `i64`/`u64`. Rust's float `Display` produces the same
+/// shortest round-trip digits, so this reads them the same way. Used by
+/// `InbrowseJsRuntime::v8_to_json` for a top-level number, so `42` and `[42]`
+/// agree across `Page::evaluate`, CDP by-value results, MCP and the CLI.
+fn json_number(n: f64) -> serde_json::Value {
+    /// `Number.prototype.toString` switches to exponent form from here on.
+    const PLAIN_DIGITS_END: f64 = 1e21;
+    if !n.is_finite() {
+        return serde_json::Value::Null;
+    }
+    if n == 0.0 {
+        return serde_json::Value::from(0);
+    }
+    if n.fract() == 0.0 && n.abs() < PLAIN_DIGITS_END {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&n.to_string()) {
+            return value;
+        }
+    }
+    serde_json::json!(n)
+}
+
 /// The values CDP allows in `RemoteObject.unserializableValue` /
 /// `CallArgument.unserializableValue`: the non-JSON numbers and a bigint
 /// literal. Used to keep that field from acting as an implicit eval.
@@ -2712,13 +2738,19 @@ impl InbrowseJsRuntime {
         );
     }
 
+    /// Evaluate source for an internal caller and return its JSON value.
+    /// Callers: inbrowse `Page::evaluate` and `Page::evaluate_or_null`
+    /// (crates/inbrowse/src/page.rs). The source is read by
+    /// [`Self::evaluation_source`]; a thrown or syntax error is an `Err`, never
+    /// `null`. User-typed source goes through [`Self::console_source`] and the
+    /// CDP evaluation path instead (inbrowse `Page::evaluate_checked`).
     pub fn evaluate(&mut self, expression: &str) -> Result<serde_json::Value, String> {
         #[cfg(feature = "render")]
         self.service_render_resources();
         self.begin_javascript_task();
-        let wrapped = Self::wrap_expression(expression);
+        let source = self.evaluation_source(expression);
         let result = self
-            .execute_runtime_script("<eval>", wrapped)
+            .execute_runtime_script("<eval>", source)
             .map_err(|e| format!("JS error: {}", e))?;
         self.v8_to_json(result)
     }
@@ -4071,9 +4103,9 @@ impl InbrowseJsRuntime {
             return self.evaluate(expression);
         }
         self.begin_javascript_task();
-        let wrapped = Self::wrap_expression(expression);
+        let source = self.evaluation_source(expression);
         let token = self.arm_watchdog(timeout);
-        let result = self.runtime().execute_script("<eval>", wrapped);
+        let result = self.runtime().execute_script("<eval>", source);
         let fired = self.disarm_watchdog(token);
         if self.recover_heap_limit() {
             return Err("JavaScript heap limit exceeded; execution terminated".to_string());
@@ -4302,40 +4334,67 @@ impl InbrowseJsRuntime {
         format!("{{\"injectedScriptId\":1,\"id\":{}}}", id)
     }
 
-    fn wrap_expression(expression: &str) -> String {
-        let trimmed = expression.trim();
+    /// Whether `source` compiles as a classic script in the main context.
+    /// Compiling runs nothing, so the check has no side effects.
+    pub fn parses_as_script(&mut self, source: &str) -> bool {
+        let mut entered = self.runtime();
+        let context = entered.main_context();
+        v8::scope_with_context!(scope, entered.v8_isolate(), context);
+        v8::tc_scope!(let scope, scope);
+        let Some(code) = v8::String::new(scope, source) else {
+            return false;
+        };
+        v8::Script::compile(scope, code, None).is_some()
+    }
 
-        let is_multi_statement = trimmed.starts_with("var ")
-            || trimmed.starts_with("let ")
-            || trimmed.starts_with("const ")
-            || trimmed.starts_with("if ")
-            || trimmed.starts_with("for ")
-            || trimmed.starts_with("while ")
-            || trimmed.starts_with("return ");
-
-        if is_multi_statement {
-            format!(
-                "(function() {{ try {{\n{}\n}} catch(e) {{ return null; }} }})()",
-                expression
-            )
-        } else {
-            // Strip trailing semicolons + whitespace before wrapping in
-            // `return (...);`. Playwright's utility-script expression is
-            // an IIFE that ends with `})();` — leaving the `;` in place
-            // produces `return (...;);`, a SyntaxError. The script fails
-            // to parse, the catch never fires (parse errors are not
-            // catchable), and the function silently returns `undefined`.
-            // Stripping makes the wrapped expression syntactically valid.
-            //
-            // The newline before the trailing `)` also terminates any
-            // `//# sourceURL=...` line comment the caller may have appended
-            // (Puppeteer's evaluated bundles do).
-            let cleaned = trimmed.trim_end_matches(|c: char| c == ';' || c.is_whitespace());
-            format!(
-                "(function() {{ try {{ return (\n{}\n); }} catch(e) {{ return null; }} }})()",
-                cleaned
-            )
+    /// `source` parenthesized when it is wrapped in braces and parses as an
+    /// object literal, the rule the DevTools console applies to typed input
+    /// (`{a: 1}` is an object, not a block with a label). The newline before
+    /// `)` ends any trailing `//` comment such as `//# sourceURL=`.
+    fn object_literal_source(&mut self, source: &str) -> Option<String> {
+        let trimmed = source.trim();
+        if !(trimmed.starts_with('{') && trimmed.ends_with('}')) {
+            return None;
         }
+        let literal = format!("(\n{trimmed}\n)");
+        self.parses_as_script(&literal).then_some(literal)
+    }
+
+    /// User-typed source read the way the DevTools console reads it: an object
+    /// literal when [`Self::object_literal_source`] says so, otherwise a
+    /// classic script whose completion value is the result and whose top-level
+    /// declarations persist on the page. Used by inbrowse
+    /// `Page::evaluate_checked` (CLI `fetch --eval`, the scrape worker, MCP
+    /// `browser_evaluate` and the SDK).
+    pub fn console_source(&mut self, source: &str) -> String {
+        self.object_literal_source(source)
+            .unwrap_or_else(|| source.to_string())
+    }
+
+    /// Engine-written source (probes and helpers, never user-typed), read in
+    /// this order:
+    /// 1. an object literal, as in [`Self::console_source`];
+    /// 2. a block statement whose completion value is the result, so `let`,
+    ///    `const` and `class` stay local to the call and a probe can run again
+    ///    without redeclaring its names;
+    /// 3. a function body called once, when the source only parses that way
+    ///    (it has a top-level `return`); the returned value is the result.
+    ///
+    /// The choice is made by the parser, never by running the source twice.
+    /// Only source containing `return` can need step 3, so other source skips
+    /// the extra parse.
+    fn evaluation_source(&mut self, source: &str) -> String {
+        if let Some(literal) = self.object_literal_source(source) {
+            return literal;
+        }
+        let block = format!("{{\n{source}\n}}");
+        if source.contains("return") && !self.parses_as_script(&block) {
+            let body = format!("(function() {{\n{source}\n}})()");
+            if self.parses_as_script(&body) {
+                return body;
+            }
+        }
+        block
     }
 
     fn meta_extract_js(var_name: &str) -> String {
@@ -4467,7 +4526,7 @@ impl InbrowseJsRuntime {
         }
         if local.is_number() {
             let n = local.number_value(scope).unwrap_or(0.0);
-            return Ok(serde_json::json!(n));
+            return Ok(json_number(n));
         }
         if local.is_string() {
             let s = local.to_rust_string_lossy(scope);
@@ -4837,7 +4896,7 @@ mod tests {
         }
         assert!(armed <= before + 8,
             "bounded operations created unbounded watchdog threads: {before} -> {armed}");
-        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2.0));
+        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2));
     }
 
     fn setup_runtime(html: &str) -> InbrowseJsRuntime {
@@ -5559,7 +5618,7 @@ mod tests {
                     frame.remove();
                 }
                 return retainedFrames.length;
-            })()"#).unwrap(), serde_json::json!(4.0));
+            })()"#).unwrap(), serde_json::json!(4));
             drop(rt);
         }
     }
@@ -6005,7 +6064,7 @@ mod tests {
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
             rt.evaluate("globalThis.__ticks").unwrap(),
-            serde_json::json!(2.0)
+            serde_json::json!(2)
         );
     }
 
@@ -6648,7 +6707,7 @@ mod tests {
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
             rt.evaluate("__closedPortDeliveries").unwrap(),
-            serde_json::json!(0.0)
+            serde_json::json!(0)
         );
     }
 
@@ -7386,7 +7445,7 @@ mod tests {
             1,
             1,
         );
-        assert_eq!(rt.evaluate("history.length").unwrap(), serde_json::json!(2.0));
+        assert_eq!(rt.evaluate("history.length").unwrap(), serde_json::json!(2));
         rt.evaluate("history.back()").unwrap();
         assert_eq!(
             rt.take_pending_navigation(),
@@ -10239,7 +10298,7 @@ mod tests {
         rt.set_viewport(100.0, 100.0);
         assert!(rt.set_animation_sample(inbrowse_render::AnimationSample::document(0.0)));
         assert_eq!(rt.evaluate("document.getElementById('box').getBoundingClientRect().width").unwrap(),
-            serde_json::json!(20.0));
+            serde_json::json!(20));
         rt.state.borrow_mut().animation_timeline_origin =
             std::time::Instant::now() - std::time::Duration::from_millis(500);
         assert_eq!(rt.evaluate(r#"(() => {
@@ -10273,7 +10332,7 @@ mod tests {
                 matched += style.display === 'block' && style.color === 'rgb(12, 34, 56)';
             }
             return matched;
-        })()"#).unwrap(), serde_json::json!(1024.0));
+        })()"#).unwrap(), serde_json::json!(1024));
         assert!(started.elapsed() < std::time::Duration::from_secs(1),
             "style-only reads serialized the full CSS variable environment: {:?}", started.elapsed());
         let started = std::time::Instant::now();
@@ -10285,7 +10344,7 @@ mod tests {
                 matched += style.display === 'block' && style.color === 'rgb(78, 90, 12)';
             }
             return matched;
-        })()"#).unwrap(), serde_json::json!(1024.0));
+        })()"#).unwrap(), serde_json::json!(1024));
         assert!(started.elapsed() < std::time::Duration::from_secs(1),
             "sibling style reads repeated their large inherited cascade: {:?}", started.elapsed());
         assert!(!rt.state.borrow().pending_style_mutations.is_empty());
@@ -10336,7 +10395,7 @@ mod tests {
         </style><body><div id=box>text</div></body>"#));
         rt.set_viewport(400.0, 200.0);
         rt.run_page_init();
-        assert_eq!(rt.evaluate("document.getElementById('box').getBoundingClientRect().width").unwrap(), serde_json::json!(80.0));
+        assert_eq!(rt.evaluate("document.getElementById('box').getBoundingClientRect().width").unwrap(), serde_json::json!(80));
         let result = rt.evaluate(r#"(() => {
             globalThis.savedStyle = getComputedStyle(document.getElementById('box'));
             document.body.setAttribute('data-active', 'yes');
@@ -10823,7 +10882,7 @@ mod tests {
              globalThis.__readyInterval = setInterval(() => __readyTicks++, 0);",
         ).unwrap();
 
-        for (autonomous, expected_ticks) in [(true, 1.0), (false, 2.0)] {
+        for (autonomous, expected_ticks) in [(true, 1), (false, 2)] {
             // Make the timer due before the first poll. Even if the future
             // yields to Tokio, resuming it must not deliver another tick.
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -10958,20 +11017,20 @@ mod tests {
         }).await.expect("nested interval was installed");
         assert_eq!(
             rt.evaluate("globalThis.__deepIntervalTicks").unwrap(),
-            serde_json::json!(0.0),
+            serde_json::json!(0),
             "an interval installed by a level-six timer must clamp before its first tick",
         );
         // A cooperative turn can return on deno_core's internal self-wake
         // before a timer is due. Assert delivery and the HTML minimum delay,
         // not a one-to-one relationship between wakes and timer callbacks.
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while rt.evaluate("globalThis.__deepIntervalTicks").unwrap() == serde_json::json!(0.0) {
+            while rt.evaluate("globalThis.__deepIntervalTicks").unwrap() == serde_json::json!(0) {
                 rt.run_autonomous_event_loop_turn().await.unwrap();
             }
         }).await.expect("nested interval delivered its first callback");
         assert_eq!(
             rt.evaluate("globalThis.__deepIntervalTicks").unwrap(),
-            serde_json::json!(1.0),
+            serde_json::json!(1),
         );
         assert!(rt.evaluate("__deepIntervalFiredAt - __deepIntervalInstalledAt")
             .unwrap().as_f64().unwrap() >= 4.0, "nested intervals must retain the four-ms clamp");
@@ -11113,7 +11172,7 @@ mod tests {
             std::time::Duration::from_secs(2),
         ).unwrap();
         assert!(rt.disarm_watchdog(deadline));
-        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2.0));
+        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2));
     }
 
     #[test]
@@ -11125,7 +11184,7 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(600));
 
-        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2.0));
+        assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -14188,11 +14247,11 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate("box.getAnimations().length").unwrap(),
-            serde_json::json!(0.0)
+            serde_json::json!(0)
         );
         assert_eq!(
             rt.evaluate("document.getAnimations().length").unwrap(),
-            serde_json::json!(0.0)
+            serde_json::json!(0)
         );
     }
 
@@ -19588,7 +19647,7 @@ mod tests {
         for await_promise in [false, true] {
             let result = rt.evaluate_for_cdp("6 * 7", true, await_promise).await.unwrap();
             assert!(!result.thrown);
-            assert_eq!(result.value, Some(serde_json::json!(42.0)));
+            assert_eq!(result.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19598,10 +19657,10 @@ mod tests {
         for (name, await_promise) in [("syncLexical", false), ("asyncLexical", true)] {
             let declaration = format!("let {name} = 40; {name}");
             let first = rt.evaluate_for_cdp(&declaration, true, await_promise).await.unwrap();
-            assert_eq!(first.value, Some(serde_json::json!(40.0)));
+            assert_eq!(first.value, Some(serde_json::json!(40)));
             let second = rt.evaluate_for_cdp(&format!("{name} += 2; {name}"), true, await_promise).await.unwrap();
             assert!(!second.thrown);
-            assert_eq!(second.value, Some(serde_json::json!(42.0)));
+            assert_eq!(second.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19629,7 +19688,7 @@ mod tests {
                 }
                 assert_eq!(
                     rt.evaluate("Object.keys(globalThis.__inbrowse_objects).length").unwrap(),
-                    serde_json::json!(1.0),
+                    serde_json::json!(1),
                     "unreleasable JS results: call_function={call_function}, await_promise={await_promise}",
                 );
                 assert_eq!(rt.object_store.len(), 1, "unreleasable Rust handles");
@@ -19638,16 +19697,16 @@ mod tests {
         let kept = rt.call_function_on_for_cdp(
             "function() { return this.kept; }", Some(&oid), &[], true, false,
         ).await.unwrap();
-        assert_eq!(kept.value, Some(serde_json::json!(42.0)));
+        assert_eq!(kept.value, Some(serde_json::json!(42)));
         rt.release_object(&oid);
         assert_eq!(
             rt.evaluate("Object.keys(globalThis.__inbrowse_objects).length").unwrap(),
-            serde_json::json!(0.0),
+            serde_json::json!(0),
         );
         assert!(rt.object_store.is_empty());
         assert_eq!(
             rt.evaluate("Object.keys(globalThis).filter(key => key.startsWith('__inbrowse_done_')).length").unwrap(),
-            serde_json::json!(0.0),
+            serde_json::json!(0),
             "completed calls must not retain per-call completion globals",
         );
     }
@@ -20109,7 +20168,7 @@ mod tests {
         rt.execute_script("ready-timer", "globalThis.timerRan = false; setTimeout(() => timerRan = true, 0);").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let result = rt.evaluate_for_cdp("Promise.resolve(42)", true, true).await.unwrap();
-        assert_eq!(result.value.unwrap(), serde_json::json!(42.0));
+        assert_eq!(result.value.unwrap(), serde_json::json!(42));
         assert_eq!(rt.evaluate("timerRan").unwrap(), serde_json::json!(false),
             "an already-resolved CDP promise must not drain unrelated tasks");
         rt.run_autonomous_event_loop_turn().await.unwrap();
@@ -24857,7 +24916,7 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate("globalThis.__shared_module_runs").unwrap(),
-            serde_json::json!(1.0),
+            serde_json::json!(1),
         );
     }
 
@@ -26092,7 +26151,7 @@ mod tests {
                 "#,
             )
             .unwrap();
-        assert_eq!(result, serde_json::json!(1.0));
+        assert_eq!(result, serde_json::json!(1));
     }
 
     #[test]

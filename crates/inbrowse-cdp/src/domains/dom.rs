@@ -96,7 +96,7 @@ fn resolve_node_id(page: &mut Page, params: &Value) -> Result<u64, String> {
              return (o && typeof o._nid === 'number') ? o._nid : -1; }})()",
             crate::util::object_id_literal(oid)
         );
-        let result = page.evaluate(&code);
+        let result = page.evaluate(&code)?;
         let nid = result.as_f64().map(|n| n as i64).unwrap_or(-1);
         if nid < 0 {
             return Err(format!("objectId {oid} could not be resolved to a node"));
@@ -242,7 +242,7 @@ pub async fn handle(
                  return o instanceof Node && (o === document || o.ownerDocument === document) ? o._nid : -1; }})()",
                 crate::util::object_id_literal(oid)
             );
-            let id = page.evaluate(&code).as_f64().filter(|id|
+            let id = page.evaluate(&code)?.as_f64().filter(|id|
                 id.is_finite() && *id >= 0.0 && *id <= u32::MAX as f64 && id.fract() == 0.0)
                 .ok_or("Object id does not reference a Node in this document")? as u32;
             Ok(json!({"nodeId":push_node(ctx, session_id, NodeId::new(id))?}))
@@ -257,7 +257,7 @@ pub async fn handle(
             let frame = page.frame_id.clone();
             let id = page.evaluate(&format!(
                 "(function() {{ var node = document.elementFromPoint({x},{y}); return node ? node._nid : -1; }})()"
-            )).as_f64().filter(|id| *id >= 0.0 && *id <= u32::MAX as f64)
+            ))?.as_f64().filter(|id| *id >= 0.0 && *id <= u32::MAX as f64)
                 .ok_or("No node found at given location")? as u32;
             let mut result = json!({"backendNodeId":id,"frameId":frame});
             if ctx.dom_documents.contains_key(session_id) {
@@ -308,7 +308,7 @@ pub async fn handle(
                     "(function() {{ var o = globalThis.__inbrowse_objects[{}]; if (!o) return -1; return (typeof o._nid === 'number') ? o._nid : -1; }})()",
                     crate::util::object_id_literal(oid)
                 );
-                let result = page.evaluate(&code);
+                let result = page.evaluate(&code)?;
                 // JS returns -1 for an unresolvable object; `-1.0 as u64` would
                 // saturate to 0 (the document root), so check before casting.
                 let nid = result.as_f64().map(|n| n as i64).unwrap_or(-1);
@@ -336,7 +336,7 @@ pub async fn handle(
                     "(function() {{ var o = globalThis.__inbrowse_objects[{}]; return (o && typeof o._nid === 'number') ? o._nid : -1; }})()",
                     crate::util::object_id_literal(oid)
                 );
-                let result = page.evaluate(&code);
+                let result = page.evaluate(&code)?;
                 // JS returns -1 for an unresolvable object; `-1.0 as u64` would
                 // saturate to 0 (the document root), so check before casting.
                 let nid = result.as_f64().map(|n| n as i64).unwrap_or(-1);
@@ -392,7 +392,9 @@ pub async fn handle(
                  if (el && typeof el.focus === 'function') {{ el.focus(); return true; }} return false; }})()",
                 node_id
             );
-            let _ = page.evaluate(&code);
+            if page.evaluate(&code)?.as_bool() != Some(true) {
+                return Err(format!("node {node_id} is not an element that can take focus"));
+            }
             Ok(json!({}))
         }
         "scrollIntoViewIfNeeded" => {
@@ -406,7 +408,7 @@ pub async fn handle(
                  el.scrollIntoViewIfNeeded(); return true; }})()",
                 node_id
             );
-            let did_scroll = page.evaluate(&code).as_bool().unwrap_or(false);
+            let did_scroll = page.evaluate(&code)?.as_bool().unwrap_or(false);
             if !did_scroll {
                 return Err(format!(
                     "node {node_id} could not be resolved to a scrollable element"
@@ -454,7 +456,9 @@ pub async fn handle(
                  if (el && globalThis.__inbrowse_setInputFiles) {{ globalThis.__inbrowse_setInputFiles(el, {1}); return true; }} return false; }})()",
                 node_id, specs_json
             );
-            let _ = page.evaluate(&code);
+            if page.evaluate(&code)?.as_bool() != Some(true) {
+                return Err(format!("node {node_id} could not be resolved to an element"));
+            }
             Ok(json!({}))
         }
         "getBoxModel" => {
@@ -473,7 +477,7 @@ pub async fn handle(
                 }})()",
                 node_id
             );
-            let val = page.evaluate(&code);
+            let val = page.evaluate(&code)?;
             let (quad, w, h) = if let Some(arr) = val.as_array() {
                 let nums: Vec<f64> = arr.iter().filter_map(|v| v.as_f64()).collect();
                 if nums.len() >= 10 {
@@ -510,7 +514,7 @@ pub async fn handle(
                 }})()",
                 node_id
             );
-            let val = page.evaluate(&code);
+            let val = page.evaluate(&code)?;
             let quad = if let Some(arr) = val.as_array() {
                 let nums: Vec<f64> = arr.iter().filter_map(|v| v.as_f64()).collect();
                 if nums.len() == 8 { nums.iter().map(|n| coord_value(*n)).collect::<Vec<_>>() }
@@ -814,7 +818,8 @@ mod tests {
         let active = ctx
             .get_session_page_mut(&session)
             .unwrap()
-            .evaluate("(function(){return document.activeElement?document.activeElement.tagName:'NONE';})()");
+            .evaluate("(function(){return document.activeElement?document.activeElement.tagName:'NONE';})()")
+            .unwrap();
         assert_eq!(
             active,
             json!("INPUT"),
@@ -862,7 +867,8 @@ mod tests {
             assert_eq!(
                 ctx.get_session_page_mut(&session)
                     .unwrap()
-                    .evaluate(&expression),
+                    .evaluate(&expression)
+                    .unwrap(),
                 json!(true)
             );
         }
@@ -886,7 +892,8 @@ mod tests {
         assert_eq!(
             ctx.get_session_page_mut(&session)
                 .unwrap()
-                .evaluate(&expression),
+                .evaluate(&expression)
+                .unwrap(),
             json!(true)
         );
     }
@@ -940,7 +947,8 @@ mod tests {
         ] {
             ctx.get_session_page_mut(&session)
                 .unwrap()
-                .evaluate("globalThis.__inbrowse_click_target = null");
+                .evaluate("globalThis.__inbrowse_click_target = null")
+                .unwrap();
 
             handle("scrollIntoViewIfNeeded", &params, &mut ctx, &session)
                 .await
@@ -949,7 +957,8 @@ mod tests {
             let target_id = ctx
                 .get_session_page_mut(&session)
                 .unwrap()
-                .evaluate("globalThis.__inbrowse_click_target && globalThis.__inbrowse_click_target.id");
+                .evaluate("globalThis.__inbrowse_click_target && globalThis.__inbrowse_click_target.id")
+                .unwrap();
             assert_eq!(target_id, json!("target"));
         }
     }
@@ -968,7 +977,8 @@ mod tests {
         let node = handle("querySelector", &json!({"selector":"#target"}), &mut ctx, &session).await.unwrap();
         handle("scrollIntoViewIfNeeded", &json!({"nodeId":node["nodeId"]}), &mut ctx, &session).await.unwrap();
         let position = ctx.get_session_page_mut(&session).unwrap()
-            .evaluate("[scrollY, document.getElementById('target').getBoundingClientRect().top]");
+            .evaluate("[scrollY, document.getElementById('target').getBoundingClientRect().top]")
+            .unwrap();
         assert_eq!(position, json!([0, 200]));
     }
 

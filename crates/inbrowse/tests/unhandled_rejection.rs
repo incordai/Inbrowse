@@ -50,11 +50,11 @@ async fn rejected_background_promise_does_not_stop_the_page_event_loop() {
     page.settle(200).await;
 
     assert_eq!(
-        page.evaluate("globalThis.__rejectionObserved"),
+        page.evaluate("globalThis.__rejectionObserved").unwrap(),
         serde_json::json!(true),
     );
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-ready')"),
+        page.evaluate("document.body.getAttribute('data-ready')").unwrap(),
         serde_json::json!("true"),
     );
 }

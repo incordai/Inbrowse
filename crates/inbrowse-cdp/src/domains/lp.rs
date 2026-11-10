@@ -12,8 +12,10 @@ pub async fn handle(
     match method {
         "getMarkdown" => {
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
-            let result = page.evaluate(HTML_TO_MARKDOWN_JS);
-            let markdown = result.as_str().unwrap_or("").to_string();
+            let result = page.evaluate(HTML_TO_MARKDOWN_JS)?;
+            let markdown = result
+                .as_str()
+                .ok_or("markdown conversion did not return text")?;
             Ok(json!({ "markdown": markdown }))
         }
         _ => Err(format!("Unknown LP method: {}", method)),

@@ -3765,7 +3765,7 @@ mod tests {
                 return;
             }
             assert_eq!(ctx.get_page(&page_id).unwrap().url_string(), if script { url } else { original_url });
-            assert_eq!(ctx.get_page_mut(&page_id).unwrap().evaluate("1 + 2").as_f64(), Some(3.0));
+            assert_eq!(ctx.get_page_mut(&page_id).unwrap().evaluate("1 + 2").unwrap(), json!(3));
             process_cdp_message(&json!({"id": 4, "method": "Page.navigate", "sessionId": session,
                 "params": {"url": "about:blank"}}).to_string(), &mut ctx, &reply_tx).await;
             assert_eq!(ctx.get_page(&page_id).unwrap().url_string(), "about:blank");
@@ -3863,22 +3863,22 @@ mod tests {
             globalThis.opened = false;
             r.onsuccess = () => {globalThis.opened = true;
                 r.result.onversionchange = () => setTimeout(() => r.result.close(),10);};
-        })()"#);
+        })()"#).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !pump_live_page_event_loop(&mut ctx,&mut idle).await.unwrap() {}
         }).await.unwrap();
         assert!(idle.contains(&ids[0]));
-        assert_eq!(ctx.get_page_mut(&ids[0]).unwrap().evaluate("opened"),json!(true));
+        assert_eq!(ctx.get_page_mut(&ids[0]).unwrap().evaluate("opened").unwrap(),json!(true));
         ctx.get_page_mut(&ids[1]).unwrap().evaluate(r#"(() => {
             globalThis.upgraded = false;
             setTimeout(() => {const r = indexedDB.open('idle-upgrade',2);
                 r.onsuccess = () => globalThis.upgraded = r.result.version === 2;},10);
-        })()"#);
+        })()"#).unwrap();
         idle.remove(&ids[1]);
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 pump_live_page_event_loop(&mut ctx,&mut idle).await.unwrap();
-                if ctx.get_page_mut(&ids[1]).unwrap().evaluate("upgraded") == json!(true) {break;}
+                if ctx.get_page_mut(&ids[1]).unwrap().evaluate("upgraded").unwrap() == json!(true) {break;}
             }
         }).await.expect("versionchange must wake the idle page and retain its delayed-close work");
     }
@@ -3900,18 +3900,18 @@ mod tests {
         }
         ctx.get_page_mut(&pages[0]).unwrap().evaluate(
             "globalThis.slow = setTimeout(() => {}, 60000)",
-        );
+        ).unwrap();
         for id in &pages[1..] {
             assert_eq!(ctx.get_page_mut(id).unwrap().evaluate(
                 "(() => { globalThis.done = false; setTimeout(() => { globalThis.done = true; }, 20); return globalThis.done; })()",
-            ), json!(false));
+            ).unwrap(), json!(false));
         }
         let started = std::time::Instant::now();
         let completed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 pump_live_page_event_loop(&mut ctx, &mut idle_pages).await.unwrap();
                 if pages[1..].iter().all(|id| {
-                    ctx.get_page_mut(id).unwrap().evaluate("globalThis.done") == json!(true)
+                    ctx.get_page_mut(id).unwrap().evaluate("globalThis.done").unwrap() == json!(true)
                 }) {
                     break;
                 }
@@ -3922,7 +3922,7 @@ mod tests {
             "ready timers must not need the outer timeout's wake: {:?}", started.elapsed());
         ctx.get_page_mut(&pages[2]).unwrap().evaluate(
             "setTimeout(() => { globalThis.finalTurn = true; }, 0)",
-        );
+        ).unwrap();
         idle_pages.clear(); // A new command rearms previously idle pages.
         // This turn can do work and become idle in the same poll. Its result
         // must still be published while the first page remains parked.
@@ -3931,7 +3931,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 pump_live_page_event_loop(&mut ctx, &mut idle_pages).await.unwrap();
-                if ctx.get_page_mut(&pages[2]).unwrap().evaluate("globalThis.finalTurn") == json!(true) {
+                if ctx.get_page_mut(&pages[2]).unwrap().evaluate("globalThis.finalTurn").unwrap() == json!(true) {
                     break;
                 }
             }
@@ -3944,7 +3944,7 @@ mod tests {
             }
         }).await;
         assert!(parked.is_err(), "idle peers must not repeatedly wake a parked connection");
-        ctx.get_page_mut(&pages[0]).unwrap().evaluate("clearTimeout(globalThis.slow)");
+        ctx.get_page_mut(&pages[0]).unwrap().evaluate("clearTimeout(globalThis.slow)").unwrap();
         idle_pages.clear();
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !pump_live_page_event_loop(&mut ctx, &mut idle_pages).await.unwrap() {}
@@ -4163,7 +4163,8 @@ mod tests {
             .expect("page")
             .evaluate(
                 "setTimeout(() => document.body.setAttribute('style', 'margin:0;width:96px;height:64px;background:green'), 0)",
-            );
+            )
+            .unwrap();
         pump_live_page_event_loop(&mut ctx, &mut Default::default()).await.unwrap();
         pump_and_forward_screencast_frames(&mut ctx, Some(&reply_tx)).await;
         let first_update: serde_json::Value = serde_json::from_str(
@@ -4182,7 +4183,8 @@ mod tests {
             .expect("page")
             .evaluate(
                 "setTimeout(() => document.body.setAttribute('style', 'margin:0;width:96px;height:64px;background:blue'), 0)",
-            );
+            )
+            .unwrap();
         pump_live_page_event_loop(&mut ctx, &mut Default::default()).await.unwrap();
         pump_and_forward_screencast_frames(&mut ctx, Some(&reply_tx)).await;
         assert!(reply_rx.try_recv().is_err());
@@ -4263,7 +4265,8 @@ mod tests {
             .expect("page")
             .evaluate(
                 "requestAnimationFrame(() => document.body.setAttribute('style','margin:0;width:96px;height:64px;background:lime'))",
-            );
+            )
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         pump_live_page_event_loop(&mut ctx, &mut Default::default()).await.unwrap();
         pump_and_forward_screencast_frames(&mut ctx, None).await;

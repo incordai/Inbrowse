@@ -448,7 +448,7 @@ pub async fn handle(
                     }})()",
                     oid = oid_literal,
                 );
-                let result = page.evaluate(&code);
+                let result = page.evaluate(&code)?;
                 if let serde_json::Value::Array(props) = result {
                     let descriptors: Vec<Value> = props
                         .iter()
@@ -567,7 +567,7 @@ pub async fn handle(
                 // Install on the current page so the binding is usable
                 // immediately, without waiting for the next navigation.
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
-                    page.evaluate(&shim);
+                    page.evaluate(&shim)?;
                 }
             }
             Ok(json!({}))
@@ -586,7 +586,7 @@ pub async fn handle(
                     }
                 }
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
-                    page.evaluate(&format!("delete globalThis['{}'];", name));
+                    page.evaluate(&format!("delete globalThis['{}'];", name))?;
                 }
             }
             Ok(json!({}))
@@ -728,7 +728,7 @@ mod tests {
                 const r = indexedDB.open('awaited-peer',1);
                 r.onsuccess = () => {globalThis.peer = r.result;
                     peer.onversionchange = () => setTimeout(() => peer.close(),10);};
-            })()"#);
+            })()"#).unwrap();
             first.js.as_mut().unwrap().run_event_loop_bounded(100).await.unwrap();
             let body = "return new Promise((resolve,reject)=>{const r=indexedDB.open('awaited-peer',2);r.onsuccess=()=>{r.result.close();resolve(r.result.version)};r.onerror=()=>reject(r.error)})";
             let mut params = json!({"awaitPromise":true,"returnByValue":true,"timeout":1000});
@@ -762,7 +762,7 @@ mod tests {
         assert!(after["backingStorageSize"].as_u64().unwrap()
             >= before["backingStorageSize"].as_u64().unwrap() + 8 * 1024 * 1024);
         assert_eq!(ctx.get_session_page_mut(&session).unwrap()
-            .evaluate("heapTimerRan"), json!(false));
+            .evaluate("heapTimerRan").unwrap(), json!(false));
     }
 
     // Issue #51 — Runtime.evaluate / callFunctionOn must read and validate
@@ -919,7 +919,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(reply["result"]["value"], json!(2.0));
+        assert_eq!(reply["result"]["value"], json!(2));
         assert!(reply.get("exceptionDetails").is_none());
     }
     #[tokio::test(flavor = "current_thread")]
@@ -1013,11 +1013,12 @@ mod tests {
         // Canary the injection would flip from 0 to 1.
         ctx.get_session_page_mut(&session)
             .unwrap()
-            .evaluate("globalThis.__pwned = 0");
+            .evaluate("globalThis.__pwned = 0")
+            .unwrap();
 
-        // The generated code is `delete globalThis['{name}']`, which the runtime
-        // wraps as `return ( ... )`. A comma-expression payload stays a single
-        // valid expression through that wrapper and runs the assignment:
+        // The generated code is `delete globalThis['{name}']`. A
+        // comma-expression payload stays one valid statement and, unvalidated,
+        // would run the assignment:
         //   delete globalThis['x'] , (globalThis.__pwned = 1) , globalThis['y']
         handle(
             "removeBinding",
@@ -1031,7 +1032,8 @@ mod tests {
         let pwned = ctx
             .get_session_page_mut(&session)
             .unwrap()
-            .evaluate("globalThis.__pwned");
+            .evaluate("globalThis.__pwned")
+            .unwrap();
         assert_ne!(
             pwned.as_f64(),
             Some(1.0),

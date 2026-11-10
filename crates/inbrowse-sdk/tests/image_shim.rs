@@ -70,7 +70,7 @@ async fn new_image_survives_non_configurable_src() {
     let mut page = browser.new_page().await.unwrap();
     page.goto(&base).await.unwrap();
 
-    let text = page.evaluate("document.getElementById('r').textContent");
+    let text = page.evaluate("document.getElementById('r').textContent").unwrap();
     assert_eq!(
         text.as_str().unwrap_or(""),
         "survived w=10 h=20",
@@ -99,13 +99,13 @@ async fn new_image_still_emulates_load_when_src_is_configurable() {
     // The shim fires `load` on a setTimeout(0); pump the event loop.
     for _ in 0..10 {
         page.settle(500).await;
-        let text = page.evaluate("document.getElementById('r').textContent");
+        let text = page.evaluate("document.getElementById('r').textContent").unwrap();
         if text.as_str().unwrap_or("").starts_with("loaded") {
             break;
         }
     }
 
-    let text = page.evaluate("document.getElementById('r').textContent");
+    let text = page.evaluate("document.getElementById('r').textContent").unwrap();
     assert_eq!(
         text.as_str().unwrap_or(""),
         "loaded complete=true",
@@ -136,13 +136,13 @@ async fn invalid_image_bytes_emit_error_like_chromium() {
     page.goto(&base).await.unwrap();
     for _ in 0..10 {
         page.settle(500).await;
-        let text = page.evaluate("document.getElementById('r').textContent");
+        let text = page.evaluate("document.getElementById('r').textContent").unwrap();
         if text.as_str().unwrap_or("").starts_with("error") {
             break;
         }
     }
 
-    let text = page.evaluate("document.getElementById('r').textContent");
+    let text = page.evaluate("document.getElementById('r').textContent").unwrap();
     assert_eq!(
         text.as_str().unwrap_or(""),
         "error complete=true natural=0x0",

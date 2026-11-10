@@ -190,7 +190,7 @@ pub async fn handle(
                         meta_key = meta_key,
                         shift_key = shift_key,
                     );
-                    page.evaluate(&code);
+                    page.evaluate(&code)?;
                 }
             } else if event_type == "mousePressed" {
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
@@ -243,7 +243,7 @@ pub async fn handle(
                         pointer_pressure = if buttons == 0 { 0.0 } else { 0.5 },
                         from_touch = from_touch,
                     );
-                    page.evaluate(&code);
+                    page.evaluate(&code)?;
                 }
             } else if event_type == "mouseReleased" {
                 let moved_frame = if let Some(page) = ctx.get_session_page_mut(session_id) {
@@ -343,7 +343,7 @@ pub async fn handle(
                         shift_key = shift_key,
                         from_touch = from_touch,
                     );
-                    page.evaluate(&code);
+                    page.evaluate(&code)?;
                     // Document navigation runs after the input acknowledgement.
                     // Same-document routing still needs a frame notification.
                     if !page.has_pending_navigation() && page.sync_virtual_url() {
@@ -404,7 +404,7 @@ pub async fn handle(
                         meta_key = meta_key,
                         shift_key = shift_key,
                     );
-                    page.evaluate(&code);
+                    page.evaluate(&code)?;
                 }
             }
 
@@ -417,7 +417,7 @@ pub async fn handle(
             if let Some(page) = ctx.get_session_page_mut(session_id) {
                 // IME commits snapshot the final caret before beforeinput.
                 // Keyboard insertion instead follows the handler's selection.
-                page.evaluate(&insert_text_js(text, true));
+                page.evaluate(&insert_text_js(text, true))?;
             }
             Ok(json!({}))
         }
@@ -450,12 +450,12 @@ pub async fn handle(
                             code = js_str(code),
                             virtual_key_code = virtual_key_code,
                         );
-                        if page.evaluate(&js).as_bool() == Some(false) {
+                        if page.evaluate(&js)?.as_bool() == Some(false) {
                             return Ok(json!({}));
                         }
 
                         if !text.is_empty() && text != "\r" && text != "\n" {
-                            page.evaluate(&insert_text_js(text, false));
+                            page.evaluate(&insert_text_js(text, false))?;
                         }
 
                         if key == "Enter" {
@@ -483,15 +483,15 @@ pub async fn handle(
                                 }\
                             })()".replace("$VK", &virtual_key_code.to_string())
                                 .replace("$MODIFIERS", &format!("altKey:{alt_key},ctrlKey:{ctrl_key},metaKey:{meta_key},shiftKey:{shift_key}"));
-                            page.evaluate(&js);
+                            page.evaluate(&js)?;
                         }
 
                         if key == "Backspace" {
-                            page.evaluate(BACKSPACE_JS);
+                            page.evaluate(BACKSPACE_JS)?;
                         }
 
                         if key == "Delete" {
-                            page.evaluate(DELETE_JS);
+                            page.evaluate(DELETE_JS)?;
                         }
                     }
                     "keyUp" => {
@@ -505,11 +505,11 @@ pub async fn handle(
                             code = js_str(code),
                             virtual_key_code = virtual_key_code,
                         );
-                        page.evaluate(&js);
+                        page.evaluate(&js)?;
                     }
                     "char" => {
                         if !text.is_empty() {
-                            page.evaluate(&insert_text_js(text, false));
+                            page.evaluate(&insert_text_js(text, false))?;
                             // Pump event loop so Angular change detection picks up the input
                             page.settle(50).await;
                         }
@@ -530,7 +530,7 @@ pub async fn handle(
                     json!(event_type),
                     points,
                     modifiers
-                )),
+                ))?,
                 None => return Ok(json!({})),
             };
             let taps: Vec<Value> = taps
@@ -567,7 +567,7 @@ pub async fn handle(
                     y,
                     data,
                     modifiers
-                ));
+                ))?;
             }
             Ok(json!({}))
         }

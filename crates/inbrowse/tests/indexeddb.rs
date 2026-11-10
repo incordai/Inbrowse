@@ -46,10 +46,10 @@ async fn run(page: &mut Page, body: &str) -> Value {
         "(function() {{ window.__result = undefined; const done = (v) => {{ window.__result = JSON.stringify(v); }}; \
          const fail = (e) => done('FAIL: ' + (e && (e.name + ': ' + e.message) || e)); \
          try {{ {body} }} catch (e) {{ fail(e); }} return 1; }})()"
-    ));
+    )).unwrap();
     for _ in 0..100 {
         page.settle(50).await;
-        if let Some(s) = page.evaluate("window.__result").as_str() {
+        if let Some(s) = page.evaluate("window.__result").unwrap().as_str() {
             return serde_json::from_str(s).unwrap();
         }
     }

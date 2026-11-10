@@ -1284,7 +1284,7 @@ mod tests {
         ).unwrap();
         let before = domains::runtime::handle("getHeapUsage", &json!({}), &mut ctx, &session)
             .await.unwrap()["usedSize"].as_u64().unwrap();
-        ctx.get_session_page_mut(&session).unwrap().evaluate("globalThis.garbage = null");
+        ctx.get_session_page_mut(&session).unwrap().evaluate("globalThis.garbage = null").unwrap();
         let response = dispatch(&CdpRequest {
             session_id: session.clone(),
             ..req("HeapProfiler.collectGarbage")

@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     page.goto("https://example.com").await?;
 
     let el = page.wait_for_selector("a", Duration::from_secs(5)).await?;
-    println!("{} -> {:?}", el.text(), el.attribute("href"));
+    println!("{} -> {:?}", el.text()?, el.attribute("href")?);
 
     Ok(())
 }

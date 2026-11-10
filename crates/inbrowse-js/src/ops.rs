@@ -5898,7 +5898,7 @@ mod tests {
         runtime.run_event_loop_bounded(300).await.unwrap();
         assert_eq!(
             runtime.evaluate("__postedFromOp").unwrap(),
-            serde_json::json!(250.0),
+            serde_json::json!(250),
         );
     }
 

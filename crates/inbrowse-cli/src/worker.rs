@@ -51,6 +51,11 @@ impl From<NavigationWaitUntil> for WaitUntil {
     }
 }
 
+/// Time one `evaluate` command may take, its synchronous run and the wait for
+/// a returned promise together. Matches the CDP await timeout; the scrape
+/// parent's own `--timeout` still bounds the whole URL.
+const EVALUATE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Debug, Serialize)]
 struct WorkerResponse {
     ok: bool,
@@ -154,23 +159,15 @@ async fn main() {
                 }
             }
             WorkerCommand::Evaluate { expression } => {
-                // Await promise-returning expressions so async IIFEs resolve
-                // before serialization. Previously the sync path serialized an
-                // unresolved Promise as `{}`, making single-invocation flows
-                // that call async app APIs impossible (issue #693). A 30s cap
-                // matches the CDP await timeout so a never-settling promise
-                // cannot hang the worker.
-                let result = match page
-                    .evaluate_for_cdp_with_timeout(&expression, true, true, 30_000)
-                    .await
-                {
-                    Ok(info) => match info.value {
-                        Some(v) => v,
-                        None => serde_json::Value::String(info.description),
-                    },
-                    Err(_) => serde_json::Value::Null,
-                };
-                WorkerResponse::success(result)
+                // Same evaluation as `fetch --eval` and MCP browser_evaluate
+                // (inbrowse Page::evaluate_checked): completion values, a
+                // returned promise awaited (issue #693), and one watchdog
+                // bounding the run and the wait. A thrown error is an error
+                // response, which the scrape parent reports per URL.
+                match page.evaluate_checked(&expression, EVALUATE_BUDGET).await {
+                    Ok(value) => WorkerResponse::success(value),
+                    Err(error) => WorkerResponse::error(error.to_string()),
+                }
             }
             WorkerCommand::Title => {
                 WorkerResponse::success(serde_json::json!(page.title))

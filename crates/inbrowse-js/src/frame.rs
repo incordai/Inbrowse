@@ -1758,7 +1758,7 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate("document.getElementById('f').files.length").unwrap(),
-            serde_json::json!(0.0)
+            serde_json::json!(0)
         );
         assert_eq!(
             rt.evaluate("(() => { try { new FileList(); return 'no-throw'; } catch (e) { return e.name + ': ' + e.message; } })()").unwrap(),

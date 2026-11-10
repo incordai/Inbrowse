@@ -140,6 +140,7 @@ async fn runtime_click_submit_prevent_default_navigation_updates_page() {
     );
     assert!(page
         .evaluate("document.body.textContent")
+        .unwrap()
         .as_str()
         .unwrap()
         .contains("submitted"));

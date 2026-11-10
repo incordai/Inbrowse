@@ -1493,7 +1493,7 @@ pub async fn handle(
             if ctx.pending_beforeunload_close.contains_key(&target_id) { return Ok(json!({})); }
             let confirmation = if page.has_js() {
                 ctx.get_session_page_mut(session_id).ok_or("No page for session")?
-                    .evaluate("globalThis.__inbrowse_fireBeforeUnload()")
+                    .evaluate("globalThis.__inbrowse_fireBeforeUnload()")?
                     .as_bool().ok_or("Could not run beforeunload handlers")?
             } else { false };
             if confirmation {
@@ -1691,6 +1691,7 @@ pub async fn handle(
                          document.documentElement && document.documentElement.scrollHeight]",
                     )
                 })
+                .transpose()?
                 .and_then(|value| value.as_array().cloned())
             {
                 page_x = values.first().and_then(Value::as_f64).unwrap_or(0.0);
@@ -2712,7 +2713,8 @@ mod tests {
             .expect("top capture");
         ctx.get_session_page_mut(&session)
             .expect("page")
-            .evaluate("return (window.scrollTo(0, 80), window.scrollY)");
+            .evaluate("return (window.scrollTo(0, 80), window.scrollY)")
+            .unwrap();
 
         let metrics = handle("getLayoutMetrics", &json!({}), &mut ctx, &session)
             .await
@@ -2998,7 +3000,8 @@ mod tests {
 
         ctx.get_session_page_mut(&session)
             .expect("page")
-            .evaluate("window.scrollTo(0, 80)");
+            .evaluate("window.scrollTo(0, 80)")
+            .unwrap();
         let (_, above_scroll) = decode_capture(
             &handle(
                 "captureScreenshot",
@@ -3420,7 +3423,8 @@ mod tests {
             );
             ctx.get_session_page_mut(&session)
                 .expect("page")
-                .evaluate(&script);
+                .evaluate(&script)
+                .unwrap();
             handle(method, &json!({}), &mut ctx, &session)
                 .await
                 .unwrap_or_else(|error| panic!("{method} failed: {error}"));
@@ -3586,7 +3590,8 @@ mod tests {
 
         ctx.get_session_page_mut(&session)
             .expect("page")
-            .evaluate("window.scrollTo(0, 80)");
+            .evaluate("window.scrollTo(0, 80)")
+            .unwrap();
         let page_coordinate_clip = handle(
             "captureScreenshot",
             &json!({
@@ -3651,7 +3656,8 @@ mod tests {
         .expect("long-page surface override");
         ctx.get_session_page_mut(&session)
             .expect("page")
-            .evaluate("window.scrollTo(0, 8000)");
+            .evaluate("window.scrollTo(0, 8000)")
+            .unwrap();
         assert_eq!(
             ctx.get_session_page(&session)
                 .expect("page")
@@ -3900,7 +3906,7 @@ mod tests {
         ctx.get_session_page_mut(&session).expect("page").evaluate(
             "Object.defineProperty(globalThis,'innerWidth',{value:4096,configurable:true});\
                  Object.defineProperty(globalThis,'innerHeight',{value:4096,configurable:true})",
-        );
+        ).unwrap();
         let beyond = handle(
             "captureScreenshot",
             &json!({"captureBeyondViewport": true}),
