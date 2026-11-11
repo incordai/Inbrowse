@@ -15,6 +15,11 @@ pub struct BrowserContext {
     pub indexed_db: Arc<inbrowse_js::indexed_db::IndexedDbStorage>,
     pub http_client: Arc<InbrowseHttpClient>,
     pub user_agent: String,
+    /// The user agent the caller set explicitly (`--user-agent`), or `None`
+    /// when the profile default was resolved. Stealth mode sends it on the
+    /// wire and reports it as `navigator.userAgent`; `None` keeps the stealth
+    /// defaults.
+    pub user_agent_override: Option<String>,
     pub platform: String,
     pub ua_platform: String,
     pub ua_platform_version: String,
@@ -245,6 +250,7 @@ impl BrowserContext {
             client.block_trackers = true;
         }
         let profile = crate::profiles::select_profile();
+        let user_agent_override = user_agent.clone();
         let resolved_ua = user_agent.unwrap_or_else(|| profile.user_agent.to_string());
         let platform = profile.platform.to_string();
         let ua_platform = profile.ua_platform.to_string();
@@ -272,6 +278,7 @@ impl BrowserContext {
             indexed_db,
             http_client,
             user_agent: resolved_ua,
+            user_agent_override,
             platform,
             ua_platform,
             ua_platform_version,
@@ -348,6 +355,7 @@ impl BrowserContext {
                 else { Arc::new(inbrowse_js::indexed_db::IndexedDbStorage::default()) },
             http_client: Arc::new(client),
             user_agent: self.user_agent.clone(),
+            user_agent_override: self.user_agent_override.clone(),
             platform: self.platform.clone(),
             ua_platform: self.ua_platform.clone(),
             ua_platform_version: self.ua_platform_version.clone(),
@@ -359,6 +367,19 @@ impl BrowserContext {
             storage_dir: persistent.then(|| self.storage_dir.clone()).flatten(),
             allow_private_network: self.allow_private_network,
         }
+    }
+
+    /// Create a private context for one CDP connection. Cookies start from the
+    /// template's snapshot like a persistent copy, but `localStorage` and
+    /// IndexedDB are independent snapshots of the template's, and there is no
+    /// storage directory: only the server's persistence context writes the
+    /// profile, so one client's live storage never reaches another client.
+    pub fn connection_copy(&self, id: String) -> Self {
+        let mut copy = self.isolated_copy(id, true);
+        copy.local_storage = Arc::new(self.local_storage.isolated_snapshot());
+        copy.indexed_db = Arc::new(self.indexed_db.isolated_snapshot());
+        copy.storage_dir = None;
+        copy
     }
 
     /// Flush `localStorage` to `{storage_dir}/localStorage`. Only the origins
@@ -523,6 +544,27 @@ mod tests {
         let reloaded = BrowserContext::with_storage("reloaded".into(), Some(dir.clone()));
         assert_eq!(reloaded.local_storage.get("https://failed.test", "token").as_deref(), Some("kept"));
         assert_eq!(reloaded.local_storage.get("https://saved.test", "token").as_deref(), Some("saved"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn connection_copies_isolate_live_storage_and_cannot_write_the_profile() {
+        let dir = temp_storage_dir("connection-copy");
+        let profile = BrowserContext::with_storage("profile".into(), Some(dir.clone()));
+        assert!(profile.local_storage.load("https://app.test", vec![("seed".into(), "initial".into())]));
+        let a = profile.connection_copy("a".into());
+        let b = profile.connection_copy("b".into());
+        assert!(a.storage_dir.is_none());
+        assert!(a.local_storage.set("https://app.test", "secret".into(), "a".into()));
+        assert_eq!(b.local_storage.get("https://app.test", "seed").as_deref(), Some("initial"));
+        assert_eq!(b.local_storage.get("https://app.test", "secret"), None);
+        assert_eq!(profile.local_storage.get("https://app.test", "secret"), None);
+        assert!(!Arc::ptr_eq(&a.indexed_db, &b.indexed_db));
+        assert!(!Arc::ptr_eq(&a.indexed_db, &profile.indexed_db));
+        a.save_local_storage();
+        assert!(!dir.join("localStorage").exists());
+        let persistent = profile.isolated_copy("persistent".into(), true);
+        assert!(Arc::ptr_eq(&persistent.local_storage, &profile.local_storage));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

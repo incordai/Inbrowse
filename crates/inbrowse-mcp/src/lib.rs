@@ -633,11 +633,13 @@ fn handle_tools_list(id: Value) -> RpcResponse {
             },
             {
                 "name": "browser_markdown",
-                "description": "Extract the current page as Markdown (headings, paragraphs, lists, links, code blocks). Use this instead of browser_snapshot when you want token-dense structured content rather than plain text.",
+                "description": "Extract the current page as Markdown (headings, paragraphs, lists, links, code blocks). Use this instead of browser_snapshot when you want token-dense structured content rather than plain text. With format \"json\" the result is one JSON object: url, status, title, description, lang, publishedTime, content (the Markdown), links (absolute URL to link text) and images (absolute URL to alt text); lang and publishedTime are left out when the page states none.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "max_chars": { "type": "number", "description": "Truncate to this many characters (default 4000)" }
+                        "max_chars": { "type": "number", "description": "Truncate to this many characters (default 4000); with format \"json\", the content field is truncated" },
+                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "markdown (default) or json" },
+                        "boilerplate": { "type": "string", "enum": ["drop", "keep"], "description": "drop (default) leaves out navigation, the page header and footer, and sidebars; keep returns the full page" }
                     }
                 }
             },
@@ -1823,11 +1825,31 @@ fn tool_close(state: &mut BrowserState) -> Result<String, String> {
 /// Convert the rendered page to Markdown by running the JS-side converter
 /// already used by `inbrowse fetch --dump markdown`. More token-dense than
 /// browser_snapshot for content-heavy pages (article bodies, docs sites).
+///
+/// With `format: "json"` the result is the page as one JSON object, the MCP
+/// counterpart of `inbrowse fetch --dump json`; `max_chars` then limits its
+/// `content` so the object stays valid JSON.
 fn tool_markdown(args: &Value, state: &mut BrowserState) -> Result<String, String> {
     let max_chars = args.get("max_chars").and_then(Value::as_u64).map(|n| n as usize)
         .unwrap_or(DEFAULT_TEXT_LIMIT);
+    let as_json = match args.get("format").and_then(Value::as_str) {
+        None | Some("markdown") => false,
+        Some("json") => true,
+        Some(other) => return Err(format!("format must be \"markdown\" or \"json\", not \"{other}\"")),
+    };
+    let drop_boilerplate = match args.get("boilerplate").and_then(Value::as_str) {
+        None | Some("drop") => true,
+        Some("keep") => false,
+        Some(other) => return Err(format!("boilerplate must be \"keep\" or \"drop\", not \"{other}\"")),
+    };
     let page = state.page_mut();
-    let result = evaluate_tool_script(page, inbrowse::HTML_TO_MARKDOWN_JS)?;
+    if as_json {
+        let mut json = inbrowse::page_json::page_json(page, None, drop_boilerplate, evaluate_tool_script)?
+            .ok_or("The page has no body to convert")?;
+        json.content = truncate(&json.content, max_chars);
+        return serde_json::to_string(&json).map_err(|error| error.to_string());
+    }
+    let result = evaluate_tool_script(page, &inbrowse::html_to_markdown_js(None, drop_boilerplate))?;
     let md = result.as_str().unwrap_or_default();
     Ok(truncate(md, max_chars))
 }

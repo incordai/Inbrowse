@@ -1586,6 +1586,24 @@ impl PreparedRender {
         ))
     }
 
+    /// Content-box size of an element: the border box without borders and
+    /// padding. A frame element's content box is its child document's viewport.
+    pub fn element_content_size(&self, id: inbrowse_dom::tree::NodeId) -> Option<(f32, f32)> {
+        let rect = self.layout.rects.get(&id)?;
+        let style = self.layout.styles.get(&id)?;
+        if style.ignores_used_box_sizes() {
+            return None;
+        }
+        Some((
+            (rect.width - style.border.left - style.border.right
+                - style.padding.left - style.padding.right)
+                .max(0.0),
+            (rect.height - style.border.top - style.border.bottom
+                - style.padding.top - style.padding.bottom)
+                .max(0.0),
+        ))
+    }
+
     /// Untransformed border-box size used by CSSOM View's `offsetWidth` and
     /// `offsetHeight`. Unlike `getBoundingClientRect()`, transforms do not
     /// participate in these integer layout metrics.
@@ -3059,6 +3077,20 @@ pub fn prepare_dom_with_retained_styles_at_animation_time(
     )
 }
 
+fn cached_custom_properties_ignore_attributes(
+    previous: &PreparedRender,
+    mutations: &[crate::dom::RetainedStyleMutation],
+) -> bool {
+    mutations.iter().all(|mutation| {
+        let crate::dom::RetainedStyleMutation::Attribute(attribute) = mutation else { return true; };
+        previous.layout.custom_properties.get(&attribute.node).is_none_or(|properties| {
+            properties.values().all(|value| {
+                !crate::css::declaration_value_reads_attribute(value, &attribute.name)
+            })
+        })
+    })
+}
+
 pub fn prepare_dom_with_retained_styles_with_animation_state(
     tree: &DomTree,
     viewport: (f32, f32),
@@ -3076,7 +3108,9 @@ pub fn prepare_dom_with_retained_styles_with_animation_state(
         && previous.animation_sample.mode == crate::AnimationSampleMode::DocumentTime
         && animation_sample.mode == crate::AnimationSampleMode::DocumentTime
         && animation_sample.time.milliseconds >= previous.animation_sample.time.milliseconds;
-    if sample_changed && !forward_document_sample {
+    if (sample_changed && !forward_document_sample)
+        || !cached_custom_properties_ignore_attributes(&previous, mutations)
+    {
         drop(previous);
         return prepare_dom_with_dynamic_fonts_and_stylesheet_cache_with_animation_state(
             tree,
@@ -4072,34 +4106,19 @@ fn paint_canvas_background(
     }
 
     if let Some(url) = &style.background_image {
-        if let Some(image_rect) = background_image_rect(
+        paint_background_image(
             url,
+            style,
             base_url,
             origin_rect,
-            style.background_size,
-            style.background_size_expression.as_deref(),
-            style.background_size_fit,
-            style.background_position,
-            style.font_size.unwrap_or(16.0),
+            surface_rect,
+            crate::ResolvedBorderRadii::default(),
+            None,
+            pixmap,
             root_font_size,
             viewport,
             image_cache,
-        ) {
-            paint_image(
-                url,
-                base_url,
-                &image_rect,
-                surface_rect,
-                crate::ObjectFit::Fill,
-                crate::ObjectPosition::default(),
-                pixmap,
-                image_cache,
-                None,
-                None,
-                crate::ResolvedBorderRadii::default(),
-                None,
-            );
-        }
+        );
     }
 }
 
@@ -4994,40 +5013,23 @@ fn paint_laid_dom_scrolled(
                     image_cache,
                 );
             } else if let Some(bg_url) = &style.background_image {
-                if let Some(img_rect) = background_image_rect(
+                // A background layer is always clipped to its owner's border
+                // box and then to inherited overflow. Its full destination
+                // rect stays separate from that clip: intersecting first and
+                // then scaling would resize a partially clipped image.
+                paint_background_image(
                     bg_url,
+                    style,
                     base_url,
                     &background.origin_rect,
-                    style.background_size,
-                    style.background_size_expression.as_deref(),
-                    style.background_size_fit,
-                    style.background_position,
-                    style.font_size.unwrap_or(16.0),
+                    &background.clip_rect,
+                    background.clip_radii,
+                    background_mask,
+                    &mut pixmap,
                     root_font_size,
                     viewport,
                     image_cache,
-                ) {
-                    // A background layer is always clipped to its owner's border
-                    // box and then to inherited overflow. Keep its full destination
-                    // rect separate from that clip: intersecting first and then
-                    // scaling would resize a partially clipped image.
-                    if background.clip_rect.width > 0.0 && background.clip_rect.height > 0.0 {
-                        paint_image(
-                            bg_url,
-                            base_url,
-                            &img_rect,
-                            &background.clip_rect,
-                            crate::ObjectFit::Fill,
-                            crate::ObjectPosition::default(),
-                            &mut pixmap,
-                            image_cache,
-                            None,
-                            None,
-                            background.clip_radii,
-                            background_mask,
-                        );
-                    }
-                }
+                );
             }
         }
         let has_positioned_pseudo = [
@@ -5978,34 +5980,19 @@ fn paint_inline_fragment_decorations(
                 image_cache,
             );
         } else if let Some(background_url) = &fragment_style.background_image {
-            if let Some(image_rect) = background_image_rect(
+            paint_background_image(
                 background_url,
+                &fragment_style,
                 base_url,
                 &background_origin,
-                fragment_style.background_size,
-                fragment_style.background_size_expression.as_deref(),
-                fragment_style.background_size_fit,
-                fragment_style.background_position,
-                fragment_style.font_size.unwrap_or(16.0),
+                &background.clip_rect,
+                background.clip_radii,
+                background_mask.as_ref(),
+                pixmap,
                 root_font_size,
                 viewport,
                 image_cache,
-            ) {
-                paint_image(
-                    background_url,
-                    base_url,
-                    &image_rect,
-                    &background.clip_rect,
-                    crate::ObjectFit::Fill,
-                    crate::ObjectPosition::default(),
-                    pixmap,
-                    image_cache,
-                    None,
-                    None,
-                    background.clip_radii,
-                    background_mask.as_ref(),
-                );
-            }
+            );
         }
         paint_css_border(
             pixmap,
@@ -7921,7 +7908,16 @@ fn resolve_resource_url(src: &str, base_url: Option<&str>) -> Option<String> {
     // of real markup uses relative image paths ("logo.svg", not
     // "https://example.com/logo.svg"), so without this every relative <img>
     // or mask/background reference silently fails to fetch.
-    if src.starts_with("http://") || src.starts_with("https://") {
+    if src.starts_with("file:") {
+        // An absolute `file:` URL names a local file only for a `file:`
+        // document, or when it is already resolved (no base). Bytes come
+        // solely from the page transport, which applies the file-access
+        // policy; the renderer's own loader never reads local files.
+        let network_document = base_url
+            .and_then(|b| url::Url::parse(b).ok())
+            .is_some_and(|b| b.scheme() != "file");
+        (!network_document).then(|| src.to_string())
+    } else if src.starts_with("http://") || src.starts_with("https://") {
         Some(src.to_string())
     } else if let Some(rest) = src.strip_prefix("//") {
         // Protocol-relative URL (`//upload.wikimedia.org/...`, ubiquitous on
@@ -9027,7 +9023,10 @@ fn paint_background_gradient_layers(
                         .background_position
                         .y
                         .resolve(origin_rect.height - tile_size.1);
-                let repeats = style.background_repeat.unwrap_or((true, true));
+                let repeats = (
+                    style.background_repeat.0.repeats(),
+                    style.background_repeat.1.repeats(),
+                );
                 if repeats == (true, true) {
                     let mut paint = Paint::default();
                     paint.shader = Pattern::new(
@@ -9485,11 +9484,15 @@ fn background_image_rect(
     cache: &mut RenderResourceCache,
 ) -> Option<crate::Rect> {
     let bytes = fetch_bytes(src, base_url, cache)?;
-    let intrinsic = if is_svg(&bytes) {
-        svg_intrinsic(&bytes)
-    } else {
-        image_dimensions(&bytes).map(|(width, height)| (width as f32, height as f32))
-    };
+    let intrinsic_metadata = background_image_intrinsic(&bytes);
+    // Cover, contain and a one-sided size need only the aspect ratio. A
+    // ratio-only image (an SVG with a `viewBox` and no size) stands in as a
+    // unit-height pair; its absolute size comes from the auto-size rule.
+    let intrinsic = intrinsic_metadata.and_then(|metadata| match (metadata.width, metadata.height) {
+        (Some(width), Some(height)) => Some((width, height)),
+        _ => metadata.ratio.map(|ratio| (ratio, 1.0)),
+    });
+    let area = (box_rect.width, box_rect.height);
     let expression_size = size_expression.and_then(|expression| {
         let components = split_background_size_components(expression);
         let width = components.first().and_then(|value| {
@@ -9520,8 +9523,21 @@ fn background_image_rect(
             (Some(width), Some(height), _) => Some((width, height)),
             (Some(width), None, Some((iw, ih))) => Some((width, width * ih / iw)),
             (None, Some(height), Some((iw, ih))) => Some((height * iw / ih, height)),
-            (None, None, Some(intrinsic)) => Some(intrinsic),
-            _ => None,
+            // Without a ratio an `auto` axis is the image's own length on it,
+            // or the positioning area's.
+            (Some(width), None, None) => Some((
+                width,
+                intrinsic_metadata
+                    .and_then(|metadata| metadata.height)
+                    .unwrap_or(area.1),
+            )),
+            (None, Some(height), None) => Some((
+                intrinsic_metadata
+                    .and_then(|metadata| metadata.width)
+                    .unwrap_or(area.0),
+                height,
+            )),
+            (None, None, _) => Some(background_auto_size(intrinsic_metadata, area)),
         }
     });
     // `cover` and `contain` are complete sizing algorithms, not contextual
@@ -9530,19 +9546,25 @@ fn background_image_rect(
     // typed fit first or the unresolved token path falls back to the intrinsic
     // size and silently bypasses fitting.
     let (width, height) = if let Some(fit) = fit {
-        let (iw, ih) = intrinsic?;
-        let scale = match fit {
-            crate::ObjectFit::Cover => (box_rect.width / iw).max(box_rect.height / ih),
-            crate::ObjectFit::Contain => (box_rect.width / iw).min(box_rect.height / ih),
-            _ => 1.0,
-        };
-        (iw * scale, ih * scale)
+        // An image with no ratio has nothing to preserve: it takes the
+        // positioning area.
+        match intrinsic {
+            Some((iw, ih)) => {
+                let scale = match fit {
+                    crate::ObjectFit::Cover => (box_rect.width / iw).max(box_rect.height / ih),
+                    crate::ObjectFit::Contain => (box_rect.width / iw).min(box_rect.height / ih),
+                    _ => 1.0,
+                };
+                (iw * scale, ih * scale)
+            }
+            None => area,
+        }
     } else if let Some(size) = expression_size {
         size
     } else if let Some(size) = explicit_size {
         size
     } else {
-        intrinsic.unwrap_or((box_rect.width, box_rect.height))
+        background_auto_size(intrinsic_metadata, area)
     };
     if width <= 0.0 || height <= 0.0 {
         return None;
@@ -9553,6 +9575,363 @@ fn background_image_rect(
         width,
         height,
     })
+}
+
+/// The intrinsic dimensions and ratio of a background image, each only when
+/// the image states it: a bitmap has all three, an SVG may have a `viewBox`
+/// ratio alone or nothing.
+fn background_image_intrinsic(bytes: &[u8]) -> Option<crate::ReplacedIntrinsic> {
+    if is_svg(bytes) {
+        svg_image_intrinsic_metadata(bytes)
+    } else {
+        image_dimensions(bytes).map(|(width, height)| {
+            crate::ReplacedIntrinsic::from_dimensions(width as f32, height as f32)
+        })
+    }
+}
+
+/// CSS Images' default sizing for `background-size: auto` against the
+/// positioning area `area`: stated dimensions are used, a missing one follows
+/// the ratio, an image with only a ratio is contained in the area, and one
+/// with neither fills it.
+fn background_auto_size(
+    intrinsic: Option<crate::ReplacedIntrinsic>,
+    area: (f32, f32),
+) -> (f32, f32) {
+    let Some(metadata) = intrinsic else {
+        return area;
+    };
+    let positive = |value: Option<f32>| value.filter(|value| value.is_finite() && *value > 0.0);
+    match (
+        positive(metadata.width),
+        positive(metadata.height),
+        positive(metadata.ratio),
+    ) {
+        (Some(width), Some(height), _) => (width, height),
+        (Some(width), None, Some(ratio)) => (width, width / ratio),
+        (None, Some(height), Some(ratio)) => (height * ratio, height),
+        (Some(width), None, None) => (width, area.1),
+        (None, Some(height), None) => (area.0, height),
+        (None, None, Some(ratio)) => {
+            let width = area.0.min(area.1 * ratio);
+            (width, width / ratio)
+        }
+        (None, None, None) => area,
+    }
+}
+
+/// Tiles laid out one by one stay exact; past this many the tile is
+/// rasterized once and repeated as a pattern.
+const BACKGROUND_TILE_LOOP_LIMIT: usize = 64;
+const BACKGROUND_TILE_PIXMAP_LIMIT: f32 = 4096.0;
+
+/// One axis of a background image's tiling: where the tile at index 0 starts,
+/// how large each image is, and the distance between tile starts.
+#[derive(Clone, Copy)]
+struct BackgroundTileAxis {
+    start: f32,
+    size: f32,
+    period: f32,
+    repeats: bool,
+}
+
+impl BackgroundTileAxis {
+    /// `background-repeat` for one axis of a `size` long image in the
+    /// positioning area `[area_start, area_start + area_len]`.
+    fn new(
+        mode: crate::BackgroundRepeat,
+        size: f32,
+        area_start: f32,
+        area_len: f32,
+        position: crate::BackgroundPositionAxis,
+    ) -> Self {
+        let placed = |size: f32| area_start + position.resolve(area_len - size);
+        match mode {
+            crate::BackgroundRepeat::NoRepeat => Self {
+                start: placed(size),
+                size,
+                period: size,
+                repeats: false,
+            },
+            crate::BackgroundRepeat::Repeat => Self {
+                start: placed(size),
+                size,
+                period: size,
+                repeats: true,
+            },
+            // Whole tiles, each stretched so a whole number fills the area.
+            crate::BackgroundRepeat::Round => {
+                let count = (area_len / size).round().max(1.0);
+                let size = area_len / count;
+                Self {
+                    start: placed(size),
+                    size,
+                    period: size,
+                    repeats: true,
+                }
+            }
+            // Whole tiles with the leftover space spread between them. One
+            // that fits alone, or not at all, is just placed.
+            crate::BackgroundRepeat::Space => {
+                let count = (area_len / size).floor();
+                if count < 2.0 {
+                    return Self::new(
+                        crate::BackgroundRepeat::NoRepeat,
+                        size,
+                        area_start,
+                        area_len,
+                        position,
+                    );
+                }
+                Self {
+                    start: area_start,
+                    size,
+                    period: size + (area_len - count * size) / (count - 1.0),
+                    repeats: true,
+                }
+            }
+        }
+    }
+
+    /// Whether the single tile at index 0 is all of this axis `[low, high]`
+    /// shows.
+    fn tile_covers(self, low: f32, high: f32) -> bool {
+        !self.repeats || (self.start <= low + 0.01 && self.start + self.size >= high - 0.01)
+    }
+
+    /// Indices of the tiles that reach `[low, high]`.
+    fn visible_tiles(self, low: f32, high: f32) -> std::ops::RangeInclusive<i64> {
+        if !self.repeats {
+            return 0..=0;
+        }
+        let first = ((low - self.start - self.size) / self.period).floor() as i64 + 1;
+        let last = ((high - self.start) / self.period).ceil() as i64 - 1;
+        first..=last
+    }
+
+    fn origin(self, index: i64) -> f32 {
+        self.start + index as f32 * self.period
+    }
+}
+
+/// Paint `url` as the background image of a box: sized and positioned in
+/// `origin_rect`, tiled per `background-repeat`, and painted only inside
+/// `clip_rect` (with `clip_radii` and `extra_clip`).
+fn paint_background_image(
+    url: &str,
+    style: &crate::LayoutStyle,
+    base_url: Option<&str>,
+    origin_rect: &crate::Rect,
+    clip_rect: &crate::Rect,
+    clip_radii: crate::ResolvedBorderRadii,
+    extra_clip: Option<&tiny_skia::Mask>,
+    pixmap: &mut Pixmap,
+    root_font_size: f32,
+    viewport: (f32, f32),
+    cache: &mut RenderResourceCache,
+) {
+    let Some(first) = background_image_rect(
+        url,
+        base_url,
+        origin_rect,
+        style.background_size,
+        style.background_size_expression.as_deref(),
+        style.background_size_fit,
+        style.background_position,
+        style.font_size.unwrap_or(16.0),
+        root_font_size,
+        viewport,
+        cache,
+    ) else {
+        return;
+    };
+    if clip_rect.width <= 0.0 || clip_rect.height <= 0.0 {
+        return;
+    }
+    let (mode_x, mode_y) = style.background_repeat;
+    let mut size = (first.width, first.height);
+    // One round axis against an `auto` size keeps the image's ratio.
+    let size_is_auto = style.background_size.is_none()
+        && style.background_size_fit.is_none()
+        && style
+            .background_size_expression
+            .as_deref()
+            .map_or(true, |expression| {
+                expression
+                    .split_whitespace()
+                    .all(|token| token.eq_ignore_ascii_case("auto"))
+            });
+    if size_is_auto {
+        match (mode_x, mode_y) {
+            (crate::BackgroundRepeat::Round, crate::BackgroundRepeat::Round) => {}
+            (crate::BackgroundRepeat::Round, _) => {
+                let count = (origin_rect.width / size.0).round().max(1.0);
+                size = (origin_rect.width / count, size.1 * origin_rect.width / count / size.0);
+            }
+            (_, crate::BackgroundRepeat::Round) => {
+                let count = (origin_rect.height / size.1).round().max(1.0);
+                size = (size.0 * origin_rect.height / count / size.1, origin_rect.height / count);
+            }
+            _ => {}
+        }
+    }
+    let x = BackgroundTileAxis::new(
+        mode_x,
+        size.0,
+        origin_rect.x,
+        origin_rect.width,
+        style.background_position.x,
+    );
+    let y = BackgroundTileAxis::new(
+        mode_y,
+        size.1,
+        origin_rect.y,
+        origin_rect.height,
+        style.background_position.y,
+    );
+    // Only the part of the area on the paint surface needs tiles.
+    let Some(visible) = clip_rect.intersect(&paint_surface_rect(pixmap, 1.0)) else {
+        return;
+    };
+    let right = visible.x + visible.width;
+    let bottom = visible.y + visible.height;
+    let paint_tile = |pixmap: &mut Pixmap, cache: &mut RenderResourceCache, tile: crate::Rect| {
+        paint_image(
+            url,
+            base_url,
+            &tile,
+            clip_rect,
+            crate::ObjectFit::Fill,
+            crate::ObjectPosition::default(),
+            pixmap,
+            cache,
+            None,
+            None,
+            clip_radii,
+            extra_clip,
+        );
+    };
+    // The ordinary case, an image that is all the box shows, takes no tiling.
+    if x.tile_covers(visible.x, right) && y.tile_covers(visible.y, bottom) {
+        paint_tile(
+            pixmap,
+            cache,
+            crate::Rect {
+                x: x.start,
+                y: y.start,
+                width: x.size,
+                height: y.size,
+            },
+        );
+        return;
+    }
+    let columns = x.visible_tiles(visible.x, right);
+    let rows = y.visible_tiles(visible.y, bottom);
+    let count = (columns.clone().count()).saturating_mul(rows.clone().count());
+    let (tile_width, tile_height) = (
+        if x.repeats { x.period } else { x.size },
+        if y.repeats { y.period } else { y.size },
+    );
+    if count <= BACKGROUND_TILE_LOOP_LIMIT
+        || tile_width > BACKGROUND_TILE_PIXMAP_LIMIT
+        || tile_height > BACKGROUND_TILE_PIXMAP_LIMIT
+    {
+        for row in rows {
+            for column in columns.clone() {
+                paint_tile(
+                    pixmap,
+                    cache,
+                    crate::Rect {
+                        x: x.origin(column),
+                        y: y.origin(row),
+                        width: x.size,
+                        height: y.size,
+                    },
+                );
+            }
+        }
+        return;
+    }
+
+    // Many tiles: rasterize one tile (with its spacing) and repeat it.
+    let (pattern_width, pattern_height) = (
+        tile_width.round().max(1.0) as u32,
+        tile_height.round().max(1.0) as u32,
+    );
+    let Some(mut tile) = Pixmap::new(pattern_width, pattern_height) else {
+        return;
+    };
+    let tile_bounds = crate::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: pattern_width as f32,
+        height: pattern_height as f32,
+    };
+    paint_image(
+        url,
+        base_url,
+        &crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: x.size.round().max(1.0),
+            height: y.size.round().max(1.0),
+        },
+        &tile_bounds,
+        crate::ObjectFit::Fill,
+        crate::ObjectPosition::default(),
+        &mut tile,
+        cache,
+        None,
+        None,
+        crate::ResolvedBorderRadii::default(),
+        None,
+    );
+    // An axis that does not repeat shows its one tile only.
+    let band = crate::Rect {
+        x: if x.repeats { visible.x } else { x.start },
+        y: if y.repeats { visible.y } else { y.start },
+        width: if x.repeats { visible.width } else { pattern_width as f32 },
+        height: if y.repeats { visible.height } else { pattern_height as f32 },
+    };
+    let Some(region) = band
+        .intersect(&visible)
+        .and_then(|region| Rect::from_xywh(region.x, region.y, region.width, region.height))
+    else {
+        return;
+    };
+    let mut owner_clip = extra_clip.cloned();
+    if !clip_radii.is_zero() {
+        match owner_clip.as_mut() {
+            Some(mask) => {
+                if let Some(path) = rounded_rect_path_radii(
+                    clip_rect.x,
+                    clip_rect.y,
+                    clip_rect.width,
+                    clip_rect.height,
+                    clip_radii,
+                ) {
+                    mask.intersect_path(&path, FillRule::Winding, true, Transform::identity());
+                }
+            }
+            None => {
+                owner_clip = rounded_box_clip_mask_radii(
+                    pixmap.width(),
+                    pixmap.height(),
+                    clip_rect,
+                    clip_radii,
+                );
+            }
+        }
+    }
+    let mut paint = Paint::default();
+    paint.shader = Pattern::new(
+        tile.as_ref(),
+        SpreadMode::Repeat,
+        FilterQuality::Nearest,
+        1.0,
+        Transform::from_translate(x.start.round(), y.start.round()),
+    );
+    pixmap.fill_rect(region, &paint, Transform::identity(), owner_clip.as_ref());
 }
 
 fn split_background_size_components(value: &str) -> Vec<&str> {
@@ -10006,34 +10385,19 @@ fn paint_positioned_pseudo(
             image_cache,
         );
     } else if let Some(bg_url) = &style.background_image {
-        if let Some(image_rect) = background_image_rect(
+        paint_background_image(
             bg_url,
+            style,
             base_url,
             &background.origin_rect,
-            style.background_size,
-            style.background_size_expression.as_deref(),
-            style.background_size_fit,
-            style.background_position,
-            em,
+            &background.clip_rect,
+            background.clip_radii,
+            background_mask.as_ref(),
+            pixmap,
             root_font_size,
             viewport,
             image_cache,
-        ) {
-            paint_image(
-                bg_url,
-                base_url,
-                &image_rect,
-                &background.clip_rect,
-                crate::ObjectFit::Fill,
-                crate::ObjectPosition::default(),
-                pixmap,
-                image_cache,
-                None,
-                None,
-                background.clip_radii,
-                background_mask.as_ref(),
-            );
-        }
+        );
     }
     paint_css_border(
         pixmap,
@@ -11067,7 +11431,7 @@ fn svg_image_intrinsic_metadata(bytes: &[u8]) -> Option<crate::ReplacedIntrinsic
             && values[3].is_finite()
             && values[2] > 0.0
             && values[3] > 0.0)
-            .then_some(values[2] / values[3])
+            .then(|| values[2] / values[3])
     });
     let ratio = match (width, height) {
         (Some(width), Some(height)) => Some(width / height),
@@ -12891,13 +13255,41 @@ mod tests {
             panic!("metadata must preserve the existing URL-resolution gate")
         });
         let profile = ImageRequestProfile::NoCorsInclude;
-        for src in ["relative.svg", "file:///tmp/image.svg", "about:blank"] {
+        for src in ["relative.svg", "about:blank"] {
             assert_eq!(cache.profiled_image_intrinsic(src, profile), None);
         }
         assert!(cache.take_sync_misses().is_empty());
         cache.seed_image("https://assets.test/image.svg".into(), profile,
             b"<svg xmlns='http://www.w3.org/2000/svg' width='20' height='10'/>".to_vec());
         assert_eq!(cache.profiled_image_intrinsic("//assets.test/image.svg", profile).unwrap().natural_size(), Some((20.0, 10.0)));
+    }
+
+    #[test]
+    fn file_urls_resolve_only_for_file_documents_or_when_already_resolved() {
+        let file = "file:///site/pic.png";
+        assert_eq!(resolve_resource_url("pic.png", Some("file:///site/page.html")).as_deref(), Some(file));
+        assert_eq!(resolve_resource_url(file, Some("file:///site/page.html")).as_deref(), Some(file));
+        // An already-resolved URL carries no base.
+        assert_eq!(resolve_resource_url(file, None).as_deref(), Some(file));
+        // A network document naming a local file never resolves it.
+        assert_eq!(resolve_resource_url(file, Some("https://assets.test/page.html")), None);
+        assert_eq!(resolve_resource_url(file, Some("http://127.0.0.1:8000/")), None);
+    }
+
+    #[test]
+    fn resolved_file_images_paint_from_seeded_bytes() {
+        let url = "file:///site/pic.png";
+        let profile = ImageRequestProfile::NoCorsInclude;
+        let mut cache = RenderResourceCache::with_loader(|_url: &str| {
+            panic!("the renderer loader must never read local files")
+        });
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        cache.seed_image(url.into(), profile, png);
+        let intrinsic = cache.profiled_image_intrinsic(url, profile).expect("seeded file image");
+        assert_eq!(intrinsic.natural_size(), Some((2.0, 2.0)));
     }
 
     #[test]
@@ -12932,6 +13324,24 @@ mod tests {
         )
             .is_none()
         );
+    }
+
+    #[test]
+    fn svg_image_metadata_ignores_short_view_box() {
+        // A viewBox with fewer than four numbers is invalid and gives no ratio;
+        // reading it must not index past the parsed values.
+        for view_box in ["0 0", "0 0 24", "24", ""] {
+            let svg = format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='20' viewBox='{view_box}'/>"
+            );
+            if let Some(meta) = svg_image_intrinsic_metadata(svg.as_bytes()) {
+                assert_eq!(meta.ratio, Some(0.5), "viewBox {view_box:?}");
+            }
+            let svg = format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='{view_box}'/>");
+            if let Some(meta) = svg_image_intrinsic_metadata(svg.as_bytes()) {
+                assert_eq!(meta.ratio, None, "viewBox {view_box:?}");
+            }
+        }
     }
 
     #[test]
@@ -13482,6 +13892,67 @@ mod tests {
                 assert_eq!((rect.width, rect.height), expected, "{display} {sizing}");
             }
         }
+    }
+
+    #[test]
+    fn retained_content_tracks_attributes_read_through_inline_custom_properties() {
+        let mut failures = Vec::new();
+        for (binding, content_value, inline) in [
+            ("inline", "var(--label)", "--label:attr(data-label)"),
+            ("dynamic-inline", "var(--label)", "--key:data-label;--label:attr(var(--key))"),
+            ("dynamic-sheet", "attr(var(--key))", "--key:data-label"),
+        ] {
+            for shadow in [true, false] {
+                let content = format!(r#"<style>
+                    span {{ display:inline-block; font-size:24px }}
+                    span::before {{ content:{content_value} }}
+                    i {{ display:inline-block; width:12px; height:12px; background:red }}
+                    </style><span data-label="A" style="{inline}"></span><i></i>"#);
+                let html = if shadow {
+                    format!("<x-host id=host><template shadowrootmode=open>{content}</template></x-host>")
+                } else { content.to_string() };
+                let tree = parse_html(&html);
+                let root = if shadow {
+                    tree.shadow_root(tree.get_element_by_id("host").unwrap()).unwrap()
+                } else { tree.document() };
+                let target = tree.descendants(root).into_iter().find(|id| {
+                    tree.with_node(*id, |node| node.get_attribute("data-label").is_some()).unwrap_or(false)
+                }).unwrap();
+                let viewport = (400.0, 160.0);
+                let mut resources = RenderResourceCache::with_loader(|_: &str| None);
+                let mut cache = crate::css::StylesheetCache::default();
+                let mut previous = prepare_dom_with_dynamic_fonts_and_stylesheet_cache(
+                    &tree, viewport, None, &mut resources, &[], &mut cache,
+                ).unwrap();
+                let before = paint_prepared(&tree, &mut previous, &mut resources, (0.0, 0.0)).unwrap();
+                tree.with_node_mut(target, |node| node.set_attribute("data-label", "Longer label".into()));
+                let mut retained = prepare_dom_with_retained_attribute_styles(
+                    &tree, viewport, None, &mut resources, &[], &mut cache, previous,
+                    &[crate::dom::AttributeStyleMutation {
+                        node: target, name: "data-label".into(), old_value: Some("A".into()),
+                        new_value: Some("Longer label".into()),
+                    }],
+                ).unwrap();
+                let mut oracle = prepare_dom(&tree, viewport, None, &mut resources).unwrap();
+                let expected = paint_prepared(&tree, &mut oracle, &mut resources, (0.0, 0.0)).unwrap();
+                let actual = paint_prepared(&tree, &mut retained, &mut resources, (0.0, 0.0)).unwrap();
+                if let Some(directory) = std::env::var_os("INBROWSE_RENDER_EVIDENCE_DIR") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    let scope = format!("{}-{binding}", if shadow { "shadow" } else { "light" });
+                    before.save_png(directory.join(format!("initial-{scope}.png"))).unwrap();
+                    actual.save_png(directory.join(format!("actual-{scope}.png"))).unwrap();
+                    expected.save_png(directory.join(format!("oracle-{scope}.png"))).unwrap();
+                }
+                if binding == "inline" {
+                    assert!(before.data() != expected.data(), "fixture must change generated content: shadow={shadow}");
+                }
+                if retained.layout.rects != oracle.layout.rects || actual.data() != expected.data() {
+                    failures.push(format!("{binding}, shadow={shadow}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "stale generated content: {failures:?}");
     }
 
     #[test]

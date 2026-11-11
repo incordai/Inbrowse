@@ -103,3 +103,60 @@ async fn cdp_cannot_reach_local_files_without_allow_file_access() {
         .await;
     let _ = std::fs::remove_file(&path);
 }
+
+/// The child frame URLs a data: page that embeds a `file:` iframe ends up with.
+async fn frames_of_page_embedding_a_file_iframe(allow_file_access: bool) -> Vec<String> {
+    let path = std::env::temp_dir().join(format!(
+        "inbrowse-cdp-file-frame-{}-{allow_file_access}.html",
+        std::process::id()
+    ));
+    std::fs::write(&path, "<p>frame-secret</p>").unwrap();
+    let file_url = url::Url::from_file_path(&path).unwrap().to_string();
+    let page = format!("data:text/html,<body><iframe src='{file_url}'></iframe></body>");
+
+    let port = pick_port().await;
+    let local = tokio::task::LocalSet::new();
+    let frames = local
+        .run_until(async {
+            tokio::task::spawn_local(async move {
+                let _ = inbrowse_cdp::server::start_with_host_and_security(
+                    port, "127.0.0.1", None, false, None, allow_file_access, None,
+                )
+                .await;
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/devtools/browser"))
+                .await
+                .expect("connect");
+            let (_, session) = call(&mut ws, 1, "Target.createTarget", json!({"url": "about:blank"}), None).await;
+            let session = session.expect("attached session");
+            let sid = session.as_str();
+            call(&mut ws, 2, "Page.navigate", json!({"url": page}), Some(sid)).await;
+            let (tree, _) = call(&mut ws, 3, "Page.getFrameTree", json!({}), Some(sid)).await;
+            tree["result"]["frameTree"]["childFrames"]
+                .as_array()
+                .map(|frames| {
+                    frames
+                        .iter()
+                        .filter_map(|frame| frame["frame"]["url"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .await;
+    let _ = std::fs::remove_file(&path);
+    frames
+}
+
+// A network or data: document never loads a `file:` frame, with or without
+// --allow-file-access: that flag lets a file: *document* read its own files.
+#[tokio::test(flavor = "current_thread")]
+async fn a_web_document_never_loads_a_file_iframe() {
+    for allow_file_access in [false, true] {
+        let frames = frames_of_page_embedding_a_file_iframe(allow_file_access).await;
+        assert!(
+            frames.iter().all(|url| !url.starts_with("file:")),
+            "allow_file_access={allow_file_access}: web page loaded a file frame: {frames:?}"
+        );
+    }
+}

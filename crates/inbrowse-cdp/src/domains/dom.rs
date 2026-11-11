@@ -156,6 +156,20 @@ pub(crate) fn resolve_node_id(page: &mut Page, params: &Value) -> Result<u64, St
     Err("nodeId, backendNodeId, or objectId required".to_string())
 }
 
+/// Run the realm's file-input helper on `node` of frame `frame`. With
+/// `validate_only` it only reports whether the node is a file input; otherwise
+/// it selects the files described by `specs_json`. The helper lives in the
+/// frame's own realm so the check and the selection use that frame's elements.
+fn run_file_input_helper(page: &mut Page, frame: u32, node: u32, specs_json: &str,
+    validate_only: bool) -> Result<bool, String>
+{
+    let code = format!(
+        "(function() {{ var el = globalThis._wrap({node}); \
+         return globalThis.__inbrowse_setInputFiles(el, {specs_json}, {validate_only}) === true; }})()"
+    );
+    Ok(page.evaluate_in_frame_realm(frame, &code)?.as_bool() == Some(true))
+}
+
 /// [`resolve_node_id`] split into the frame and the node inside it.
 fn resolve_node(page: &mut Page, params: &Value) -> Result<(u32, NodeId), String> {
     let (frame, node) = split_node_id(resolve_node_id(page, params)?);
@@ -533,13 +547,24 @@ pub async fn handle(
             if !page.context.allow_file_access {
                 return Err("DOM.setFileInputFiles is disabled. Restart with `inbrowse serve --allow-file-access` to enable local file uploads.".to_string());
             }
+            let files = params.get("files").and_then(Value::as_array)
+                .ok_or("DOM.setFileInputFiles requires a files array")?;
+            let paths: Vec<&str> = files.iter().map(|file| file.as_str()
+                .ok_or_else(|| "DOM.setFileInputFiles requires string file paths".to_string()))
+                .collect::<Result<_, _>>()?;
             let node_id = resolve_node_id(page, params)?;
             let (frame, node) = split_node_id(node_id);
-            let paths: Vec<String> = params
-                .get("files")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
+            let frame = live_frame(page, frame)?;
+            // Validate the target before any path is read: a request aimed at a
+            // missing or non-file node must not touch the file system at all.
+            let exists = page.with_frame_dom(frame, |dom| dom.get_node(NodeId::new(node)).is_some())
+                .unwrap_or(false);
+            if !exists {
+                return Err("Could not find node with given id".into());
+            }
+            if !run_file_input_helper(page, frame, node, "[]", true)? {
+                return Err("Node is not a file input element".into());
+            }
 
             let mut specs = Vec::with_capacity(paths.len());
             for p in &paths {
@@ -553,14 +578,9 @@ pub async fn handle(
                 specs.push(json!({ "name": name, "type": guess_mime(p), "b64": encode_base64(&bytes) }));
             }
 
-            let specs_json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
-            let code = format!(
-                "(function() {{ var el = globalThis._wrap && globalThis._wrap({0}); \
-                 if (el && globalThis.__inbrowse_setInputFiles) {{ globalThis.__inbrowse_setInputFiles(el, {1}); return true; }} return false; }})()",
-                node, specs_json
-            );
-            if page.evaluate_in_frame_realm(live_frame(page, frame)?, &code)?.as_bool() != Some(true) {
-                return Err(format!("node {node_id} could not be resolved to an element"));
+            let specs_json = serde_json::to_string(&specs).map_err(|error| error.to_string())?;
+            if !run_file_input_helper(page, frame, node, &specs_json, false)? {
+                return Err("Could not set files on the input element".into());
             }
             Ok(json!({}))
         }

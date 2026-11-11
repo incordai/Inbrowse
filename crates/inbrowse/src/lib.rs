@@ -8,12 +8,14 @@ mod fork_virtual_url;
 mod idle_deadline;
 pub mod lifecycle;
 pub mod page;
+pub mod page_json;
 #[cfg(feature = "render")]
 pub mod pdf;
 pub mod profiles;
 
 pub use context::BrowserContext;
 pub use lifecycle::{LifecycleState, WaitUntil};
+pub use inbrowse_js::markdown::html_to_markdown_js;
 pub use inbrowse_js::HTML_TO_MARKDOWN_JS;
 #[cfg(feature = "render")]
 pub use inbrowse_js::{

@@ -63,3 +63,21 @@ fn raw_download_user_agent_matches_the_page_profile() {
     assert!(sent_ua.contains("Windows NT 10.0"), "raw download sent {sent_ua:?}");
     assert_eq!(sent_ua, navigator_ua, "the request header and navigator.userAgent disagree");
 }
+
+/// `--user-agent` reaches the raw download whether or not `--stealth` swaps in
+/// the impersonating client.
+#[test]
+fn raw_download_honours_user_agent_with_and_without_stealth() {
+    for stealth in [false, true] {
+        let (url, user_agent) = serve_once_capturing_user_agent();
+        let mut command = cli();
+        command.args(["--allow-private-network", "--user-agent", "RawDownloadTest/1.0"]);
+        if stealth {
+            command.arg("--stealth");
+        }
+        let raw = command.args(["fetch", &url, "--dump", "original", "--quiet"]).output().unwrap();
+        assert!(raw.status.success(), "stealth={stealth}: {}", String::from_utf8_lossy(&raw.stderr));
+        let sent_ua = user_agent.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(sent_ua, "RawDownloadTest/1.0", "stealth={stealth}");
+    }
+}

@@ -177,6 +177,11 @@ enum Command {
         #[arg(long)]
         selector: Option<String>,
 
+        /// Keep or drop page boilerplate (navigation, header, footer, sidebars)
+        /// in `--dump text`, `markdown` and `json`. Default: drop.
+        #[arg(long, value_enum)]
+        boilerplate: Option<Boilerplate>,
+
         /// Maximum adaptive post-load settle time in seconds. When supplied
         /// explicitly, this is a fixed delay; the default is a 5-second cap
         /// that returns once the page is quiescent.
@@ -433,12 +438,25 @@ enum SocialAction {
     },
 }
 
+/// Whether `--dump text`, `markdown` and `json` keep the page's navigation,
+/// header, footer and sidebars. Those inside an article, main or section are
+/// part of it and always stay.
+#[derive(Clone, Copy, Debug, clap::ValueEnum, PartialEq, Eq)]
+enum Boilerplate {
+    Keep,
+    Drop,
+}
+
 #[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
 enum DumpFormat {
     Html,
     Text,
     Links,
     Markdown,
+    /// One JSON object for the page: `url`, `status`, `title`, `description`,
+    /// `lang`, `publishedTime`, `content` (the markdown) and the `links` and
+    /// `images` maps. See docs/CLI-reference.md.
+    Json,
     /// Stream the raw HTTP response body verbatim (binary-safe).
     /// Bypasses the browser/JS layer — useful for fetching images,
     /// JSON, JS, CSS, or any non-HTML resource (cf. issue #117).
@@ -774,6 +792,7 @@ async fn run_cli() -> anyhow::Result<()> {
             url,
             dump,
             selector,
+            boilerplate,
             wait,
             timeout,
             script_timeout,
@@ -831,6 +850,7 @@ async fn run_cli() -> anyhow::Result<()> {
                     &url,
                     dump,
                     selector,
+                    boilerplate,
                     wait_secs,
                     wait_is_fixed,
                     timeout,
@@ -1492,6 +1512,7 @@ async fn run_fetch(
     url_str: &str,
     dump: Option<DumpFormat>,
     selector: Option<String>,
+    boilerplate: Option<Boilerplate>,
     wait_secs: u64,
     wait_is_fixed: bool,
     timeout_secs: u64,
@@ -1522,9 +1543,13 @@ async fn run_fetch(
             .map(|value| value.get_name().to_string())
             .unwrap_or_default();
         anyhow::bail!(
-            "--selector narrows html, text, markdown and links output; --dump {name} has no element to narrow to"
+            "--selector narrows html, text, markdown, json and links output; --dump {name} has no element to narrow to"
         );
     }
+    if boilerplate.is_some() && !matches!(dump, DumpFormat::Text | DumpFormat::Markdown | DumpFormat::Json) {
+        anyhow::bail!("--boilerplate applies to --dump text, markdown and json only");
+    }
+    let drop_boilerplate = boilerplate != Some(Boilerplate::Keep);
 
     // --dump original short-circuits the browser stack entirely: fetch the raw
     // response body via HTTP and stream the bytes verbatim. Useful for binary
@@ -1999,9 +2024,10 @@ async fn run_fetch(
 
     let rendered = match dump {
         DumpFormat::Html => dump_html(&page, scope),
-        DumpFormat::Text => dump_text(&mut page, scope),
-        DumpFormat::Links => dump_links(&page, scope),
-        DumpFormat::Markdown => dump_markdown(&mut page, selector.as_deref())?,
+        DumpFormat::Text => dump_text(&mut page, scope, drop_boilerplate),
+        DumpFormat::Links => dump_links(&mut page, scope),
+        DumpFormat::Markdown => dump_markdown(&mut page, selector.as_deref(), drop_boilerplate)?,
+        DumpFormat::Json => dump_json(&mut page, selector.as_deref(), drop_boilerplate)?,
         DumpFormat::Assets => dump_assets(&page),
         DumpFormat::Cookies => dump_cookies(&page),
         // Handled above via the short-circuit branch; unreachable here.
@@ -2044,7 +2070,8 @@ async fn fetch_original_response(
                 Arc::new(inbrowse_net::CookieJar::new()),
                 proxy.as_deref(),
                 false,
-            );
+            )
+            .with_user_agent(user_agent);
             return match timeout(Duration::from_secs(timeout_secs), client.fetch(&url)).await {
                 Ok(Ok(resp)) => Ok(resp),
                 Ok(Err(e)) => anyhow::bail!("Failed to fetch {}: {}", url_str, operator_network_error(e)),
@@ -2660,11 +2687,39 @@ fn dump_html(page: &Page, scope: Option<inbrowse_dom::NodeId>) -> String {
     .unwrap_or_default()
 }
 
+/// Whether anything but the browser's own stylesheet can style the page: a
+/// `<style>` or stylesheet `<link>`, a `style` attribute, or a `<dialog>`,
+/// which the browser's stylesheet hides until it is open. Without one the
+/// style cascade has nothing to add to markup (`hidden`).
+#[cfg(feature = "render")]
+fn has_author_styles(dom: &inbrowse_dom::DomTree) -> bool {
+    dom.descendants(dom.document()).into_iter().filter_map(|id| dom.get_node(id)).any(|node| {
+        node.get_attribute("style").is_some()
+            || node.as_element().is_some_and(|name| match name.local.as_ref() {
+                "style" | "dialog" => true,
+                "link" => node
+                    .get_attribute("rel")
+                    .is_some_and(|rel| rel.split_ascii_whitespace().any(|kind| kind.eq_ignore_ascii_case("stylesheet"))),
+                _ => false,
+            })
+    })
+}
+
 /// The body's readable text, or with `scope` (`--selector`) that element's.
-fn dump_text(page: &mut Page, scope: Option<inbrowse_dom::NodeId>) -> String {
+fn dump_text(page: &mut Page, scope: Option<inbrowse_dom::NodeId>, drop_boilerplate: bool) -> String {
+    // Render builds cascade the page's styles to find what it hides, unless
+    // nothing could style it; others hide by markup (`hidden`) only.
+    #[cfg(feature = "render")]
+    let styles = if page.with_dom(has_author_styles).unwrap_or(false) {
+        page.js.as_ref().map(|js| js.accessibility_styles()).unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    #[cfg(not(feature = "render"))]
+    let styles = std::collections::HashMap::new();
     page.with_dom(|dom| {
         let root = scope.or_else(|| dom.query_selector("body").ok().flatten());
-        root.map(|root| extract_readable_text(dom, root).trim().to_string())
+        root.map(|root| extract_readable_text(dom, root, drop_boilerplate, &styles).trim().to_string())
             .unwrap_or_default()
     })
     .unwrap_or_default()
@@ -2693,12 +2748,17 @@ async fn evaluate_user_expression(
     }
 }
 
+/// The page as one JSON object (`--dump json`), pretty-printed.
+fn dump_json(page: &mut Page, selector: Option<&str>, drop_boilerplate: bool) -> anyhow::Result<String> {
+    let json = inbrowse::page_json::page_json(page, selector, drop_boilerplate, Page::evaluate)
+        .map_err(|error| anyhow::anyhow!("page JSON failed: {error}"))?
+        .ok_or_else(|| anyhow::anyhow!("--selector matched nothing"))?;
+    Ok(serde_json::to_string_pretty(&json)?)
+}
+
 /// The body as markdown, or with `selector` (`--selector`) its first match.
-fn dump_markdown(page: &mut Page, selector: Option<&str>) -> anyhow::Result<String> {
-    let script = match selector {
-        Some(selector) => std::borrow::Cow::Owned(inbrowse_js::markdown::html_to_markdown_js_within(selector)),
-        None => std::borrow::Cow::Borrowed(inbrowse::HTML_TO_MARKDOWN_JS),
-    };
+fn dump_markdown(page: &mut Page, selector: Option<&str>, drop_boilerplate: bool) -> anyhow::Result<String> {
+    let script = inbrowse_js::markdown::html_to_markdown_js(selector, drop_boilerplate);
     let result = page
         .evaluate(&script)
         .map_err(|error| anyhow::anyhow!("markdown conversion failed: {error}"))?;
@@ -2789,13 +2849,41 @@ impl ReadableText {
     }
 }
 
+/// Whether an element is page boilerplate: navigation, the header and footer
+/// of the page, and sidebars. A header or footer inside an article, main or
+/// section belongs to it, and so does an aside inside an article or main.
+/// `role` (banner, contentinfo, navigation, complementary) overrides the tag.
+/// The markdown converter applies the same rule (`isBoilerplate`).
+fn is_boilerplate(tag: &str, role: Option<&str>, in_article: bool, in_section: bool) -> bool {
+    let kind = match role.map(str::to_ascii_lowercase).as_deref() {
+        Some("navigation") => "nav",
+        Some("complementary") => "aside",
+        Some("banner") => "header",
+        Some("contentinfo") => "footer",
+        _ => tag,
+    };
+    match kind {
+        "nav" => true,
+        "aside" => !in_article,
+        "header" | "footer" => !in_article && !in_section,
+        _ => false,
+    }
+}
+
 /// The text a reader sees in the subtree at `node_id`, for `--dump text`
 /// (`dump_text`). Follows the `innerText` rules ([`ReadableText`]) with one
-/// deliberate addition: `nav`, `header`, `footer` and `aside` are dropped as
-/// page boilerplate. `script`, `style`, `template`, `noscript`, `hidden`
-/// subtrees and the options of a `<select>` other than its selected one are
-/// not text.
-fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::NodeId) -> String {
+/// deliberate addition: with `drop_boilerplate`, page boilerplate
+/// ([`is_boilerplate`]) is dropped. `script`, `style`, `template`, `noscript`,
+/// `hidden` subtrees, subtrees `styles` give `display: none`, text under
+/// `visibility: hidden` (a descendant can set it visible again) and the
+/// options of a `<select>` other than its selected one are not text. `styles`
+/// is empty when the build has no style cascade; only markup hides then.
+fn extract_readable_text(
+    dom: &inbrowse_dom::DomTree,
+    node_id: inbrowse_dom::NodeId,
+    drop_boilerplate: bool,
+    styles: &std::collections::HashMap<inbrowse_dom::NodeId, inbrowse_js::runtime::AccessibilityStyle>,
+) -> String {
     use inbrowse_dom::NodeData;
 
     // Iterative DFS over an explicit work stack. A recursive walk overflowed the
@@ -2804,10 +2892,22 @@ fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::Nod
     // of the serialize/textContent paths made iterative in inbrowse-dom). The
     // `Leave*` items run after an element's children, since the stack is LIFO.
     enum Work {
-        Visit(inbrowse_dom::NodeId),
+        /// A node and whether `visibility: hidden` is inherited from above it.
+        Visit(inbrowse_dom::NodeId, bool),
         LeaveBlock(u8),
         LeaveCell,
         LeavePre,
+        LeaveArticle,
+        LeaveSection,
+    }
+
+    /// Whether `tag` opens an article or main (`true`) or a section (`false`).
+    fn content_kind(tag: &str, role: Option<&str>) -> Option<bool> {
+        match (tag, role) {
+            ("article" | "main", _) | (_, Some("main" | "article")) => Some(true),
+            ("section", _) => Some(false),
+            _ => None,
+        }
     }
 
     // Defense-in-depth cap mirroring DomTree::descendants; never reached on a
@@ -2816,11 +2916,31 @@ fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::Nod
 
     let mut text = ReadableText::default();
     let mut preformatted = 0usize;
-    let mut stack: Vec<Work> = vec![Work::Visit(node_id)];
+    // Open articles and sections around the node being visited, starting with
+    // those around `node_id` itself.
+    let (mut in_article, mut in_section) = (0usize, 0usize);
+    // The nearest ancestor that sets `visibility` decides what `node_id` inherits.
+    let mut inherited_hidden = None;
+    let mut ancestor = dom.get_node(node_id).and_then(|node| node.parent);
+    while let Some(id) = ancestor {
+        let Some(node) = dom.get_node(id) else { break };
+        if inherited_hidden.is_none() {
+            inherited_hidden = styles.get(&id).and_then(|style| style.visibility_hidden);
+        }
+        if let Some(name) = node.as_element() {
+            match content_kind(name.local.as_ref(), node.get_attribute("role")) {
+                Some(true) => in_article += 1,
+                Some(false) => in_section += 1,
+                None => {}
+            }
+        }
+        ancestor = node.parent;
+    }
+    let mut stack: Vec<Work> = vec![Work::Visit(node_id, inherited_hidden.unwrap_or(false))];
     let mut visited = 0usize;
 
     while let Some(work) = stack.pop() {
-        let id = match work {
+        let (id, parent_hidden) = match work {
             Work::LeaveBlock(breaks) => {
                 text.request_breaks(breaks);
                 continue;
@@ -2834,7 +2954,15 @@ fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::Nod
                 text.request_breaks(1);
                 continue;
             }
-            Work::Visit(id) => id,
+            Work::LeaveArticle => {
+                in_article -= 1;
+                continue;
+            }
+            Work::LeaveSection => {
+                in_section -= 1;
+                continue;
+            }
+            Work::Visit(id, hidden) => (id, hidden),
         };
 
         visited += 1;
@@ -2846,27 +2974,51 @@ fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::Nod
         };
 
         match &node.data {
-            NodeData::Text { contents } => text.push_text(contents, preformatted > 0),
+            NodeData::Text { contents } => {
+                if !parent_hidden {
+                    text.push_text(contents, preformatted > 0);
+                }
+            }
             NodeData::Element { name, .. } => {
                 let tag = name.local.as_ref();
+                let role = node.get_attribute("role");
+                let style = styles.get(&id).copied().unwrap_or_default();
                 if node.get_attribute("hidden").is_some()
-                    || matches!(
-                        tag,
-                        "script" | "style" | "template" | "noscript" | "head" | "title"
-                            | "nav" | "header" | "footer" | "aside"
-                    )
+                    || style.display_none
+                    || matches!(tag, "script" | "style" | "template" | "noscript" | "head" | "title")
+                    || (drop_boilerplate
+                        && id != node_id
+                        && is_boilerplate(tag, role, in_article > 0, in_section > 0))
                 {
                     continue;
                 }
+                // `visibility: hidden` hides this element's own text and
+                // breaks; a descendant can set `visible` again.
+                let hidden = style.visibility_hidden.unwrap_or(parent_hidden);
+                match content_kind(tag, role) {
+                    Some(true) => {
+                        in_article += 1;
+                        stack.push(Work::LeaveArticle);
+                    }
+                    Some(false) => {
+                        in_section += 1;
+                        stack.push(Work::LeaveSection);
+                    }
+                    None => {}
+                }
                 let children = match tag {
                     "br" => {
-                        text.push_newline();
+                        if !hidden {
+                            text.push_newline();
+                        }
                         continue;
                     }
+                    "select" if hidden => Vec::new(),
                     "select" => selected_option(dom, id).into_iter().collect(),
                     _ => dom.children(id),
                 };
                 match tag {
+                    _ if hidden => {}
                     "p" => {
                         text.request_breaks(2);
                         stack.push(Work::LeaveBlock(2));
@@ -2894,12 +3046,12 @@ fn extract_readable_text(dom: &inbrowse_dom::DomTree, node_id: inbrowse_dom::Nod
                     _ => {}
                 }
                 for child_id in children.into_iter().rev() {
-                    stack.push(Work::Visit(child_id));
+                    stack.push(Work::Visit(child_id, hidden));
                 }
             }
             _ => {
                 for child_id in dom.children(id).into_iter().rev() {
-                    stack.push(Work::Visit(child_id));
+                    stack.push(Work::Visit(child_id, parent_hidden));
                 }
             }
         }
@@ -3196,8 +3348,14 @@ async fn run_parallel_scrape(
 
 /// Every link, or with `scope` (`--selector`) those inside that element (and
 /// the element itself when it is a link).
-fn dump_links(page: &Page, scope: Option<inbrowse_dom::NodeId>) -> String {
-    let base_url = page.url.clone();
+fn dump_links(page: &mut Page, scope: Option<inbrowse_dom::NodeId>) -> String {
+    // The document's base URL, which honours `<base href>`, as the markdown
+    // and JSON output resolve against.
+    let base_url = page
+        .evaluate("document.baseURI")
+        .ok()
+        .and_then(|base| base.as_str().and_then(|base| url::Url::parse(base).ok()))
+        .or_else(|| page.url.clone());
     page.with_dom(|dom| {
         let mut rendered = Vec::new();
         let links = match scope {
@@ -3966,6 +4124,7 @@ mod tests {
             url: Some("https://x".to_string()),
             dump: Some(super::DumpFormat::Html),
             selector: None,
+            boilerplate: None,
             file: None,
             concurrency: std::num::NonZeroUsize::new(1).unwrap(),
             wait: Some(5),
@@ -3992,7 +4151,7 @@ mod tests {
             .ok()
             .flatten()
             .expect("body must exist");
-        extract_readable_text(&dom, body)
+        extract_readable_text(&dom, body, true, &Default::default())
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -4001,7 +4160,7 @@ mod tests {
     fn layout_text(html: &str) -> String {
         let dom = parse_html(html);
         let body = dom.query_selector("body").ok().flatten().expect("body must exist");
-        extract_readable_text(&dom, body)
+        extract_readable_text(&dom, body, true, &Default::default())
     }
 
     #[test]

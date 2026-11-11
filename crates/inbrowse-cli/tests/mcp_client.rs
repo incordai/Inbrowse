@@ -317,6 +317,62 @@ fn snapshot_preserves_whitespace_between_inline_spans() {
 }
 
 #[test]
+fn browser_markdown_returns_the_page_as_json_on_request() {
+    let page = "data:text/html,<html lang=fr><title>Page</title>\
+        <meta name=description content=About>\
+        <h1>Hello</h1><p>See <a href=https://x.test/a>a link</a> <img src=https://x.test/i.png alt=pic></p>";
+    let mut client = McpClient::spawn();
+    let navigation = client.tool("browser_navigate", serde_json::json!({ "url": page }));
+    assert!(navigation.get("error").is_none(), "navigation failed: {navigation}");
+
+    let response = client.tool("browser_markdown", serde_json::json!({ "format": "json" }));
+    let json: serde_json::Value =
+        serde_json::from_str(content_text(&response)).expect("browser_markdown format json is JSON");
+    assert_eq!(json["title"], "Page");
+    assert_eq!(json["description"], "About");
+    assert_eq!(json["lang"], "fr");
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["content"], "# Hello\n\nSee [a link](https://x.test/a) ![pic](https://x.test/i.png)");
+    assert_eq!(json["links"], serde_json::json!({ "https://x.test/a": "a link" }));
+    assert_eq!(json["images"], serde_json::json!({ "https://x.test/i.png": "pic" }));
+    assert!(json.get("publishedTime").is_none(), "{json}");
+
+    let truncated = client.tool("browser_markdown", serde_json::json!({ "format": "json", "max_chars": 7 }));
+    let json: serde_json::Value = serde_json::from_str(content_text(&truncated)).expect("still JSON when truncated");
+    assert!(json["content"].as_str().unwrap().starts_with("# Hello"), "{json}");
+    assert!(json["content"].as_str().unwrap().contains("truncated"), "{json}");
+
+    let plain = client.tool("browser_markdown", serde_json::json!({}));
+    assert!(content_text(&plain).starts_with("# Hello"), "{plain}");
+    let bad = client.tool("browser_markdown", serde_json::json!({ "format": "yaml" }));
+    assert_eq!(bad["result"]["isError"], true, "{bad}");
+}
+
+#[test]
+fn browser_markdown_drops_page_boilerplate_unless_asked_to_keep_it() {
+    let page = "data:text/html,<nav><a href=https://x.test/n>Menu</a></nav><p>Body</p><footer>Foot</footer>";
+    let mut client = McpClient::spawn();
+    let navigation = client.tool("browser_navigate", serde_json::json!({ "url": page }));
+    assert!(navigation.get("error").is_none(), "navigation failed: {navigation}");
+
+    let default = client.tool("browser_markdown", serde_json::json!({}));
+    assert_eq!(content_text(&default), "Body");
+    let keep = client.tool("browser_markdown", serde_json::json!({ "boilerplate": "keep" }));
+    assert_eq!(content_text(&keep), "[Menu](https://x.test/n)\n\nBody\n\nFoot");
+
+    let json = client.tool("browser_markdown", serde_json::json!({ "format": "json" }));
+    let json: serde_json::Value = serde_json::from_str(content_text(&json)).expect("JSON");
+    assert_eq!(json["content"], "Body");
+    assert_eq!(json["links"], serde_json::json!({}));
+    let json = client.tool("browser_markdown", serde_json::json!({ "format": "json", "boilerplate": "keep" }));
+    let json: serde_json::Value = serde_json::from_str(content_text(&json)).expect("JSON");
+    assert_eq!(json["links"], serde_json::json!({ "https://x.test/n": "Menu" }));
+
+    let bad = client.tool("browser_markdown", serde_json::json!({ "boilerplate": "none" }));
+    assert_eq!(bad["result"]["isError"], true, "{bad}");
+}
+
+#[test]
 fn test_ping() {
     let mut c = McpClient::spawn();
     let resp = c.call("ping", serde_json::json!({}));

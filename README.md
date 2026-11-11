@@ -79,10 +79,45 @@ peaks at 45 MB, and a rendered page keeps its layout and images.
 | **Headers and footers** | `displayHeaderFooter` with `headerTemplate` / `footerTemplate`, including the `date`, `title`, `url`, `pageNumber` and `totalPages` classes and Chrome's default templates. |
 | **Outline and page size** | `generateDocumentOutline` adds bookmarks from the headings; `preferCSSPageSize` uses `@page { size }`. |
 
+### Markdown and JSON output
+
+| Feature | What changed |
+|---|---|
+| **`fetch --dump json`** | The page as one JSON object, modelled on the `data` object of Jina Reader's JSON response: `url` (after redirects), `status`, `title`, `description`, `lang`, `publishedTime` (when the page says it), `content` (the Markdown), `links` (absolute URL to link text) and `images` (absolute URL to alt text). `--selector` narrows `content`, `links` and `images`. Fields are in the [CLI reference](docs/CLI-reference.md). |
+| **MCP `browser_markdown`** | `format: "json"` returns the same object; `max_chars` truncates only `content`, so the JSON stays valid. |
+| **Boilerplate dropped** | `--dump text`, `markdown` and `json`, MCP `browser_markdown` and CDP `LP.getMarkdown` leave out navigation, the page's header and footer, and sidebars. A header or footer inside an article, main or section stays. `fetch --boilerplate keep`, MCP `boilerplate: "keep"` and CDP `boilerplate: "keep"` give the whole page. |
+| **Better Markdown** | Link and image URLs are absolute (resolved against the final URL or `<base href>`). Content hidden by `display: none` or `visibility: hidden` is left out. Code fences carry the language (`language-js` gives ```` ```js ````) and keep blank lines. A `data:` image keeps its alt text, not its payload. `~~strikethrough~~`, links around images, headings with inline markup and code inside lists and quotes come out right. |
+| **`--dump text` and `links`** | Text also leaves out content hidden by style (render builds). `--dump links` resolves against `<base href>`. |
+| **`--selector`** | Waits for the selector, then narrows `--dump html`, `text`, `markdown`, `json` and `links` to the first match. A selector that never matches, or is not valid CSS, exits non-zero. |
+
+### Settling, scraping and limits
+
+| Feature | What changed |
+|---|---|
+| **Settle** | `fetch` says on stderr when it returned before a timer was due (`note: 2 timers pending (next in 1.0s)`). `--settle-timers <MS>` waits for one-shot timers due within `MS`. |
+| **`scrape`** | `--eval` runs after the same settle as `fetch` and takes `--settle-timers`. `scrape --file <PATH>` and a `-` URL read the URL list from a file or stdin. |
+| **Script time limits** | `fetch --script-timeout <SECONDS>` (default 5), MCP `browser_navigate` `scriptTimeoutMs` and `INBROWSE_SCRIPT_TIMEOUT_MS` stop a runaway page script. Stopped and skipped scripts are reported: `Warning:` lines on `fetch` stderr, a `warnings` field per URL in `scrape`, and lines in MCP `browser_navigate`. |
+| **MCP idle close** | After `--idle-timeout` seconds with no request (default 300, `0` turns it off) the MCP server closes every page and keeps cookies and storage. The next call opens a new page and its result says so. |
+| **`fetch --eval`** | Reads source like the DevTools console, as MCP `browser_evaluate` and `scrape` do: statements return their last value, a promise is awaited, and a failure exits non-zero. |
+
+### Automation over CDP
+
+| Feature | What changed |
+|---|---|
+| **Iframes** | Child frames are real frames: Puppeteer `page.frames()`, `contentFrame()` and `frame.$eval` / `evaluate` / `type`, and Playwright `frameLocator`, work, including clicks and typing inside frames. `Page.frameDetached` and `Runtime.executionContextDestroyed` fire when a frame is removed, and `load` waits for child frames. |
+| **Frames in screenshots and PDFs** | Same-origin, `srcdoc` and `data:` iframes, nested ones included, paint in screenshots (`fetch --screenshot`, `Page.captureScreenshot`, `browser_screenshot`) and PDFs. A frame loads its own stylesheets, `@import`s, images, backgrounds and web fonts, and its viewport follows its box. |
+| **Time zone** | `Emulation.setTimezoneOverride` sets one page's `Date` and `Intl` zone, survives navigation, and does not touch other pages. PDF headers and footers use it. |
+| **`Performance.getMetrics`** | Chrome's page metrics (`Nodes`, `JSEventListeners`, `LayoutCount`, `ScriptDuration`, heap sizes and the rest), measured while `Performance.enable` is on. |
+| **Accessibility** | `Accessibility.getFullAXTree` returns one connected tree under a `RootWebArea`, so Puppeteer and Playwright accessibility snapshots hold the whole page; `getRootAXNode`, `getChildAXNodes`, `getPartialAXTree` and `queryAXTree` work. |
+| **Forms and text editing** | A form submits the select choice you made, `FormData` and native submission agree, and a radio checked from script unchecks its group. Text inputs have selection: `select()`, `setSelectionRange()`, Ctrl/Cmd+A, a triple click to select the value, a double click to select a word, and typing replaces the selection. |
+
 ### CLI and extraction
 
 | Feature | What changed |
 |---|---|
+| **`inbrowse extract` warnings** | The JSON has an always-present `warnings` array naming skipped or probably missing content, such as a PDF page that looks scanned. `--password` (MCP `password`) opens an encrypted PDF. DOCX headers, footers, footnotes, endnotes and comments and PPTX speaker notes are their own sections, tables are tab-separated rows, and spreadsheet dates print as ISO 8601. |
+| **`inbrowse media`** | AAC with more than two channels (5.1 and the other AAC-LC layouts) now gives audio, downmixed to mono. MP4 edit lists are applied, so frame and caption times and audio line up. |
+| **Windows build** | `inbrowse.exe` and `inbrowse-worker.exe` carry the Inbrowse icon and file details (name, company, version) in Explorer and Task Manager. |
 | **`inbrowse extract`** | Text from a PDF, Word, PowerPoint, OpenDocument, spreadsheet, CSV or text file, local or downloaded, as JSON with one section per page, slide or sheet. See the [CLI reference](docs/CLI-reference.md). |
 | **`inbrowse media`** | Still frames (PNG, at an interval and at scene changes), 16 kHz mono WAV audio and captions from MP4, M4A, WebM, Matroska and WebVTT files. Decodes H.264, VP8, VP9, AAC and Opus with nothing extra to install. |
 | **`inbrowse ocr`** | The text in an image, with each line's box and confidence, read by the OCR model in the Incord memory engine. Big images are split into overlapping tiles, never refused. `inbrowse media --ocr` reads the text in each frame. |
@@ -238,6 +273,24 @@ inbrowse fetch https://example.com --screenshot page.png
 # The screenshot flag also has a short form
 inbrowse fetch https://example.com -s page.png
 
+# Markdown for an LLM: absolute URLs, no navigation or footer
+inbrowse fetch https://example.com/article --dump markdown
+
+# The same with the whole page, or narrowed to one element
+inbrowse fetch https://example.com/article --dump markdown --boilerplate keep
+inbrowse fetch https://example.com/article --dump markdown --selector "article.post"
+
+# The page as one JSON object: url, status, title, description, lang,
+# publishedTime, content (Markdown), links and images
+inbrowse fetch https://example.com/article --dump json
+
+# Also wait for timers due within 2 seconds
+inbrowse fetch https://example.com --settle-timers 2000 --dump text
+
+# Stop a page script that runs longer than 3 seconds
+inbrowse fetch https://example.com --script-timeout 3
+```
+
 ### Testing against localhost / LAN dev servers
 
 Inbrowse blocks fetches to private/internal IPs by default (SSRF protection).
@@ -253,7 +306,6 @@ inbrowse serve --port 9222 --allow-private-network
 
 See [docs/Environment-variables.md](docs/Environment-variables.md) for the
 full allow/deny rules (DNS-resolution-time checks included).
-```
 
 ## Rendering
 
@@ -300,6 +352,13 @@ inbrowse scrape https://example.com --quiet --format json
 
 # Scrape workers inherit the global proxy
 inbrowse --proxy http://127.0.0.1:8080 scrape https://example.com https://news.ycombinator.com
+
+# Read the URL list from a file, or from stdin with `-`
+inbrowse scrape --file urls.txt --format json
+cat urls.txt | inbrowse scrape - --format json
+
+# --eval runs after the page settles; also wait for timers due within 2 seconds
+inbrowse scrape https://example.com --eval "document.title" --settle-timers 2000
 ```
 
 ## Puppeteer / Playwright
@@ -426,15 +485,18 @@ Inbrowse implements the Chrome DevTools Protocol for Puppeteer/Playwright compat
 | Domain | Methods |
 |--------|---------|
 | **Target** | createTarget, closeTarget, attachToTarget, createBrowserContext, disposeBrowserContext |
-| **Page** | navigate, getFrameTree, lifecycleEvents, captureScreenshot, start/stopScreencast, printToPDF (selectable text, headers/footers, outline, `@page` size) |
-| **Runtime** | evaluate, callFunctionOn, getProperties, addBinding |
-| **DOM** | getDocument, querySelector, querySelectorAll, getOuterHTML, resolveNode |
+| **Page** | navigate, getFrameTree, lifecycleEvents, captureScreenshot, start/stopScreencast, printToPDF (selectable text, headers/footers, outline, `@page` size; iframe content included), frameDetached |
+| **Runtime** | evaluate, callFunctionOn, getProperties, addBinding (run in the frame of the context or object; each child frame has its own execution context) |
+| **DOM** | getDocument, querySelector, querySelectorAll, getOuterHTML, resolveNode, describeNode (`frameId` and `contentDocument` for an `<iframe>`), getFrameOwner, getBoxModel |
+| **Accessibility** | getFullAXTree, getRootAXNode, getChildAXNodes, getPartialAXTree, queryAXTree |
+| **Emulation** | setTimezoneOverride (per page), setDeviceMetricsOverride |
+| **Performance** | enable, getMetrics |
 | **Network** | enable, setCookies, getCookies, setExtraHTTPHeaders, setUserAgentOverride; webSocketCreated, webSocketWillSendHandshakeRequest, webSocketHandshakeResponseReceived, webSocketFrameSent/Received, webSocketFrameError, webSocketClosed events |
 | **Fetch** | enable, continueRequest, fulfillRequest, failRequest (live interception), takeResponseBodyAsStream |
 | **IO** | read, close (stream a large response body in chunks) |
 | **Storage** | getCookies, setCookies, deleteCookies |
-| **Input** | dispatchMouseEvent, dispatchKeyEvent, dispatchTouchEvent, dispatchDragEvent, setInterceptDrags |
-| **LP** | getMarkdown (DOM-to-Markdown conversion) |
+| **Input** | dispatchMouseEvent, dispatchKeyEvent, dispatchTouchEvent, dispatchDragEvent, setInterceptDrags (reach nodes inside frames; Ctrl/Cmd+A and triple click select text) |
+| **LP** | getMarkdown (DOM-to-Markdown conversion; `boilerplate: "keep"` keeps navigation, header, footer and sidebars, which are left out by default) |
 
 To download a large resource without one giant `Network.getResponseBody` blob, call `Fetch.takeResponseBodyAsStream` then read it in chunks with `IO.read` / `IO.close`. Response bodies over the cache limit (`INBROWSE_NETWORK_BODY_BUFFER_BYTES`, default 2 MiB) are not retained, so raise that limit when you intend to stream large downloads.
 ## CLI Reference
@@ -496,12 +558,16 @@ Fetch and render a single page.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--dump` | `html` | Output: `html`, `text`, `links`, `markdown`, `assets` (NDJSON of every sub-resource URL the page references), or `original` (raw response body) |
+| `--dump` | `html` | Output: `html`, `text`, `links`, `markdown`, `json` (the page as one JSON object: url, status, title, description, lang, publishedTime, content, links, images), `assets` (NDJSON of every sub-resource URL the page references), or `original` (raw response body) |
 | `--eval` | — | JavaScript expression to evaluate |
-| `--wait-until` | `load` | Wait: `load`, `domcontentloaded`, `networkidle0` |
+| `--wait-until` | `load` | Wait: `load`, `domcontentloaded`, `networkidle0`. Network idle counts normal and stealth requests and requires a 500 ms quiet window within `--timeout`; an expired deadline is an error. |
 | `--timeout` | `30` | Maximum navigation time in seconds |
 | `--wait` | adaptive, up to `5` | Post-load settling; an explicit value is a fixed delay in seconds |
-| `--selector` | — | Wait for CSS selector |
+| `--settle-timers` | off | Also wait for `setTimeout` timers due within this many milliseconds (raises the 5 s ceiling to cover it) |
+| `--script-timeout` | `5` | Seconds one page script may run before it is stopped and reported on stderr |
+| `--selector` | off | Wait for a CSS selector, then narrow `html`, `text`, `markdown`, `json` and `links` output to its first match |
+| `--boilerplate` | `drop` | `keep` or `drop` navigation, header, footer and sidebars in `text`, `markdown` and `json` |
+| `--file` | off | Batch mode: fetch each URL in a file (`-` for stdin) raw, one JSON status line per URL (`--dump original` only; use `scrape` for rendered output) |
 | `-s`, `--screenshot` | — | Write a PNG screenshot (single URL; render-enabled build) |
 | `--font-dir` | — | Recursively load fonts for rendering, e.g. system fonts (repeatable; render build) |
 | `--stealth` | off | Anti-detection mode |
@@ -520,8 +586,11 @@ remain in input order. URL input and completed results are still held in memory.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--concurrency` | `10` | Parallel workers |
-| `--eval` | — | JS expression per page |
-| `--format` | `json` | Output: `json` or `text` |
+| `--eval` | off | JS expression per page, run after the page settles; a failure is that URL's `error` |
+| `--file` | off | Also read URLs from a file (`-` for stdin); a `-` URL argument reads stdin too |
+| `--settle-timers` | off | As on `fetch`: also wait for `setTimeout` timers due within this many milliseconds |
+| `--timeout` | `60` | Per-URL timeout in seconds |
+| `--format` | `json` | Output: `json` or `text`; each URL has a `warnings` field for scripts that were stopped |
 | `--quiet` | off | Suppress scrape progress on stderr |
 | `--proxy` | — | Inherited global HTTP/SOCKS5 proxy URL for all workers |
 
@@ -552,6 +621,7 @@ Optional flags (both transports):
 | `--user-agent <UA>` | Custom User-Agent string |
 | `--font-dir <DIR>` | Load additional fonts before rendering (repeatable; render build) |
 | `--stealth` | Enable anti-detection mode |
+| `--idle-timeout <SECS>` | Close every page after this many seconds with no request (default `300`; `0` keeps pages open). Cookies and storage stay, and the next call opens a new page and says the old one was closed |
 
 ### Claude Code plugin
 
@@ -586,8 +656,9 @@ claude plugin install inbrowse@inbrowse
 
 | Tool | Description |
 |------|-------------|
-| `browser_navigate` | Navigate to a URL (`url`, optional `waitUntil`: `load` / `domcontentloaded` / `networkidle0`) |
+| `browser_navigate` | Navigate to a URL (`url`, optional `waitUntil`: `load` / `domcontentloaded` / `networkidle0`, optional `scriptTimeoutMs`); stopped scripts are listed as `Warning:` lines |
 | `browser_snapshot` | Return the current page URL, title, readable body text, and element references |
+| `browser_markdown` | The page as Markdown, without navigation, header, footer and sidebars (`boilerplate: "keep"` keeps them). `format: "json"` returns `url`, `status`, `title`, `description`, `lang`, `publishedTime`, `content`, `links` and `images`; `max_chars` truncates `content` |
 | `browser_screenshot` | Return the current page as an MCP PNG image (render-enabled build) |
 | `browser_pdf` | Return the current page as an embedded PDF resource (render-enabled build) |
 | `browser_click` | Click by current snapshot reference or CSS selector |

@@ -24,9 +24,11 @@ subcommand to use it with `serve` or `fetch`.
 Load a URL and print its content or an evaluated expression.
 
 ```
-    --dump <FORMAT>          html | text | links | markdown | original | assets | cookies
+    --dump <FORMAT>          html | text | links | markdown | json | original | assets | cookies
                              (default html)
     --selector <CSS>         Wait for a CSS selector, then narrow output to its first match
+    --boilerplate <keep|drop>  Keep or drop navigation, header, footer and sidebars in
+                             text, markdown and json (default drop)
     --wait <SECONDS>         Fixed post-load delay; omitted uses adaptive settle (5s cap)
     --timeout <SECONDS>      Navigation timeout (default 30)
     --script-timeout <SECONDS>  Time one page script may run (default 5)
@@ -58,8 +60,8 @@ Load a URL and print its content or an evaluated expression.
   JavaScript error on stderr and exits non-zero. Nothing is printed on stdout.
 
 `--selector` waits up to the settle ceiling for the selector to match, then
-narrows `--dump html` (the element's outer HTML), `text`, `markdown` and
-`links` to the first match. A selector that never matches, or is not valid CSS,
+narrows `--dump html` (the element's outer HTML), `text`, `markdown`, `json`
+and `links` to the first match. A selector that never matches, or is not valid CSS,
 exits non-zero with the reason on stderr. It cannot narrow `assets`, `cookies`
 or `original`, and is refused with those. With `--screenshot` it only waits.
 With `--eval`, the expression runs first and the narrowed page is printed (as
@@ -100,12 +102,52 @@ runs every timer due in that time. `--timeout` separately bounds navigation.
 | Value      | Output                                                    |
 | ---------- | --------------------------------------------------------- |
 | `html`     | Rendered HTML (default)                                   |
-| `text`     | Plain text                                                |
-| `markdown` | Markdown conversion                                       |
-| `links`    | Every `<a href>`, one URL per line                        |
+| `text`     | Plain text; page boilerplate and hidden content left out  |
+| `markdown` | Markdown conversion; see [Markdown extraction](Markdown-extraction.md) |
+| `json`     | The page as one JSON object (fields below)               |
+| `links`    | Every `<a href>`, one URL per line, relative ones resolved against the page URL or its `<base href>` |
 | `assets`   | Every external resource, one JSON object per line (DOM assets plus `fetch()`/XHR requests) |
 | `original` | Raw HTTP response body (binary-safe, bypasses the engine) |
 | `cookies`  | All cookies in the jar as a JSON array, including HttpOnly cookies invisible to `document.cookie` |
+
+`--dump json` prints one JSON object, modelled on the `data` object of Jina
+Reader's JSON response. `url`, `title`, `description`, `content`,
+`publishedTime`, `links` and `images` mean what they mean there, except that
+`links` and `images` are keyed by URL (Reader keys them by label), so two links
+with the same text both appear.
+
+| Field           | Value |
+| --------------- | ----- |
+| `url`           | The page's URL after redirects |
+| `status`        | HTTP status of the main document (an error page is still converted) |
+| `title`         | The document title, trimmed; `""` when there is none |
+| `description`   | `<meta name="description">`, else `og:description`, else `twitter:description`; `""` when there is none |
+| `lang`          | The `lang` of the `<html>` element; left out when it has none |
+| `publishedTime` | When the page says it was published, as written: `article:published_time` and similar meta tags, JSON-LD `datePublished`, or a `<time itemprop="datePublished">`; left out when the page states none |
+| `content`       | The Markdown `--dump markdown` gives |
+| `links`         | Object of absolute link URL to link text (the text of the link, else the alt text of an image in it, else its `aria-label` or `title`), in document order, each URL once; `javascript:` and `#`-only links are not listed |
+| `images`        | Object of absolute image URL to alt text, in document order, each URL once; `data:` images are not listed |
+
+`title`, `description`, `lang` and `publishedTime` describe the page. With
+`--selector`, `content`, `links` and `images` narrow to the matched element;
+with `--boilerplate drop` they leave out the same navigation, header, footer
+and sidebars.
+
+Boilerplate is dropped by default from `text`, `markdown` and `json`:
+`<nav>`, a `<header>` or `<footer>` that is not inside an `<article>`,
+`<main>` or `<section>`, and an `<aside>` that is not inside an `<article>` or
+`<main>`; `role` values `navigation`, `banner`, `contentinfo` and
+`complementary` count the same way. An element picked with `--selector` is
+always kept. `--boilerplate keep` gives the whole page. The same default holds
+for MCP `browser_markdown` (its `boilerplate` option) and CDP `LP.getMarkdown`
+(its `boilerplate` parameter).
+
+`--dump text` also leaves out what the page hides: the `hidden` attribute,
+`display: none` and `visibility: hidden` (a descendant can set `visible`
+again). Render builds read this from the engine's style cascade. A build
+without `render` has no cascade there, so text hides by markup (`hidden`)
+only; `markdown` and `json` ask the page's `getComputedStyle`, which a build
+without `render` answers from its in-memory style fallback.
 
 ## `inbrowse serve`
 

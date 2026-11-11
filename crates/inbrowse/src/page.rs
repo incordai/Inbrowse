@@ -225,6 +225,10 @@ enum PendingFrameWork {
         urls: Vec<String>,
         next_url: usize,
         sources: std::collections::HashMap<String, String>,
+        /// Whether the frame's linked stylesheets are in. Kept here so a
+        /// cancelled fetch resumes rather than skips them.
+        #[cfg(feature = "render")]
+        styles_loaded: bool,
     },
 }
 
@@ -1089,7 +1093,7 @@ fn split_css_imports(css: &str) -> (Vec<StylesheetImport>, String) {
 /// statement body (the text between `@import` and `;`).
 fn parse_import_url(stmt: &str) -> Option<StylesheetImport> {
     let s = stmt.trim();
-    let is_url_fn = s.len() >= 4 && s[..4].eq_ignore_ascii_case("url(");
+    let is_url_fn = s.get(..4).is_some_and(|head| head.eq_ignore_ascii_case("url("));
     let (url, media) = if is_url_fn {
         let rest = &s[4..];
         let end = rest.find(')')?;
@@ -1141,6 +1145,77 @@ fn register_linked_stylesheet_script(link_nid: usize, response_url: &str) -> Str
             finally {{ syncSheet(); }}
         }})()"#
     )
+}
+
+/// The resources (URL, is a font) a document's CSS references: `<style>`
+/// text, `style` attributes, `<use>` targets and the sheets fetched for it,
+/// resolved against `base_url`.
+#[cfg(feature = "render")]
+fn dom_css_resource_candidates(dom: &DomTree, base_url: &Url) -> Vec<(String, bool)> {
+    let mut sources = Vec::new();
+    for id in dom.descendants(dom.document()) {
+        let Some(node) = dom.get_node(id) else {
+            continue;
+        };
+        if node
+            .as_element()
+            .is_some_and(|element| element.local.as_ref() == "style")
+        {
+            sources.push(dom.text_content(id));
+        }
+        if let Some(style) = node.get_attribute("style") {
+            sources.push(style.to_string());
+        }
+        if node
+            .as_element()
+            .is_some_and(|element| element.local.as_ref() == "use")
+        {
+            if let Some(href) = node
+                .get_attribute("href")
+                .or_else(|| node.get_attribute("xlink:href"))
+            {
+                sources.push(format!("url({href})"));
+            }
+        }
+    }
+    for sheet in dom.external_stylesheets().values() {
+        sources.extend(sheet.sources.iter().map(ToString::to_string));
+    }
+    let mut found = Vec::new();
+    for css in sources {
+        for raw in css_resource_urls(&css, base_url) {
+            if let Ok(mut url) = url::Url::parse(&raw) {
+                url.set_fragment(None);
+                let is_font = render_resource_is_font(&url);
+                found.push((url.to_string(), is_font));
+            }
+        }
+    }
+    found
+}
+
+/// Store fetched author CSS in native DOM state, where cross-origin bytes stay
+/// out of reach of page script.
+fn install_author_stylesheets(
+    dom: &DomTree,
+    sheets: &[(AuthorStylesheetTarget, String, bool, String)],
+) {
+    let styles = dom.query_selector_all("style").unwrap_or_default();
+    for (target, css, origin_clean, _) in sheets {
+        // Linked targets carry the link's node id (#1044), so resolve it
+        // directly instead of indexing a query-order list. InlineImport still
+        // uses the style query index.
+        let owner = match target {
+            AuthorStylesheetTarget::Linked(nid) => {
+                let id = inbrowse_dom::NodeId::new(*nid as u32);
+                dom.get_node(id).map(|_| id)
+            }
+            AuthorStylesheetTarget::InlineImport(index) => styles.get(*index).copied(),
+        };
+        if let Some(owner) = owner {
+            dom.append_external_stylesheet(owner, css.clone(), *origin_clean);
+        }
+    }
 }
 
 /// Discover linked author sheets in document order.
@@ -1210,7 +1285,8 @@ impl Page {
                 context.cookie_jar.clone(),
                 context.proxy_url.as_deref(),
                 context.allow_private_network,
-            );
+            )
+            .with_user_agent(context.user_agent_override.clone());
             client.allow_file_access = context.allow_file_access;
             Some(Arc::new(client))
         } else {
@@ -1442,6 +1518,11 @@ impl Page {
                 ) {
                     tracing::debug!("frame {} viewport setup failed: {error}", frame.url);
                 }
+                // The iframe's laid-out content box, not the size it had when
+                // its document arrived, is what the frame's scripts and layout
+                // must see from the start.
+                #[cfg(feature = "render")]
+                js.sync_frame_viewports(true);
                 // New-document scripts must be installed before the published
                 // child context can be observed, including while its external
                 // scripts are still loading.
@@ -1462,7 +1543,32 @@ impl Page {
                 urls,
                 next_url: 0,
                 sources: std::collections::HashMap::new(),
+                #[cfg(feature = "render")]
+                styles_loaded: false,
             });
+        }
+
+        // Linked stylesheets are in before the frame's scripts run, as they are
+        // for the page, so those scripts read the styled document.
+        #[cfg(feature = "render")]
+        if let Some(PendingFrameWork::Attached {
+            frame_id,
+            styles_loaded: false,
+            ..
+        }) = self.pending_frame_work.front()
+        {
+            let frame_id = *frame_id;
+            self.load_frame_stylesheets(frame_id).await;
+            if let Some(PendingFrameWork::Attached {
+                frame_id: front,
+                styles_loaded,
+                ..
+            }) = self.pending_frame_work.front_mut()
+            {
+                if *front == frame_id {
+                    *styles_loaded = true;
+                }
+            }
         }
 
         while let Some((frame_id, url)) = self.pending_frame_work.front().and_then(|pending| {
@@ -1658,6 +1764,18 @@ impl Page {
         let Some(js) = self.js.as_mut() else { return };
         if let Err(error) = self.frames[index].execute_script(js, script) {
             tracing::debug!("nested frame owner script failed: {error}");
+        }
+    }
+
+    /// Gives the frames the page has just created their realms now, instead of
+    /// at the next settle: a script that inserts an iframe has a frame, with its
+    /// initial document, as soon as the command that ran it returns. Does
+    /// nothing, at no cost, for a page that has no frame work waiting.
+    pub async fn adopt_pending_frames(&mut self) {
+        let waiting = !self.pending_frame_work.is_empty()
+            || self.js.as_ref().is_some_and(|js| js.has_pending_frame_tasks());
+        if waiting {
+            self.advance_frames().await;
         }
     }
 
@@ -2049,7 +2167,12 @@ impl Page {
         #[cfg(feature = "stealth")]
         if self.stealth_client.is_some() {
             rt.set_stealth(true);
-            rt.set_user_agent(inbrowse_net::STEALTH_USER_AGENT);
+            rt.set_user_agent(
+                self.context
+                    .user_agent_override
+                    .as_deref()
+                    .unwrap_or(inbrowse_net::STEALTH_USER_AGENT),
+            );
             rt.set_platform(
                 inbrowse_net::STEALTH_NAVIGATOR_PLATFORM,
                 inbrowse_net::STEALTH_UA_PLATFORM,
@@ -2181,6 +2304,22 @@ impl Page {
         let document_base = self
             .resolve_base_url()
             .unwrap_or_else(|| document_url.clone());
+        self.fetch_stylesheet_graph(all_links, inline_imports, document_url, document_base)
+            .await
+    }
+
+    /// Fetch the sheets a document links or imports, and everything they
+    /// `@import`, through the page transport: the page's network policy,
+    /// cookies and caps, with `document_url` as the initiator and
+    /// `document_base` resolving relative references. The page and each of its
+    /// frames use this with their own document.
+    async fn fetch_stylesheet_graph(
+        &mut self,
+        all_links: Vec<(usize, String)>,
+        inline_imports: Vec<(usize, StylesheetImport)>,
+        document_url: Url,
+        document_base: Url,
+    ) -> Vec<(AuthorStylesheetTarget, String, bool, String)> {
         let mut roots = Vec::new();
         let mut scheduled = std::collections::HashSet::new();
         let mut pending = Vec::new();
@@ -2192,7 +2331,7 @@ impl Page {
             if !subresource_allowed(Some(&document_url), resolved.as_str()) {
                 tracing::warn!(
                     "blocking cross-scheme <link rel=stylesheet href>: page={} href={}",
-                    self.url_string(),
+                    document_url,
                     resolved,
                 );
                 continue;
@@ -2385,6 +2524,62 @@ impl Page {
 
     async fn execute_scripts(&mut self) {
         self.execute_scripts_with_module_budget(None).await;
+    }
+
+    /// Fetch and install the stylesheets a frame document links or imports,
+    /// so its style, layout and `getComputedStyle` see them as the page's do.
+    /// They resolve against the frame's own base URL and go through the page
+    /// transport, with the frame document as referrer.
+    #[cfg(feature = "render")]
+    async fn load_frame_stylesheets(&mut self, frame_id: u32) {
+        let requests = self.js.as_ref().and_then(|js| {
+            let (links, imports) = js.with_frame_dom(frame_id, |dom| {
+                (
+                    linked_stylesheet_requests(dom),
+                    inline_stylesheet_import_requests(dom),
+                )
+            })?;
+            let (document, base) = js.frame_document_urls(frame_id)?;
+            let document_url = Url::parse(&document).ok()?;
+            let document_base = base
+                .and_then(|base| Url::parse(&base).ok())
+                .unwrap_or_else(|| document_url.clone());
+            Some((links, imports, document_url, document_base))
+        });
+        let sheets = match requests {
+            Some((links, imports, document_url, document_base))
+                if !links.is_empty() || !imports.is_empty() =>
+            {
+                self.fetch_stylesheet_graph(links, imports, document_url, document_base)
+                    .await
+            }
+            _ => Vec::new(),
+        };
+        let Some(index) = self
+            .frames
+            .iter()
+            .position(|frame| frame.frame_id() == frame_id)
+        else {
+            return;
+        };
+        let Some(js) = self.js.as_mut() else { return };
+        if !sheets.is_empty() {
+            js.edit_frame_dom(frame_id, |dom| install_author_stylesheets(dom, &sheets));
+            for (target, _, _, response_url) in &sheets {
+                if let AuthorStylesheetTarget::Linked(link_index) = target {
+                    let _ = self.frames[index].execute_script(
+                        js,
+                        &register_linked_stylesheet_script(*link_index, response_url),
+                    );
+                }
+            }
+        }
+        // Static registration is over; as on the page, the host bridge does not
+        // stay reachable from the frame's scripts.
+        let _ = self.frames[index].execute_script(
+            js,
+            "delete globalThis.__inbrowse_registerLinkedStylesheet",
+        );
     }
 
     /// Drive a selected script queue until it empties or the shared parser
@@ -2752,17 +2947,18 @@ impl Page {
                             body,
                             redirected_from: Vec::new(),
                         };
-                        return Some((idx, url, resp));
+                        return Ok((idx, url, resp));
                     }
+                    // A dropped connection is retried once by the HTTP client.
                     let request = ResourceRequest::subresource(ResourceType::Script, &initiator);
                     match client
                         .fetch_resource_with_callbacks(&parsed, request, Some(&cbs))
                         .await
                     {
-                        Ok(resp) => Some((idx, url, resp)),
+                        Ok(resp) => Ok((idx, url, resp)),
                         Err(e) => {
                             tracing::warn!("Failed to fetch script {}: {}", url, e);
-                            None
+                            Err((idx, url, e.to_string()))
                         }
                     }
                 }
@@ -2775,26 +2971,51 @@ impl Page {
         // 16 is well above the per-host pool ceiling most browsers use
         // and matches what real Chrome does for a given origin.
         use futures::StreamExt as _;
-        let fetch_stream = futures::stream::iter(fetch_futures).buffer_unordered(16);
-        let fetch_results = match tokio::time::timeout_at(
-            script_deadline,
-            fetch_stream.collect::<Vec<_>>(),
-        )
-        .await
-        {
-            Ok(results) => results,
-            Err(_) => {
-                tracing::warn!(
-                    "execute_scripts: fetch deadline reached, some scripts may not have loaded"
-                );
-                Vec::new()
+        let mut fetch_stream = std::pin::pin!(futures::stream::iter(fetch_futures).buffer_unordered(16));
+        // Keep every script that arrived: a deadline must cost only the
+        // scripts still in flight, never the ones already fetched.
+        let mut fetch_results = Vec::new();
+        let mut budget_exhausted = false;
+        loop {
+            match tokio::time::timeout_at(script_deadline, fetch_stream.next()).await {
+                Ok(Some(result)) => fetch_results.push(result),
+                Ok(None) => break,
+                Err(_) => {
+                    tracing::warn!(
+                        "execute_scripts: fetch deadline reached, some scripts may not have loaded"
+                    );
+                    budget_exhausted = true;
+                    break;
+                }
             }
-        };
+        }
+        let mut arrived = std::collections::HashSet::new();
+        for result in &fetch_results {
+            match result {
+                Ok((idx, _, _)) => {
+                    arrived.insert(*idx);
+                }
+                Err((idx, url, error)) => {
+                    arrived.insert(*idx);
+                    self.script_warnings
+                        .push(format!("script {url} did not load: {error}"));
+                }
+            }
+        }
+        if budget_exhausted {
+            for (idx, url) in &fetch_tasks {
+                if !arrived.contains(idx) {
+                    self.script_warnings.push(format!(
+                        "script {url} did not load within the {script_deadline_ms}ms script budget"
+                    ));
+                }
+            }
+        }
 
         let mut fetched: std::collections::HashMap<usize, (String, String, inbrowse_net::Response)> =
             std::collections::HashMap::new();
         for result in fetch_results {
-            if let Some((idx, url, resp)) = result {
+            if let Ok((idx, url, resp)) = result {
                 if !script_response_is_executable(resp.status) {
                     self.record_network_event_with_body(
                         &url,
@@ -3392,6 +3613,12 @@ impl Page {
                 break;
             }
         }
+        // Layout the page's scripts left behind sizes its frames: publish it
+        // to them before the caller reads or captures them.
+        #[cfg(feature = "render")]
+        if let Some(js) = &mut self.js {
+            js.sync_frame_viewports(true);
+        }
         #[cfg(feature = "render")]
         {
             // Timers, fetch completions, and framework commits commonly append
@@ -3619,6 +3846,7 @@ impl Page {
                 "file:// navigation is disabled for this browser context: {url_str}"
             )));
         }
+        let deadline = tokio::time::Instant::now() + self.navigation_timeout();
         let mut current_url = url_str.to_string();
         let mut current_method = method.to_string();
         let mut current_body = body.to_string();
@@ -3631,6 +3859,7 @@ impl Page {
                 &current_method,
                 &current_body,
                 &document_referrer,
+                deadline,
             )
             .await?;
             if let Some((next_url, next_method, next_body)) = self.take_pending_navigation() {
@@ -3687,6 +3916,7 @@ impl Page {
         method: &str,
         body: &str,
         referrer: &str,
+        deadline: tokio::time::Instant,
     ) -> Result<(), PageError> {
         let url = Url::parse(url_str).map_err(|e| PageError::InvalidUrl(e.to_string()))?;
         self.navigation_timing = NavigationTiming::default();
@@ -3838,26 +4068,7 @@ impl Page {
         // become observable through a synthetic style element or page global.
         if !author_stylesheets.is_empty() {
             if let Some(js) = &mut self.js {
-                js.with_dom(|dom| {
-                    let styles = dom.query_selector_all("style").unwrap_or_default();
-                    for (target, css, origin_clean, _) in &author_stylesheets {
-                        // Linked targets carry the link's node id (#1044), so
-                        // resolve it directly instead of indexing a query-order
-                        // list. InlineImport still uses the style query index.
-                        let owner = match target {
-                            AuthorStylesheetTarget::Linked(nid) => {
-                                let id = inbrowse_dom::NodeId::new(*nid as u32);
-                                dom.get_node(id).map(|_| id)
-                            }
-                            AuthorStylesheetTarget::InlineImport(index) => {
-                                styles.get(*index).copied()
-                            }
-                        };
-                        if let Some(owner) = owner {
-                            dom.append_external_stylesheet(owner, css.clone(), *origin_clean);
-                        }
-                    }
-                });
+                js.with_dom(|dom| install_author_stylesheets(dom, &author_stylesheets));
                 for (target, _, _, response_url) in &author_stylesheets {
                     if let AuthorStylesheetTarget::Linked(link_index) = target {
                         let _ = js.execute_script(
@@ -3940,6 +4151,17 @@ impl Page {
         // client seeing a page with no frames at all.
         self.build_document_frames().await;
 
+        // The frames exist only now, after both warmups above. Their
+        // stylesheets, images and fonts are loaded the same bounded way.
+        #[cfg(feature = "render")]
+        if !self.frames.is_empty() {
+            let warmup_ms = std::env::var("INBROWSE_RENDER_RESOURCE_POST_SCRIPT_WARMUP_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1_000);
+            let _ = self.prepare_screenshot_resources(warmup_ms).await;
+        }
+
         if wait_until == crate::lifecycle::WaitUntil::DomContentLoaded {
             return Ok(());
         }
@@ -3964,26 +4186,51 @@ impl Page {
                 _ => 0,
             };
 
-            self.wait_for_network_idle(threshold).await;
+            self.wait_for_network_idle_until(threshold, deadline).await?;
         }
 
         Ok(())
     }
 
-    async fn wait_for_network_idle(&mut self, threshold: u32) {
+    #[cfg(test)]
+    async fn wait_for_network_idle(&mut self, threshold: u32) -> Result<(), PageError> {
+        let deadline = tokio::time::Instant::now() + self.navigation_timeout();
+        self.wait_for_network_idle_until(threshold, deadline).await
+    }
+
+    /// Wait for the page's requests to stay at or under `threshold` for a
+    /// 500 ms quiet window. `deadline` is the navigation's own deadline, so a
+    /// page that never goes quiet fails the navigation there instead of being
+    /// reported as idle. Requests of both the plain and the stealth transport
+    /// count as activity.
+    async fn wait_for_network_idle_until(
+        &mut self,
+        threshold: u32,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), PageError> {
         // Same hazard as the post-script settle: a synchronous poll can pin
-        // the thread past the 5s network-idle deadline, so arm a watchdog
-        // that terminates the isolate ~500ms past it.
-        let netidle_wd = self
-            .js
-            .as_mut()
-            .map(|js| js.arm_watchdog(std::time::Duration::from_millis(5500)));
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        // the thread past the deadline, so arm a watchdog that terminates the
+        // isolate when it passes.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let netidle_wd = self.js.as_mut().map(|js| js.arm_watchdog(remaining));
         let mut idle_since: Option<tokio::time::Instant> = None;
 
-        loop {
+        let reached_idle = loop {
             let active = self.http_client.active_requests();
+            #[cfg(feature = "stealth")]
+            let active = active
+                + self
+                    .stealth_client
+                    .as_ref()
+                    .map_or(0, |client| client.active_requests());
             let now = tokio::time::Instant::now();
+            if now >= deadline {
+                tracing::debug!(
+                    "Network idle deadline reached with {} active requests",
+                    active
+                );
+                break false;
+            }
 
             if active <= threshold {
                 if idle_since.is_none() {
@@ -3992,18 +4239,10 @@ impl Page {
                 if now.duration_since(idle_since.unwrap())
                     >= tokio::time::Duration::from_millis(500)
                 {
-                    break;
+                    break true;
                 }
             } else {
                 idle_since = None;
-            }
-
-            if now >= deadline {
-                tracing::debug!(
-                    "Network idle timeout reached with {} active requests",
-                    active
-                );
-                break;
             }
 
             // An idle runtime can stay parked. Wake at the existing quiet
@@ -4027,14 +4266,23 @@ impl Page {
                     std::future::pending::<()>(),
                 ).await;
             }
-        }
+        };
 
+        let mut terminated = false;
         if let Some(token) = netidle_wd {
             if let Some(js) = self.js.as_mut() {
-                js.disarm_watchdog(token);
+                terminated = js.disarm_watchdog(token);
             }
         }
-        self.lifecycle = LifecycleState::NetworkIdle;
+        if reached_idle && !terminated {
+            self.lifecycle = LifecycleState::NetworkIdle;
+            Ok(())
+        } else {
+            self.lifecycle = LifecycleState::Failed;
+            Err(PageError::NetworkError(
+                "network idle exceeded the navigation deadline".into(),
+            ))
+        }
     }
 
     /// Builds the child frames of the document that just loaded.
@@ -4135,48 +4383,11 @@ impl Page {
                 candidates.insert((url.to_string(), Some(profile), false));
             }
         }
-        let css_sources = js
-            .with_dom(|dom| {
-                let mut sources = Vec::new();
-                for id in dom.descendants(dom.document()) {
-                    let Some(node) = dom.get_node(id) else {
-                        continue;
-                    };
-                    if node
-                        .as_element()
-                        .is_some_and(|element| element.local.as_ref() == "style")
-                    {
-                        sources.push(dom.text_content(id));
-                    }
-                    if let Some(style) = node.get_attribute("style") {
-                        sources.push(style.to_string());
-                    }
-                    if node
-                        .as_element()
-                        .is_some_and(|element| element.local.as_ref() == "use")
-                    {
-                        if let Some(href) = node
-                            .get_attribute("href")
-                            .or_else(|| node.get_attribute("xlink:href"))
-                        {
-                            sources.push(format!("url({href})"));
-                        }
-                    }
-                }
-                for sheet in dom.external_stylesheets().values() {
-                    sources.extend(sheet.sources.iter().map(ToString::to_string));
-                }
-                sources
-            })
-            .unwrap_or_default();
-        for css in css_sources {
-            for raw in css_resource_urls(&css, &base_url) {
-                if let Ok(mut url) = url::Url::parse(&raw) {
-                    url.set_fragment(None);
-                    let is_font = render_resource_is_font(&url);
-                    candidates.insert((url.to_string(), None, is_font));
-                }
-            }
+        for (url, is_font) in js
+            .with_dom(|dom| dom_css_resource_candidates(dom, &base_url))
+            .unwrap_or_default()
+        {
+            candidates.insert((url, None, is_font));
         }
         candidates.retain(|(url, profile, _)| match profile {
             Some(profile) => !js.render_image_resource_is_known(url, *profile),
@@ -4303,6 +4514,62 @@ impl Page {
             }
             None => 0,
         };
+        started + self.spawn_frame_render_resources()
+    }
+
+    /// Start the loads the live frame documents need. A frame is laid out at
+    /// its iframe's size first, which is how its stylesheets' images and fonts
+    /// are found; each frame loads through the page transport with its own
+    /// document as referrer. Nothing happens for a page without frames.
+    #[cfg(feature = "render")]
+    fn spawn_frame_render_resources(&mut self) -> usize {
+        let Some(js) = self.js.as_mut() else {
+            return 0;
+        };
+        js.discover_frame_render_resources();
+        js.start_frame_render_resource_loads() + self.spawn_frame_css_resources()
+    }
+
+    /// Start loads for what the CSS of each live frame document references
+    /// (backgrounds, `@font-face` sources), found by scanning the document
+    /// the way the page's own warmup does, resolved against the frame's base
+    /// URL and held to the same policy.
+    #[cfg(feature = "render")]
+    fn spawn_frame_css_resources(&mut self) -> usize {
+        let Some(js) = &self.js else {
+            return 0;
+        };
+        let mut started = 0;
+        for frame in &self.frames {
+            let frame_id = frame.frame_id();
+            let Some((document, base)) = js.frame_document_urls(frame_id) else {
+                continue;
+            };
+            let Ok(document_url) = Url::parse(&document) else {
+                continue;
+            };
+            let base_url = base
+                .and_then(|base| Url::parse(&base).ok())
+                .unwrap_or_else(|| document_url.clone());
+            let found: std::collections::BTreeSet<_> = js
+                .with_frame_dom(frame_id, |dom| dom_css_resource_candidates(dom, &base_url))
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let mut loadable = Vec::new();
+            // The same warmup bound as the page; later layouts report the rest.
+            for (url, is_font) in found.into_iter().take(MAX_STYLESHEET_RESOURCES) {
+                if js.frame_render_resource_is_known(frame_id, &url) {
+                    continue;
+                }
+                if subresource_allowed(Some(&document_url), &url) && !self.should_block_url(&url) {
+                    loadable.push((url, None, is_font));
+                } else {
+                    js.seed_frame_render_resource_missing(frame_id, url);
+                }
+            }
+            started += js.start_frame_render_resource_candidates(frame_id, loadable);
+        }
         started
     }
 
@@ -4341,6 +4608,9 @@ impl Page {
             tokio::pin!(notified);
             notified.as_mut().enable();
             loaded += self.drain_render_resource_results();
+            // What just arrived can change a frame's layout and so what it
+            // needs next (an image its new stylesheet references).
+            self.spawn_frame_render_resources();
             if !self.has_pending_render_resources() {
                 break;
             }
@@ -5531,7 +5801,7 @@ mod tests {
         "#).unwrap();
         let started = tokio::time::Instant::now();
         tokio::time::timeout(std::time::Duration::from_secs(2), page.wait_for_network_idle(0))
-            .await.expect("quiet page must finish within its normal window");
+            .await.expect("quiet page must finish within its normal window").expect("network idle reached");
         assert!(started.elapsed() >= std::time::Duration::from_millis(500));
         assert_eq!(page.lifecycle, crate::lifecycle::LifecycleState::NetworkIdle);
         assert_eq!(page.js.as_mut().unwrap().evaluate("[__idleTicks, __idleObserved]").unwrap(),
@@ -5575,7 +5845,7 @@ mod tests {
         assert_eq!(page.http_client.active_requests(), 2);
         let started = tokio::time::Instant::now();
         tokio::time::timeout(std::time::Duration::from_secs(2), page.wait_for_network_idle(2))
-            .await.expect("two active requests must not force the five-second deadline");
+            .await.expect("two active requests must not force the five-second deadline").expect("network idle reached");
         assert!(started.elapsed() >= std::time::Duration::from_millis(500));
         assert_eq!(page.http_client.active_requests(), 2, "threshold two must allow both held requests");
         release_a.send(()).unwrap();
@@ -5597,7 +5867,7 @@ mod tests {
             *recorded.lock().unwrap() = Some(tokio::time::Instant::now());
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), page.wait_for_network_idle(0))
-            .await.expect("completed request must permit network idle");
+            .await.expect("completed request must permit network idle").expect("network idle reached");
         release_task.await.unwrap();
         assert!(completed.lock().unwrap().unwrap().elapsed() >= std::time::Duration::from_millis(490),
             "an active request must prevent an earlier quiet-window start");
@@ -5619,24 +5889,99 @@ mod tests {
             *recorded.lock().unwrap() = Some(tokio::time::Instant::now());
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), page.wait_for_network_idle(0))
-            .await.expect("a completed late request must permit network idle");
+            .await.expect("a completed late request must permit network idle").expect("network idle reached");
         request_task.await.unwrap();
         assert!(completed.lock().unwrap().unwrap().elapsed() >= std::time::Duration::from_millis(490),
             "new traffic must reset the original quiet window");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn network_idle_keeps_five_second_deadline_for_stuck_request() {
+    async fn network_idle_uses_navigation_deadline_without_reporting_false_idle() {
         let mut page = network_idle_test_page();
+        page.set_navigation_timeout(std::time::Duration::from_millis(80));
         let (release, fetch) = network_idle_held_request(page.http_client.clone()).await;
-        let started = tokio::time::Instant::now();
-        tokio::time::timeout(std::time::Duration::from_secs(7), page.wait_for_network_idle(0))
-            .await.expect("network-idle deadline must still finish");
-        assert!(started.elapsed() >= std::time::Duration::from_secs(5));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), page.wait_for_network_idle(0))
+            .await.expect("configured deadline must finish");
+        assert!(result.unwrap_err().to_string().contains("deadline"));
+        assert_eq!(page.lifecycle, crate::lifecycle::LifecycleState::Failed);
         assert_eq!(page.http_client.active_requests(), 1);
         release.send(()).unwrap();
         fetch.await.unwrap();
         assert_eq!(page.js.as_mut().unwrap().evaluate("1 + 1").unwrap(), serde_json::json!(2));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_idle_does_not_stop_at_five_seconds_when_budget_remains() {
+        use std::future::Future;
+        let mut page = network_idle_test_page();
+        page.set_navigation_timeout(std::time::Duration::from_secs(8));
+        let (release, fetch) = network_idle_held_request(page.http_client.clone()).await;
+        tokio::time::pause();
+        let mut wait = Box::pin(page.wait_for_network_idle(0));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        assert!(wait.as_mut().poll(&mut cx).is_pending(), "five seconds is not a successful idle result");
+        tokio::time::resume();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), wait).await.unwrap().unwrap();
+        fetch.await.unwrap();
+        assert_eq!(page.lifecycle, crate::lifecycle::LifecycleState::NetworkIdle);
+    }
+
+    #[cfg(feature = "stealth")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_idle_counts_active_stealth_requests() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let context = std::sync::Arc::new(crate::BrowserContext::with_storage_and_network(
+            "stealth-idle".into(), None, true, None, None, true,
+        ));
+        let mut page = super::Page::new("stealth-idle".into(), context);
+        page.set_navigation_timeout(std::time::Duration::from_millis(700));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let read = socket.read(&mut bytes).await.unwrap();
+                assert!(read > 0 && request.len() < 16384);
+                request.extend_from_slice(&bytes[..read]);
+            }
+            ready_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+        });
+        let client = page.stealth_client.as_ref().unwrap().clone();
+        let request = tokio::spawn(async move { client.fetch(&url).await.unwrap() });
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready_rx).await.unwrap().unwrap();
+        assert_eq!(page.http_client.active_requests(), 0);
+        assert_eq!(page.stealth_client.as_ref().unwrap().active_requests(), 1);
+        let result = page.wait_for_network_idle(0).await;
+        release_tx.send(()).unwrap();
+        assert_eq!(request.await.unwrap().status, 200);
+        server.await.unwrap();
+        assert!(result.unwrap_err().to_string().contains("deadline"));
+        assert_eq!(page.lifecycle, crate::lifecycle::LifecycleState::Failed);
+    }
+
+    #[cfg(feature = "stealth")]
+    #[test]
+    fn stealth_navigator_uses_the_explicit_context_user_agent() {
+        let context = std::sync::Arc::new(crate::BrowserContext::with_storage_and_network(
+            "stealth-identity".into(), None, true, Some("TestingUA/1.0".into()), None, false,
+        ));
+        let mut page = super::Page::new("stealth-identity".into(), context);
+        page.url = Some(url::Url::parse("https://example.test/").unwrap());
+        page.dom = Some(parse_html("<html><body></body></html>"));
+        page.init_js();
+        assert_eq!(
+            page.evaluate_script("navigator.userAgent").unwrap(),
+            serde_json::json!("TestingUA/1.0")
+        );
     }
     fn install_linked_stylesheet(
         runtime: &mut inbrowse_js::runtime::InbrowseJsRuntime,
@@ -10845,6 +11190,18 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn parse_import_url_accepts_non_ascii_without_url_function() {
+        // A statement whose fourth byte falls inside a multi-byte character
+        // must not be sliced there.
+        assert_eq!(
+            parse_import_url(" \"Guía.css\""),
+            Some(StylesheetImport { url: "Guía.css".to_string(), media: None })
+        );
+        assert_eq!(parse_import_url("aí;"), None);
+        assert_eq!(parse_import_url("é"), None);
     }
 
     #[test]

@@ -827,6 +827,26 @@ pub struct BackgroundPosition {
     pub y: BackgroundPositionAxis,
 }
 
+/// `background-repeat` keyword for one axis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackgroundRepeat {
+    /// Tile at the image's size.
+    #[default]
+    Repeat,
+    NoRepeat,
+    /// Whole tiles, spaced out to fill the positioning area.
+    Space,
+    /// Whole tiles, rescaled to fill the positioning area.
+    Round,
+}
+
+impl BackgroundRepeat {
+    /// Whether the axis shows more than the one positioned tile.
+    pub fn repeats(self) -> bool {
+        self != Self::NoRepeat
+    }
+}
+
 /// Box used to establish a background layer's positioning area.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BackgroundOrigin {
@@ -1221,9 +1241,9 @@ pub struct LayoutStyle {
     /// Percentages apply to the leftover space after resolving explicit,
     /// intrinsic, cover, or contain size.
     pub background_position: BackgroundPosition,
-    /// Explicit `(repeat-x, repeat-y)` choice. `None` is the CSS initial
-    /// `repeat` in both axes.
-    pub background_repeat: Option<(bool, bool)>,
+    /// `background-repeat` per axis, `(x, y)`. The CSS initial is `repeat` in
+    /// both.
+    pub background_repeat: (BackgroundRepeat, BackgroundRepeat),
     /// Geometry longhands retained independently: gradients and images are
     /// authored in `background-origin`, while `background-clip` only limits
     /// which portion becomes visible.

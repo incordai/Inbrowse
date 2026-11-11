@@ -10,8 +10,9 @@ use crate::dispatch::CdpContext;
 
 /// The AX tree of the frame `params.frameId` names, the main frame when absent.
 ///
-/// A child frame's tree is built from its own document without the style
-/// cascade, so only attribute-based hiding applies inside it.
+/// A child frame's tree is built from its own document and its own computed
+/// styles, so `display: none` and `visibility: hidden` content inside a frame
+/// is excluded or ignored as it is in the page.
 ///
 /// Returns the tree with the number of the frame it belongs to (0 for the page).
 fn tree_for(page: &Page, params: &Value) -> Result<(AccessibilityTree, u32), String> {
@@ -40,12 +41,17 @@ fn tree_for(page: &Page, params: &Value) -> Result<(AccessibilityTree, u32), Str
                 .map(|tree| (tree, 0))
                 .ok_or("No DOM loaded".to_string())
         }
-        Some(child) => page
-            .js
-            .as_ref()
-            .and_then(|js| js.with_frame_dom(child, |dom| build_ax_tree(dom, &Default::default(), Some(frame_id))))
-            .map(|tree| (tree, child))
-            .ok_or("No DOM loaded".to_string()),
+        Some(child) => {
+            #[cfg(feature = "render")]
+            let styles = page.js.as_ref().map(|js| js.frame_accessibility_styles(child)).unwrap_or_default();
+            #[cfg(not(feature = "render"))]
+            let styles = HashMap::new();
+            page.js
+                .as_ref()
+                .and_then(|js| js.with_frame_dom(child, |dom| build_ax_tree(dom, &styles, Some(frame_id))))
+                .map(|tree| (tree, child))
+                .ok_or("No DOM loaded".to_string())
+        }
     }
 }
 

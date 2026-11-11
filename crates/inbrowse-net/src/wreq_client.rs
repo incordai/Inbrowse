@@ -192,6 +192,28 @@ pub struct StealthHttpClient {
     pub cookie_jar: Arc<CookieJar>,
     pub extra_headers: RwLock<HashMap<String, String>>,
     pub in_flight: Arc<std::sync::atomic::AtomicU32>,
+    /// Overrides the emulation's User-Agent for every request (`--user-agent`).
+    /// `None` keeps the emulation's own UA untouched.
+    user_agent: Option<String>,
+}
+
+/// The User-Agent a request must carry when one was set explicitly: the first
+/// source that holds a `user-agent` header wins, then the client-wide override.
+/// `None` leaves the emulation's own header in place.
+#[cfg(feature = "stealth")]
+fn explicit_user_agent<'a>(
+    sources: &[&'a HashMap<String, String>],
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    sources
+        .iter()
+        .find_map(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, value)| value.as_str())
+        })
+        .or(fallback)
 }
 
 /// Scripted fetch exposes these headers before consuming the bounded body.
@@ -288,7 +310,16 @@ impl StealthHttpClient {
             cookie_jar,
             extra_headers: RwLock::new(HashMap::new()),
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            user_agent: None,
         }
+    }
+
+    /// Send `user_agent` instead of the emulation's own User-Agent on every
+    /// request. A `user-agent` in the extra headers or in a request's own
+    /// headers still takes precedence. `None` keeps the emulation's value.
+    pub fn with_user_agent(mut self, user_agent: Option<String>) -> Self {
+        self.user_agent = user_agent;
+        self
     }
 
     /// Open a page WebSocket through the wreq client, so the TLS handshake
@@ -492,11 +523,19 @@ impl StealthHttpClient {
                 req = req.header("Cookie", &cookie_header);
             }
 
-            for (k, v) in self.extra_headers.read().await.iter() {
-                if k.eq_ignore_ascii_case("origin") {
-                    continue;
+            {
+                let extra_headers = self.extra_headers.read().await;
+                if let Some(user_agent) =
+                    explicit_user_agent(&[&extra_headers], self.user_agent.as_deref())
+                {
+                    req = req.header("user-agent", user_agent);
                 }
-                req = req.header(k.as_str(), v.as_str());
+                for (k, v) in extra_headers.iter() {
+                    if k.eq_ignore_ascii_case("origin") || k.eq_ignore_ascii_case("user-agent") {
+                        continue;
+                    }
+                    req = req.header(k.as_str(), v.as_str());
+                }
             }
             if cors_required(&request, &current_url) {
                 req = req.header("origin", &request_origin);
@@ -659,11 +698,18 @@ impl StealthHttpClient {
                 req = req.header("cookie", &cookie_header);
             }
         }
-        for (k, v) in self.extra_headers.read().await.iter() {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        for (k, v) in headers.iter() {
-            req = req.header(k.as_str(), v.as_str());
+        {
+            let extra_headers = self.extra_headers.read().await;
+            if let Some(user_agent) =
+                explicit_user_agent(&[headers, &extra_headers], self.user_agent.as_deref())
+            {
+                req = req.header("user-agent", user_agent);
+            }
+            for (k, v) in extra_headers.iter().chain(headers.iter()) {
+                if !k.eq_ignore_ascii_case("user-agent") {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
         }
         if !body.is_empty() {
             req = req.body(body.to_vec());
@@ -954,6 +1000,7 @@ mod tests {
             cookie_jar: Arc::new(CookieJar::new()),
             extra_headers: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            user_agent: None,
         };
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let error = client
@@ -1049,6 +1096,67 @@ mod tests {
         let resp = client.fetch(&url).await.expect("fixture must be reachable");
         assert_eq!(resp.status, 200);
         assert_eq!(resp.text(), PLAIN_BODY, "gzip body must be decompressed");
+    }
+
+    /// An explicit user agent reaches the wire once, for navigation and for
+    /// scripted requests alike. A `user-agent` among the extra headers beats the
+    /// client-wide override, and one on the request itself beats both.
+    #[tokio::test]
+    async fn stealth_user_agent_override_has_one_wire_value_for_navigation_and_script_fetch() {
+        for scripted in [false, true] {
+            for override_mode in 0..if scripted { 3 } else { 2 } {
+                let extra = override_mode > 0;
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut bytes = [0; 4096];
+                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let n = std::io::Read::read(&mut socket, &mut bytes).unwrap();
+                        assert!(n > 0);
+                        request.extend_from_slice(&bytes[..n]);
+                    }
+                    std::io::Write::write_all(
+                        &mut socket,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .unwrap();
+                    String::from_utf8(request).unwrap()
+                });
+                let client = StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), None, true)
+                    .with_user_agent(Some("TestingUA/1.0".into()));
+                if extra {
+                    client.extra_headers.write().await.insert("user-agent".into(), "HeaderUA/2.0".into());
+                }
+                let request_headers: std::collections::HashMap<String, String> = if override_mode == 2 {
+                    [("User-Agent".into(), "RequestUA/3.0".into())].into()
+                } else {
+                    std::collections::HashMap::new()
+                };
+                let response = if scripted {
+                    client.send_single("GET", &url, &request_headers, &[], true, true).await.unwrap()
+                } else {
+                    client.fetch(&url).await.unwrap()
+                };
+                assert_eq!(response.status, 200);
+                let wire = server.join().unwrap();
+                let agents: Vec<&str> = wire
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                    .map(|(_, value)| value.trim())
+                    .collect();
+                let expected = if override_mode == 2 {
+                    "RequestUA/3.0"
+                } else if extra {
+                    "HeaderUA/2.0"
+                } else {
+                    "TestingUA/1.0"
+                };
+                assert_eq!(agents, vec![expected], "scripted={scripted}, override={override_mode}: {wire}");
+            }
+        }
     }
 
     // #793: the opt-in must reach the DNS resolver. `validate_url` already

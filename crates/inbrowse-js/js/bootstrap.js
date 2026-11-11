@@ -66,7 +66,7 @@ const __inbrowseCore = globalThis.Deno.core;
     // Pre-declaring them non-enumerable here is enough -- per the note above,
     // the later `globalThis.X = X` assignments only update the value.
     'Node', 'Element', 'Document', 'DocumentFragment', 'DocumentType',
-    'Navigator', 'PluginArray', 'Plugin', 'MimeType', 'MimeTypeArray',
+    'DOMImplementation', 'Navigator', 'PluginArray', 'Plugin', 'MimeType', 'MimeTypeArray',
     'Animation', 'KeyframeEffect', 'DocumentTimeline',
     'Text', 'Comment', 'CDATASection', 'ProcessingInstruction', 'CharacterData',
     'CSSStyleDeclaration', 'CSSRule', 'CSSStyleRule', 'CSSGroupingRule',
@@ -2244,7 +2244,35 @@ function _eventTargetDispatch(target, event) {
   }
 }
 
+// HTML Standard "current event": `window.event` exposes the event being
+// dispatched, and is restored once the invocation returns so nested dispatches
+// and code outside dispatch see the right value. Legacy handlers rely on it,
+// e.g. `onclick="go()"` with `function go() { event.preventDefault(); }`.
+let _currentWindowEvent;
+Object.defineProperty(globalThis, "event", {
+  get() { return _currentWindowEvent; },
+  // [Replaceable]: assigning replaces the accessor with a plain data property.
+  set(value) {
+    Object.defineProperty(globalThis, "event", {
+      value, writable: true, enumerable: true, configurable: true,
+    });
+  },
+  enumerable: true,
+  configurable: true,
+});
+
 function _domEventInvoke(target, event, capture, phase) {
+  const previousEvent = _currentWindowEvent;
+  // The spec leaves the current event untouched for targets in a shadow tree.
+  if (!event._inShadowTree) _currentWindowEvent = event;
+  try {
+    _domEventInvokeHandlers(target, event, capture, phase);
+  } finally {
+    _currentWindowEvent = previousEvent;
+  }
+}
+
+function _domEventInvokeHandlers(target, event, capture, phase) {
   event.currentTarget = target;
   event.eventPhase = phase;
 
@@ -2306,6 +2334,10 @@ function _domEventDispatch(target, event) {
     path.push(ancestor);
     ancestor = ancestor.parentNode || null;
   }
+  // The parentNode-based path never crosses a shadow boundary, so the tree
+  // root (last path entry, or the target itself) tells which tree every node
+  // on the path belongs to.
+  event._inShadowTree = (path.length ? path[path.length - 1] : target) instanceof ShadowRoot;
   // Detached nodes have no event parent. Connected paths reach Window through
   // Document, except for load, whose Document parent is null by specification.
   const reachesDocument = target === document || path[path.length - 1] === document;
@@ -2504,6 +2536,7 @@ function _runPostConnectionSteps(nodes) {
       __prepareInsertedSubtree(n);
       if (n instanceof Element && n.tagName === 'LINK') _loadLinkedStylesheet(n);
     }
+    for (const n of nodes) _connectCustomElements(n, true);
   } finally {
     _postConnection = outer;
   }
@@ -2520,6 +2553,89 @@ function _iframeConnectionPending(iframe) {
   return false;
 }
 
+// An iframe with no document to fetch has its initial about:blank document
+// from the moment it is inserted, as a browsing context in the frame tree.
+// One with a srcdoc or a src starts that load instead.
+function _isBlankIframe(iframe) {
+  if (iframe.hasAttribute('srcdoc')) return false;
+  const src = iframe.getAttribute('src');
+  return !src || src === 'about:blank';
+}
+function _startInsertedIframe(iframe) {
+  if (iframe.namespaceURI !== 'http://www.w3.org/1999/xhtml') return;
+  if (iframe.hasAttribute('srcdoc')) iframe._loadIframeSrcdoc();
+  else if (_isBlankIframe(iframe)) _ensureInitialFrameRealm(iframe);
+}
+
+// Custom element reactions for connection changes. Only defined names are
+// queried, so a page without definitions pays one Map size check per
+// insertion or removal. The reactions run once the DOM operation is done.
+let _customElementSelector = '';
+let _customElementSelectorSize = 0;
+function _definedCustomElementsIn(root, inclusive) {
+  const registry = globalThis.customElements?._registry;
+  if (!registry || registry.size === 0) return null;
+  const type = root.nodeType;
+  if (type !== 1 && type !== 11) return null;
+  if (_customElementSelectorSize !== registry.size) {
+    _customElementSelector = Array.from(registry.keys(), (name) => name.replace(/\./g, '\\.')).join(',');
+    _customElementSelectorSize = registry.size;
+  }
+  const found = [];
+  if (inclusive && type === 1 && registry.has(root.localName)) _pushCustomElementTree(root, found);
+  const ids = _domParse("query_selector_all_scoped", root._nid, _customElementSelector) || [];
+  for (const nid of ids) {
+    const el = _wrapEl(+nid);
+    if (el) _pushCustomElementTree(el, found);
+  }
+  return found;
+}
+// Shadow-including tree order: a custom element, then the defined elements of
+// its shadow tree, then its light descendants. Only custom element hosts are
+// visited, which is where components keep nested components.
+function _pushCustomElementTree(el, found) {
+  found.push(el);
+  const shadow = _shadowRootForHost(el, true);
+  if (shadow) {
+    const nested = _definedCustomElementsIn(shadow, false);
+    if (nested) for (const inner of nested) found.push(inner);
+  }
+}
+// Upgrades or connects the defined elements of a subtree that just became
+// connected, in tree order.
+function _connectCustomElements(root, inclusive) {
+  const elements = _definedCustomElementsIn(root, inclusive);
+  if (!elements || elements.length === 0 || !root.isConnected) return;
+  const registry = globalThis.customElements;
+  for (const el of elements) {
+    if (!el.__customUpgraded) registry._upgradeElement(el, registry._registry.get(el.localName));
+    else _customElementCallback(el, 'connectedCallback');
+  }
+}
+// Collected before a connected subtree leaves the tree, called after.
+function _connectedCustomElementsIn(root, inclusive) {
+  const elements = _definedCustomElementsIn(root, inclusive);
+  if (!elements || elements.length === 0 || !root.isConnected) return null;
+  return elements;
+}
+function _disconnectCustomElements(elements) {
+  if (elements) for (const el of elements) _customElementCallback(el, 'disconnectedCallback');
+}
+function _customElementCallback(el, name, args) {
+  if (!el.__customUpgraded || el.__customUpgradeFailed) return;
+  const callback = el[name];
+  if (typeof callback !== 'function') return;
+  try { callback.apply(el, args || []); }
+  catch (e) { globalThis.reportError?.(e); }
+}
+// attributeChangedCallback: the old value is only read for an upgraded
+// element whose definition observes the attribute.
+function _customElementObserves(el, localName) {
+  if (!el.__customUpgraded || el.__customUpgradeFailed) return false;
+  const observed = globalThis.customElements?._observedAttributes?.get(el.localName);
+  return !!observed && observed.has(localName);
+}
+
 function __prepareInsertedSubtree(root) {
   // HTML's script preparation algorithm leaves a disconnected script
   // unstarted.  When an ancestor is later connected, insertion steps visit
@@ -2527,12 +2643,11 @@ function __prepareInsertedSubtree(root) {
   if (!root || !root.isConnected) return;
   const scripts = [];
   const seen = new Set();
-  if (root.nodeType === 1 && (root.tagName === 'SCRIPT'
-      || (root.tagName === 'IFRAME' && root.hasAttribute('srcdoc')))) {
+  if (root.nodeType === 1 && (root.tagName === 'SCRIPT' || root.tagName === 'IFRAME')) {
     scripts.push(root);
     seen.add(root._nid);
   }
-  const ids = _domParse("query_selector_all_scoped", root._nid, "script,iframe[srcdoc]") || [];
+  const ids = _domParse("query_selector_all_scoped", root._nid, "script,iframe") || [];
   for (const nid of ids) {
     const script = _wrapEl(+nid);
     if (script && !seen.has(script._nid)) {
@@ -2542,7 +2657,7 @@ function __prepareInsertedSubtree(root) {
   }
   for (const script of scripts) {
     if (_postConnection) _postConnection.cursor = script;
-    if (script.localName === 'iframe') script._loadIframeSrcdoc();
+    if (script.localName === 'iframe') _startInsertedIframe(script);
     else __prepareInsertedScript(script);
   }
 }
@@ -2840,6 +2955,7 @@ function _removeNode(parent, child, suppress, method = "removeChild") {
   const [previousSibling, nextSibling] = observed ? _recordSiblings(child) : [null, null];
   const removedWindowNames = _windowNamedNamesInTree(child);
   if (child instanceof Element) _releaseLinkedStylesheetsIn(child);
+  const leavingCustomElements = _connectedCustomElementsIn(child, true);
   const parentConnected = parent.isConnected;
   const removed = _dom("remove_child", child._nid) === "true";
   if (!removed) {
@@ -2851,12 +2967,14 @@ function _removeNode(parent, child, suppress, method = "removeChild") {
   _detachStyleSheetsInSubtree(child);
   _reconcileWindowNamedProperties(removedWindowNames);
   if (observed) _queueTreeMutationRecord(parent, [], [child], previousSibling, nextSibling);
+  _disconnectCustomElements(leavingCustomElements);
 }
 
 // Move one node under `parent` before `child` (append when null). A node
 // that still has a parent is removed from it first, which old-parent
 // observers see as a removal (adopt runs "remove" before inserting).
 function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
+  let leavingCustomElements = null;
   if (node._shadowParent) {
     node._shadowParent.removeChild(node);
   } else {
@@ -2867,6 +2985,7 @@ function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
         _queueTreeMutationRecord(oldParent, [], [node], previousSibling, nextSibling);
       }
       _detachStyleSheetsInSubtree(node);
+      leavingCustomElements = _connectedCustomElementsIn(node, true);
     }
   }
   const parentConnected = parent.isConnected;
@@ -2881,6 +3000,7 @@ function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
   _seedInsertedTreeState(node, parent, parentConnected);
   if (node._nodeDocument !== undefined) node._nodeDocument = undefined;
   _registerWindowNamedTree(node);
+  _disconnectCustomElements(leavingCustomElements);
 }
 
 // "Insert": returns the inserted nodes. `suppress` skips parent's record.
@@ -4484,6 +4604,10 @@ class Element extends Node {
     return this._tagName;
   }
   get nodeName() { return this.tagName; }
+  get prefix() {
+    if (this._prefix === undefined) this._prefix = _domParse("prefix", this._nid);
+    return this._prefix;
+  }
   get localName() {
     // The native tree owns the namespace-aware QualName. Reading its local
     // component directly preserves case-sensitive SVG/MathML names such as
@@ -4544,6 +4668,7 @@ class Element extends Node {
     // retained CSSStyleSheet wrappers cannot keep stale owner/source nodes.
     for (const style of this.querySelectorAll("style")) _detachStyleSheet(style);
     _releaseLinkedStylesheetsIn(this);
+    const leavingCustomElements = _connectedCustomElementsIn(this, false);
     let oldChildren = [];
     let newChildren = [];
     if (globalThis.__mutationObservers?.length) {
@@ -4561,6 +4686,8 @@ class Element extends Node {
       newChildren = _domParse("child_nodes", this._nid) || [];
       globalThis.__notifyMutation('childList', this._nid, newChildren, oldChildren);
     }
+    _disconnectCustomElements(leavingCustomElements);
+    _connectCustomElements(this, false);
   }
   get outerHTML() { return _domParse("outer_html", this._nid) ?? ""; }
   get innerText() { return _innerText(this); }
@@ -4676,6 +4803,7 @@ class Element extends Node {
       ? this.getAttribute(n)
       : null;
     const observedOldValue = _attributeOldValuesWanted() ? this.getAttribute(n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttribute(n) : undefined;
     const value = String(v);
     _dom("set_attribute", this._nid, n + "\0" + value);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
@@ -4703,6 +4831,7 @@ class Element extends Node {
     }
     if (popoverPrev !== undefined) this._popoverTypeMaybeChanged(popoverPrev);
     if (_hasMutationObservers()) _queueAttributeMutationRecord(this, n, null, observedOldValue);
+    if (customOldValue !== undefined) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, value, null]);
     if (this.localName === "source"
         && (n === "srcset" || n === "sizes" || n === "media" || n === "type")) {
       const picture = this.parentElement;
@@ -4724,6 +4853,7 @@ class Element extends Node {
       ? this.hasAttribute('open')
       : null;
     const observedOldValue = _attributeOldValuesWanted() ? this.getAttributeNS(ns, localName) : null;
+    const customOldValue = _customElementObserves(this, localName) ? this.getAttributeNS(ns, localName) : undefined;
     _dom("set_attribute_ns", this._nid, ns + "\0" + n + "\0" + value);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (_hasMutationObservers()) _queueAttributeMutationRecord(this, localName, ns || null, observedOldValue);
@@ -4733,6 +4863,7 @@ class Element extends Node {
     this._nullNamespaceAttrs = null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe') this._loadIframeSrcdoc(true);
     if (ns === "" && n === "style") _elementStyleGet(this)?._replaceFromAttribute(value);
+    if (customOldValue !== undefined) _customElementCallback(this, 'attributeChangedCallback', [localName, customOldValue, value, ns || null]);
   }
   removeAttribute(n) {
     n = _htmlAttrName(this, n);
@@ -4745,6 +4876,7 @@ class Element extends Node {
       ? this.getAttribute(n)
       : null;
     const observedOldValue = _hasMutationObservers() ? this.getAttribute(n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttribute(n) : null;
     _dom("remove_attribute", this._nid, n);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (observedOldValue !== null) _queueAttributeMutationRecord(this, n, null, observedOldValue);
@@ -4773,6 +4905,7 @@ class Element extends Node {
         image._imageSourceChanged();
       }
     }
+    if (customOldValue !== null) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, null, null]);
   }
   removeAttributeNS(ns, n) {
     ns = String(ns == null ? "" : ns);
@@ -4782,12 +4915,14 @@ class Element extends Node {
       : null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe' && this.getAttributeNS(ns, n) === null) return;
     const observedOldValue = _hasMutationObservers() ? this.getAttributeNS(ns, n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttributeNS(ns, n) : null;
     _dom("remove_attribute_ns", this._nid, ns + "\0" + n);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (observedOldValue !== null) _queueAttributeMutationRecord(this, n, ns || null, observedOldValue);
     this._nullNamespaceAttrs = null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe') this._loadIframeSrc(this.getAttribute('src') || 'about:blank');
     if (ns === "" && n === "style") _elementStyleGet(this)?._replaceFromAttribute("");
+    if (customOldValue !== null) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, null, ns || null]);
   }
   hasAttribute(n) { return this.getAttribute(n) !== null; }
   hasAttributes() { return this.attributes.length > 0; }
@@ -6662,6 +6797,75 @@ function _throwDocumentDomainSecurityError() {
   throw new DOMException("Failed to set the 'domain' property on 'Document'", "SecurityError");
 }
 
+// document.implementation is one DOMImplementation object per document, and the
+// interface is a global, as in browsers. Consent managers reference the global
+// (`x instanceof DOMImplementation`) while booting, so a plain object threw a
+// ReferenceError there.
+const _domImplementationToken = Symbol("DOMImplementation");
+class DOMImplementation {
+  #doc;
+  constructor() {
+    if (arguments[0] !== _domImplementationToken) {
+      throw new TypeError("Failed to construct 'DOMImplementation': Illegal constructor");
+    }
+    this.#doc = arguments[1];
+  }
+  // Spec: createHTMLDocument returns a NEW detached Document. jQuery
+  // 3.x's selector feature-detect calls `body.innerHTML = '<form>'` on
+  // the result: when we returned `globalThis.document`, the real
+  // `<body>` was wiped, taking every page on the open web that ships
+  // jQuery 3.x with it. Reuse the DOMParser path to build a detached
+  // document, then optionally set the title.
+  createHTMLDocument(title) {
+    const doc = _createDetachedDocument("text/html", false);
+    doc.appendChild(doc.implementation.createDocumentType("html", "", ""));
+    const html = doc.createElement("html");
+    doc.appendChild(html);
+    const head = doc.createElement("head");
+    html.appendChild(head);
+    if (title !== undefined) {
+      const titleEl = doc.createElement("title");
+      titleEl.appendChild(doc.createTextNode(String(title)));
+      head.appendChild(titleEl);
+    }
+    html.appendChild(doc.createElement("body"));
+    return doc;
+  }
+  createDocument(namespace, qualifiedName, doctype) {
+    const ns = namespace == null ? null : String(namespace);
+    const contentType = ns === "http://www.w3.org/1999/xhtml"
+      ? "application/xhtml+xml"
+      : (ns === "http://www.w3.org/2000/svg" ? "image/svg+xml" : "application/xml");
+    const doc = _createDetachedDocument(contentType, true);
+    const name = qualifiedName == null ? "" : String(qualifiedName);
+    const element = name === "" ? null : doc.createElementNS(ns, name);
+    if (doctype != null) doc.appendChild(doctype);
+    if (element) doc.appendChild(element);
+    return doc;
+  }
+  // createDocumentType(qualifiedName, publicId, systemId): build a detached
+  // DocumentType node. Browsers validate leniently here (only a name with
+  // ASCII whitespace or ">" is rejected, matching the WPT cases); the node's
+  // owner document is the document whose implementation was used.
+  createDocumentType(qualifiedName, publicId, systemId) {
+    const name = String(qualifiedName);
+    if (name === "" || /[\t\n\f\r >]/.test(name)) {
+      throw new DOMException("The qualified name '" + name + "' contains an invalid character", "InvalidCharacterError");
+    }
+    const dt = new DocumentType(
+      +_dom("create_doctype", name, publicId === undefined ? "" : String(publicId)),
+      name,
+      publicId === undefined ? "" : String(publicId),
+      systemId === undefined ? "" : String(systemId)
+    );
+    _seedDetachedTreeState(dt);
+    _cache.set(dt._nid, dt);
+    return _stampNodeDocument(dt, this.#doc);
+  }
+  hasFeature() { return true; }
+  get [Symbol.toStringTag]() { return "DOMImplementation"; }
+}
+
 const _documentInstances = new WeakSet();
 class Document extends Node {
   constructor(nid) {
@@ -6863,7 +7067,7 @@ class Document extends Node {
       "http://www.w3.org/1999/xhtml",
       localName,
     );
-    const el = new C(nid);
+    const el = new C(nid, _htmlInterfaceToken);
     // This node was just created from values already known to JS. Seed its
     // immutable metadata instead of rediscovering it through native calls in
     // hydration's tag/local-name checks.
@@ -6886,7 +7090,7 @@ class Document extends Node {
     const namespace = ns == null ? null : String(ns);
     const qualified = String(t);
     _ns_validateQualifiedName(namespace == null ? "" : namespace, qualified);
-    if (namespace === "http://www.w3.org/1999/xhtml") {
+    if (namespace === "http://www.w3.org/1999/xhtml" && qualified === qualified.toLowerCase() && !qualified.includes(':')) {
       const el = this.createElement(qualified);
       if (el) el._ns = namespace;
       return el;
@@ -6896,12 +7100,12 @@ class Document extends Node {
       (namespace == null ? "" : namespace) + "\0" + qualified,
     );
     const effectiveNamespace = namespace == null ? "" : namespace;
-    const C = _elementClassForKnownName(effectiveNamespace, qualified);
-    const el = new C(nid);
     const localName = qualified.includes(":")
       ? qualified.slice(qualified.indexOf(":") + 1)
       : qualified;
-    el._tagName = qualified;
+    const C = _elementClassForKnownName(effectiveNamespace, localName);
+    const el = new C(nid, _htmlInterfaceToken);
+    el._tagName = effectiveNamespace === "http://www.w3.org/1999/xhtml" ? qualified.toUpperCase() : qualified;
     el._lname = localName;
     el._ns = effectiveNamespace;
     el._nullNamespaceAttrs = new Map();
@@ -7222,62 +7426,10 @@ class Document extends Node {
   // body, but we never parse in quirks mode.
   get scrollingElement() { return this.documentElement; }
   get implementation() {
-    const ownerDoc = this;
-    return {
-      // Spec: createHTMLDocument returns a NEW detached Document. jQuery
-      // 3.x's selector feature-detect calls `body.innerHTML = '<form>'` on
-      // the result: when we returned `globalThis.document`, the real
-      // `<body>` was wiped, taking every page on the open web that ships
-      // jQuery 3.x with it. Reuse the DOMParser path to build a detached
-      // document, then optionally set the title.
-      createHTMLDocument(title) {
-        const doc = _createDetachedDocument("text/html", false);
-        doc.appendChild(doc.implementation.createDocumentType("html", "", ""));
-        const html = doc.createElement("html");
-        doc.appendChild(html);
-        const head = doc.createElement("head");
-        html.appendChild(head);
-        if (title !== undefined) {
-          const titleEl = doc.createElement("title");
-          titleEl.appendChild(doc.createTextNode(String(title)));
-          head.appendChild(titleEl);
-        }
-        html.appendChild(doc.createElement("body"));
-        return doc;
-      },
-      createDocument(namespace, qualifiedName, doctype) {
-        const ns = namespace == null ? null : String(namespace);
-        const contentType = ns === "http://www.w3.org/1999/xhtml"
-          ? "application/xhtml+xml"
-          : (ns === "http://www.w3.org/2000/svg" ? "image/svg+xml" : "application/xml");
-        const doc = _createDetachedDocument(contentType, true);
-        const name = qualifiedName == null ? "" : String(qualifiedName);
-        const element = name === "" ? null : doc.createElementNS(ns, name);
-        if (doctype != null) doc.appendChild(doctype);
-        if (element) doc.appendChild(element);
-        return doc;
-      },
-      // createDocumentType(qualifiedName, publicId, systemId): build a detached
-      // DocumentType node. Browsers validate leniently here (only a name with
-      // ASCII whitespace or ">" is rejected, matching the WPT cases); the node's
-      // owner document is the document whose implementation was used.
-      createDocumentType(qualifiedName, publicId, systemId) {
-        const name = String(qualifiedName);
-        if (name === "" || /[\t\n\f\r >]/.test(name)) {
-          throw new DOMException("The qualified name '" + name + "' contains an invalid character", "InvalidCharacterError");
-        }
-        const dt = new DocumentType(
-          +_dom("create_doctype", name, publicId === undefined ? "" : String(publicId)),
-          name,
-          publicId === undefined ? "" : String(publicId),
-          systemId === undefined ? "" : String(systemId)
-        );
-        _seedDetachedTreeState(dt);
-        _cache.set(dt._nid, dt);
-        return _stampNodeDocument(dt, ownerDoc);
-      },
-      hasFeature() { return true; },
-    };
+    if (!this._implementation) {
+      this._implementation = new DOMImplementation(_domImplementationToken, this);
+    }
+    return this._implementation;
   }
   get styleSheets() {
     if (!this._styleSheetList) this._styleSheetList = new StyleSheetList(this);
@@ -7438,12 +7590,15 @@ class DocumentFragment extends Node {
   get innerHTML() { return _domParse("inner_html", this._nid) ?? ""; }
   set innerHTML(v) {
     const html = String(v ?? "");
+    const leavingCustomElements = _connectedCustomElementsIn(this, false);
     if (this._fragmentContext) {
       _dom("set_inner_html_context", this._nid, _fragmentContextPayload(this._fragmentContext, html));
     } else {
       _dom("set_inner_html", this._nid, html);
     }
     _connectSrcdocFrames(this, html);
+    _disconnectCustomElements(leavingCustomElements);
+    _connectCustomElements(this, false);
   }
   querySelector(s) { return _wrapEl(+_dom("query_selector_scoped", this._nid, s)); }
   querySelectorAll(s) {
@@ -8036,8 +8191,13 @@ globalThis.TextTrackCue = TextTrackCue;
 globalThis.TextTrackCueList = TextTrackCueList;
 globalThis.VTTCue = VTTCue;
 
+const _htmlInterfaceToken = {};
+const _additionalHtmlElementClasses = Object.create(null);
 const _elementClassFor = (function _elementClassFor(nid) {
   const tag = _domParse("tag_name", nid);
+  if (tag.includes(":") && _domParse("namespace_uri", nid) === "http://www.w3.org/1999/xhtml") {
+    return _elementClassForKnownName("http://www.w3.org/1999/xhtml", _domParse("local_name", nid));
+  }
   // HTML tagName values are ASCII-uppercase. Foreign SVG names retain their
   // case, so keep the common HTML path fast and only inspect the native
   // namespace for possible SVG wrappers.
@@ -8076,12 +8236,12 @@ const _elementClassFor = (function _elementClassFor(nid) {
   if (tag === "AUDIO") return HTMLAudioElement;
   if (tag === "VIDEO") return HTMLVideoElement;
   if (tag === "TRACK") return HTMLTrackElement;
+  const additional = _additionalHtmlElementClasses[tag];
+  if (additional && _domParse("namespace_uri", nid) === "http://www.w3.org/1999/xhtml"
+      && _domParse("local_name", nid) === tag.toLowerCase()) return additional;
   return Element;
 });
-const _elementClassForKnownName = (function _elementClassForKnownName(namespace, qualifiedName) {
-  const localName = qualifiedName.includes(":")
-    ? qualifiedName.slice(qualifiedName.indexOf(":") + 1)
-    : qualifiedName;
+const _elementClassForKnownName = (function _elementClassForKnownName(namespace, localName) {
   if (namespace === "http://www.w3.org/2000/svg") {
     const svgClass = _svgElementClasses[localName];
     if (svgClass) return svgClass;
@@ -8102,15 +8262,18 @@ const _elementClassForKnownName = (function _elementClassForKnownName(namespace,
     if (tag === "AUDIO") return HTMLAudioElement;
     if (tag === "VIDEO") return HTMLVideoElement;
     if (tag === "TRACK") return HTMLTrackElement;
+    const additional = _additionalHtmlElementClasses[localName];
+    if (additional && localName === localName.toLowerCase()) return additional;
   }
   return Element;
 });
 const _wrap = (function _wrap(nid) {
   if (nid < 0 || nid === null || nid === undefined || isNaN(nid)) return null;
-  if (_cache.has(nid)) return _cache.get(nid);
+  const cached = _cache.get(nid);
+  if (cached !== undefined) return cached;
   const t = +_dom("node_type", nid);
   let n;
-  if (t === 1) { const C = _elementClassFor(nid); n = new C(nid); }
+  if (t === 1) { const C = _elementClassFor(nid); n = new C(nid, _htmlInterfaceToken); }
   else if (t === 3) n = new Text(nid);
   else if (t === 8) n = new Comment(nid);
   else if (t === 9) n = new Document(nid);
@@ -8121,11 +8284,13 @@ const _wrap = (function _wrap(nid) {
   _cache.set(nid, n);
   return n;
 });
+// Keep the common cached-node path small enough for V8 to inline.
 const _wrapEl = (function _wrapEl(nid) {
   if (nid < 0 || nid === null || nid === undefined || isNaN(nid)) return null;
-  if (_cache.has(nid)) return _cache.get(nid);
+  const cached = _cache.get(nid);
+  if (cached !== undefined) return cached;
   const C = _elementClassFor(nid);
-  const n = new C(nid);
+  const n = new C(nid, _htmlInterfaceToken);
   _cache.set(nid, n);
   return n;
 });
@@ -8225,6 +8390,30 @@ Object.defineProperty(globalThis, 'location', {
   configurable: false,
   enumerable: true,
 });
+
+// Window.origin is replaceable and reads the document origin, including
+// inherited about:blank/srcdoc origins, rather than a pending navigation URL.
+const _windowOriginDescriptor = Object.getOwnPropertyDescriptor({
+  get origin() {
+    if (this === globalThis) return _realmOrigin();
+    const get = _documentRealmMember(this, 'windowOrigin');
+    if (get) return get.call(this);
+    throw new TypeError('Illegal invocation');
+  },
+  set origin(value) {
+    if (this !== globalThis) {
+      const set = _documentRealmMember(this, 'setWindowOrigin');
+      if (set) return set.call(this, value);
+      throw new TypeError('Illegal invocation');
+    }
+    Object.defineProperty(this, 'origin', {
+      value, writable: true, enumerable: true, configurable: true,
+    });
+  },
+}, 'origin');
+_markNative(_windowOriginDescriptor.get);
+_markNative(_windowOriginDescriptor.set);
+Object.defineProperty(globalThis, 'origin', _windowOriginDescriptor);
 
 globalThis.window = globalThis;
 globalThis.self = globalThis;
@@ -8798,6 +8987,27 @@ function _bodyToUint8Array(body) {
 
 function _arrayBufferFromBytes(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+async function _readResponseStream(stream) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (Object.prototype.toString.call(value) !== '[object Uint8Array]') {
+        throw new TypeError('Response body stream must contain Uint8Array chunks');
+      }
+      const chunk = value.slice();
+      chunks.push(chunk); total += chunk.byteLength;
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
 }
 
 function _installWasmStreamingFallback() {
@@ -9485,7 +9695,10 @@ if (typeof Response === 'undefined') {
       } else if (this.status === 204 || this.status === 205 || this.status === 304) {
         body = null;
       }
-      this._bodyBytes = _bodyToUint8Array(body);
+      const stream = typeof ReadableStream === 'function' && body instanceof ReadableStream ? body : null;
+      if (stream && (stream.locked || stream._disturbed)) throw new TypeError('Body stream is locked or disturbed');
+      if (stream) this._streamSource = stream;
+      this._bodyBytes = stream ? new Uint8Array() : _bodyToUint8Array(body);
       this.ok = this.status >= 200 && this.status < 300;
       this.headers = new Headers(headers);
       this.type = internal ? (init.type || 'default') : 'default';
@@ -9502,11 +9715,12 @@ if (typeof Response === 'undefined') {
       this._bodyAbortReason = undefined;
     }
     _consumeBody() {
-      if (this._bodyUsed) throw new TypeError("Body is already consumed");
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) throw new TypeError("Body is already consumed or locked");
       this._bodyUsed = true;
       if (this._bodyAborted) throw this._bodyAbortReason;
     }
     get body() {
+      if (this._streamSource) return this._streamSource;
       if (this._bodyNull) return null;
       if (this._bodyUsed) throw new TypeError("Body is already consumed");
       if (!this._bodyStream) {
@@ -9527,15 +9741,16 @@ if (typeof Response === 'undefined') {
             }
           },
         });
-        // bodyUsed flips the moment the stream is locked for reading
-        // (spec: the body becomes "disturbed"), which no state probe can
-        // observe on a native ReadableStream, so hook getReader instead.
+        // Locking alone does not disturb a body; reading or cancelling does.
         const response = this;
         const stream = this._bodyStream;
         const getReader = stream.getReader.bind(stream);
         stream.getReader = function () {
-          response._bodyUsed = true;
-          return getReader();
+          const reader = getReader();
+          const read = reader.read.bind(reader), cancel = reader.cancel.bind(reader);
+          reader.read = function () { response._bodyUsed = true; return read(); };
+          reader.cancel = function (reason) { response._bodyUsed = true; return cancel(reason); };
+          return reader;
         };
         stream.releaseLock = function () {
           response._bodyUsed = true;
@@ -9544,12 +9759,19 @@ if (typeof Response === 'undefined') {
       }
       return this._bodyStream;
     }
-    get bodyUsed() { return this._bodyUsed; }
-    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
-    async json() { this._consumeBody(); return JSON.parse(await _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
-    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
-    async blob() { this._consumeBody(); return new Blob([this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
+    get bodyUsed() { return this._bodyUsed || !!this._streamSource?._disturbed; }
+    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
+    async json() { this._consumeBody(); return JSON.parse(await _decodeBodyWithCharset(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
+    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
+    async blob() { this._consumeBody(); return new Blob([this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
     clone() {
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) throw new TypeError('Body is already consumed or locked');
+      if (this._streamSource) {
+        const [left, right] = this._streamSource.tee();
+        this._streamSource = left;
+        return _createInternalResponse(right, {status: this.status, statusText: this.statusText,
+          headers: this.headers, type: this.type, url: this.url, redirected: this.redirected});
+      }
       const copy = _createInternalResponse(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
       if (this._fetchBody) {
         const promise = this._fetchBody.promise.then(bytes => bytes.slice());
@@ -11140,11 +11362,14 @@ function _replaceAdoptedStyleSheets(root, sheets) {
   return list;
 }
 
+// configurable like every WebIDL attribute: constructable-stylesheet polyfills
+// redefine it on Document.prototype and threw "Cannot redefine property".
 Object.defineProperty(Document.prototype, 'adoptedStyleSheets', {
   get() { return _adoptedStyleSheetsFor(this); },
   set(sheets) {
     _replaceAdoptedStyleSheets(this, sheets);
   },
+  configurable: true,
 });
 
 globalThis.__mutationObservers = [];
@@ -11427,8 +11652,18 @@ function _isValidCustomElementName(name) {
   // PotentialCustomElementName (approx): lowercase start, a hyphen, no uppercase.
   return /^[a-z][a-z0-9._\u00b7\u00c0-\uffff-]*-[a-z0-9._\u00b7\u00c0-\uffff-]*$/.test(name);
 }
+// Read once at define time, as the spec does, and only when the class has an
+// attributeChangedCallback.
+function _observedAttributesOf(cls) {
+  if (typeof cls.prototype?.attributeChangedCallback !== 'function') return null;
+  const list = cls.observedAttributes;
+  if (list == null) return null;
+  const names = new Set();
+  for (const name of list) names.add(String(name));
+  return names.size ? names : null;
+}
 class CustomElementRegistry {
-  constructor() { this._registry = new Map(); this._byCtor = new Map(); this._whenDefinedResolvers = new Map(); this._defining = false; }
+  constructor() { this._registry = new Map(); this._byCtor = new Map(); this._observedAttributes = new Map(); this._whenDefinedResolvers = new Map(); this._defining = false; }
   define(name, cls, opts) {
     if (!_isConstructorCE(cls)) throw new TypeError("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not a constructor.");
     if (!_isValidCustomElementName(name)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': \"" + name + "\" is not a valid custom element name", "SyntaxError");
@@ -11436,7 +11671,12 @@ class CustomElementRegistry {
     if (this._registry.has(name)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': the name \"" + name + "\" has already been used with this registry", "NotSupportedError");
     if (this._byCtor.has(cls)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': the constructor has already been used with this registry", "NotSupportedError");
     this._defining = true;
-    try { this._byCtor.set(cls, name); this._defineInner(name, cls, opts); } finally { this._defining = false; }
+    try {
+      const observed = _observedAttributesOf(cls);
+      this._byCtor.set(cls, name);
+      if (observed) this._observedAttributes.set(name, observed);
+      this._defineInner(name, cls, opts);
+    } finally { this._defining = false; }
   }
   _defineInner(name, cls, opts) {
     this._registry.set(name, cls);
@@ -11475,9 +11715,15 @@ class CustomElementRegistry {
       if (constructed !== el) {
         throw new TypeError("Custom element constructor did not produce the element being upgraded");
       }
-      if (typeof el.connectedCallback === 'function' && globalThis.document?.contains?.(el)) {
-        try { el.connectedCallback(); } catch (e) {}
+      const observed = this._observedAttributes.get(el.localName);
+      if (observed) {
+        for (const attr of Array.from(el.attributes)) {
+          if (observed.has(attr.localName)) {
+            _customElementCallback(el, 'attributeChangedCallback', [attr.localName, null, attr.value, attr.namespaceURI]);
+          }
+        }
       }
+      if (el.isConnected) _customElementCallback(el, 'connectedCallback');
     } catch (e) {
       el.__customUpgradeFailed = true;
     }
@@ -12290,14 +12536,18 @@ function _emptyFileList() { return _makeFileList([]); }
 // Rust side. Real File objects (backed by the bytes) are created so page code can
 // read them via FileReader or upload them via fetch/FormData, then input+change
 // fire as a genuine selection would (issue #359).
-globalThis.__inbrowse_setInputFiles = function(el, specs) {
-  const files = (specs || []).map((s) => {
-    let bytes;
-    try {
-      const bin = atob(s.b64 || "");
-      bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    } catch (_e) { bytes = new Uint8Array(0); }
+globalThis.__inbrowse_setInputFiles = function(el, specs, validateOnly = false) {
+  // Only a live file input of this document is a valid target. With
+  // `validateOnly` nothing changes, so the caller can check the target before
+  // it reads any file from disk. A single-file input takes the first file.
+  if (!el || _cache.get(el._nid) !== el || !(el instanceof HTMLInputElement)
+      || (el.getAttribute('type') || '').toLowerCase() !== 'file') return false;
+  if (validateOnly) return true;
+  const selected = el.hasAttribute('multiple') ? (specs || []) : (specs || []).slice(0, 1);
+  const files = selected.map((s) => {
+    const bin = atob(s.b64 || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return new File([bytes], s.name || "", { type: s.type || "" });
   });
   el._files = _makeFileList(files);
@@ -12306,8 +12556,9 @@ globalThis.__inbrowse_setInputFiles = function(el, specs) {
   // trusted events; upload flows that gate their change handler on
   // event.isTrusted (common in frameworks and anti-bot code) ignore untrusted
   // ones, which would silently break the exact case this feature targets.
-  try { el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("input", { bubbles: true }))); } catch (_e) {}
-  try { el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("change", { bubbles: true }))); } catch (_e) {}
+  el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("input", { bubbles: true })));
+  el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("change", { bubbles: true })));
+  return true;
 };
 globalThis.Event = class Event {
   constructor(t,o={}) { if (arguments.length < 1) throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present."); this.type=String(t);this.bubbles=!!o.bubbles;this.cancelable=!!o.cancelable;this.composed=!!o.composed;this.defaultPrevented=false;this.target=null;this.currentTarget=null;this.eventPhase=0;this.timeStamp=performance.now();this._dispatching=false;this._propagationStopped=false;this._immediatePropagationStopped=false; }
@@ -13322,6 +13573,12 @@ const _checkXmlWellFormed = (html) => {
 // "well-formed" whenever the scan is ambiguous, so valid XML is never falsely
 // flagged. Quoted attribute regions, comments, CDATA, PIs and the doctype are
 // skipped; a literal '<' in text (invalid in XML) reads as a bad tag.
+// Pages replace String.prototype.startsWith with polyfills that ignore the
+// position argument (`this.substr(0, a.length) === a`; iasWorld county sites
+// ship one). Every `startsWith(x, i)` below then tested the start of the
+// input, so any XML beginning with `<?xml` read as a parse error.
+const _startsWithAt = Function.prototype.call.bind(String.prototype.startsWith);
+
 function _xmlWellFormed(src) {
   const s = String(src);
   const stack = [];
@@ -13332,10 +13589,10 @@ function _xmlWellFormed(src) {
     const lt = s.indexOf('<', i);
     if (lt === -1) break;
     i = lt;
-    if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
-    if (s.startsWith('<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
+    if (_startsWithAt(s, '<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
+    if (_startsWithAt(s, '<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
     // A start/end/self-closing tag: find its '>' while skipping quoted regions.
     let j = i + 1, quote = null;
     while (j < n) {
@@ -14135,9 +14392,10 @@ Object.defineProperty(Storage.prototype, 'length', {
 });
 
 const _mkStore = (local) => {
-  const target = Object.create(Storage.prototype);
+  const prototype = Storage.prototype;
+  const target = Object.create(prototype);
   const slot = { local: !!local };
-  const isReal = (p) => p === 'constructor' || (p in Storage.prototype);
+  const isReal = (p) => p === 'constructor' || (p in prototype);
   const proxy = new Proxy(target, {
     get(t, p, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.get(t, p, recv); const v = t.getItem(p); return v === null ? undefined : v; },
     set(t, p, v, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.set(t, p, v, recv); t.setItem(p, v); return true; },
@@ -15175,6 +15433,39 @@ globalThis.HTMLLegendElement = Element;
 globalThis.HTMLProgressElement = Element;
 globalThis.HTMLDetailsElement = Element;
 globalThis.HTMLDialogElement = Element;
+// Identity-only interfaces still need distinct prototypes. Inheriting Element
+// preserves implemented DOM behavior without making unrelated tags pass brand checks.
+for (const [name, tags] of Object.entries({
+  HTMLAreaElement: ['area'], HTMLBaseElement: ['base'], HTMLDListElement: ['dl'],
+  HTMLDataElement: ['data'], HTMLDirectoryElement: ['dir'], HTMLEmbedElement: ['embed'],
+  HTMLFontElement: ['font'], HTMLFrameElement: ['frame'], HTMLFrameSetElement: ['frameset'],
+  HTMLMapElement: ['map'], HTMLMarqueeElement: ['marquee'], HTMLMenuElement: ['menu'],
+  HTMLMeterElement: ['meter'], HTMLModElement: ['del', 'ins'], HTMLObjectElement: ['object'],
+  HTMLOptGroupElement: ['optgroup'], HTMLOutputElement: ['output'], HTMLParamElement: ['param'],
+  HTMLPictureElement: ['picture'], HTMLQuoteElement: ['blockquote', 'q'], HTMLSourceElement: ['source'],
+  HTMLTableCaptionElement: ['caption'], HTMLTableCellElement: ['td', 'th'],
+  HTMLTableColElement: ['col', 'colgroup'], HTMLTableRowElement: ['tr'],
+  HTMLTableSectionElement: ['tbody', 'thead', 'tfoot'], HTMLTimeElement: ['time'], HTMLTitleElement: ['title'],
+})) {
+  if (globalThis[name] !== undefined) continue;
+  const Interface = class extends Element {
+    constructor(nid, token) {
+      if (token !== _htmlInterfaceToken) {
+        const entry = _customElementConstructionStack[_customElementConstructionStack.length - 1];
+        if (!entry || new.target !== entry.constructor || entry.constructed) throw new TypeError('Illegal constructor');
+      }
+      super(nid);
+    }
+  };
+  Object.defineProperty(Interface, 'name', {value: name, configurable: true});
+  Object.defineProperty(Interface.prototype, Symbol.toStringTag, {value: name, configurable: true});
+  Object.defineProperty(globalThis, name, {value: Interface, writable: true, configurable: true});
+  for (const tag of tags) {
+    _additionalHtmlElementClasses[tag] = Interface;
+    _additionalHtmlElementClasses[tag.toUpperCase()] = Interface;
+  }
+}
+
 // SVGAnimatedString backs the className and href reflections on SVG elements.
 // baseVal and animVal both read the live attribute (no SMIL animation), and
 // baseVal is writable. Used by the SVG-aware get className()/get href() above.
@@ -15409,6 +15700,7 @@ function _isValidPITarget(target) {
 }
 globalThis.DocumentFragment = DocumentFragment;
 globalThis.DocumentType = DocumentType;
+globalThis.DOMImplementation = DOMImplementation;
 globalThis.Node = Node;
 globalThis.Element = Element;
 globalThis.Document = Document;
@@ -16420,6 +16712,7 @@ function _ensureInitialFrameRealm(element, srcdoc) {
     for (const name of Object.keys(__inbrowseCore.ops)) core.ops[name] = __inbrowseCore.ops[name];
     delete child.__inbrowse_core_handoff;
     delete child.Deno;
+    delete child.__bootstrap;
     for (const name of ['__inbrowse_ua', '__inbrowse_platform', '__inbrowse_ua_platform',
                        '__inbrowse_ua_platform_version', '__inbrowse_stealth',
                        '__inbrowse_geo_lat', '__inbrowse_geo_lon']) {
@@ -17428,6 +17721,21 @@ navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not a
 
 globalThis.opener = null;
 
+const WORKER_GLOBALS = [
+  'Object', 'Function', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN', 'undefined',
+  'Boolean', 'String', 'Symbol', 'Date', 'Promise', 'RegExp', 'Error', 'AggregateError', 'EvalError',
+  'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'JSON', 'Math', 'Intl',
+  'ArrayBuffer', 'SharedArrayBuffer', 'Atomics', 'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
+  'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array', 'Uint8ClampedArray', 'BigUint64Array',
+  'BigInt64Array', 'DataView', 'Map', 'BigInt', 'Set', 'WeakMap', 'WeakSet', 'WeakRef',
+  'FinalizationRegistry', 'Proxy', 'Reflect', 'WebAssembly', 'decodeURI', 'decodeURIComponent',
+  'encodeURI', 'encodeURIComponent', 'escape', 'unescape', 'isFinite', 'isNaN',
+  'queueMicrotask', 'structuredClone', 'URL', 'URLSearchParams', 'Blob', 'File', 'FormData', 'Headers',
+  'Request', 'Response', 'AbortController', 'AbortSignal', 'Event', 'CustomEvent', 'EventTarget',
+  'MessageChannel', 'MessagePort', 'BroadcastChannel', 'ReadableStream', 'WritableStream',
+  'TransformStream', 'XMLHttpRequest', 'WebSocket', 'indexedDB', 'navigator', 'DOMException',
+];
+
 globalThis.Worker = class Worker {
   constructor(url) {
     this.onmessage = null;
@@ -17497,6 +17805,19 @@ globalThis.Worker = class Worker {
       location: globalThis.location,
     };
     scope.self = scope;
+    // A worker global carries the ECMAScript builtins and the worker-visible
+    // web APIs as properties. Bare identifiers already resolved through the
+    // page global via `with (scope)`, but code that treats `self` as the global
+    // object (Go's wasm_exec runs with `global = self`, reading `self.Object`,
+    // `self.Promise`, `self.JSON`, ...) saw undefined and the wasm panicked with
+    // "syscall/js: call of Value.Invoke on undefined".
+    for (const name of WORKER_GLOBALS) {
+      if (!(name in scope) && name in globalThis) {
+        Object.defineProperty(scope, name, { value: globalThis[name], writable: true, configurable: true });
+      }
+    }
+    // Bare `globalThis` inside a worker is the worker scope, not the page window.
+    Object.defineProperty(scope, 'globalThis', { value: scope, writable: true, configurable: true });
     return scope;
   }
   _autoRun() {
@@ -17674,7 +17995,7 @@ globalThis.focus = function() {}; _markNative(globalThis.focus);
 globalThis.blur = function() {}; _markNative(globalThis.blur);
 globalThis.print = function() {}; _markNative(globalThis.print);
 globalThis.alert = function() {}; _markNative(globalThis.alert);
-globalThis.confirm = function() { return true; }; _markNative(globalThis.confirm);
+globalThis.confirm = function() { return false; }; _markNative(globalThis.confirm);
 globalThis.prompt = function() { return null; }; _markNative(globalThis.prompt);
 globalThis.open = function() { return null; }; _markNative(globalThis.open);
 globalThis.close = function() {}; _markNative(globalThis.close);
@@ -17700,6 +18021,12 @@ if (typeof ReadableStream === 'undefined') {
       this._state = "readable";
       this._error = null;
       this.locked = false;
+      this._disturbed = false;
+      this._started = false;
+      this._pulling = false;
+      this._pullAgain = false;
+      this._highWaterMark = strategy.highWaterMark === undefined ? 1 : Number(strategy.highWaterMark);
+      if (Number.isNaN(this._highWaterMark) || this._highWaterMark < 0) throw new RangeError('Invalid highWaterMark');
       const stream = this;
       this._controller = {
         enqueue(chunk) {
@@ -17707,6 +18034,7 @@ if (typeof ReadableStream === 'undefined') {
           const pending = stream._reads.shift();
           if (pending) pending.resolve({value: chunk, done: false});
           else stream._queue.push(chunk);
+          stream._pullIfNeeded();
         },
         close() {
           if (stream._state !== "readable") return;
@@ -17726,16 +18054,27 @@ if (typeof ReadableStream === 'undefined') {
           while (stream._reads.length) stream._reads.shift().reject(error);
           while (stream._closedWaiters.length) stream._closedWaiters.shift().reject(error);
         },
-        get desiredSize() { return Math.max(0, 1 - stream._queue.length); },
+        get desiredSize() { return stream._highWaterMark - stream._queue.length; },
       };
       try {
         const started = source.start?.(this._controller);
         if (started && typeof started.then === "function") {
-          started.catch((error) => this._controller.error(error));
+          Promise.resolve(started).then(() => { this._started = true; this._pullIfNeeded(); }, (error) => this._controller.error(error));
+        } else {
+          this._started = true;
+          if (typeof source.pull === 'function') queueMicrotask(() => this._pullIfNeeded());
         }
-      } catch (error) {
-        this._controller.error(error);
-      }
+      } catch (error) { this._controller.error(error); }
+    }
+    _pullIfNeeded() {
+      if (!this._started || this._state !== 'readable' || this._closeRequested || typeof this._source.pull !== 'function'
+          || (!this._reads.length && this._controller.desiredSize <= 0)) return;
+      if (this._pulling) { this._pullAgain = true; return; }
+      this._pulling = true;
+      Promise.resolve().then(() => this._source.pull(this._controller)).then(() => {
+        this._pulling = false;
+        if (this._pullAgain) { this._pullAgain = false; this._pullIfNeeded(); }
+      }, error => { this._pulling = false; this._controller.error(error); });
     }
     getReader() {
       if (this.locked) throw new TypeError("ReadableStream is locked");
@@ -17744,14 +18083,16 @@ if (typeof ReadableStream === 'undefined') {
       let closedPromise;
       return {
         read() {
+          stream._disturbed = true;
           if (stream._queue.length > 0) {
             const value = stream._queue.shift();
             if (!stream._queue.length && stream._closeRequested) stream._controller.close();
+            stream._pullIfNeeded();
             return Promise.resolve({ value, done: false });
           }
           if (stream._state === "closed") return Promise.resolve({ value: undefined, done: true });
           if (stream._state === "errored") return Promise.reject(stream._error);
-          return new Promise((resolve, reject) => stream._reads.push({resolve, reject}));
+          return new Promise((resolve, reject) => { stream._reads.push({resolve, reject}); stream._pullIfNeeded(); });
         },
         releaseLock() { stream.locked = false; },
         cancel(reason) { return stream.cancel(reason); },
@@ -17769,6 +18110,7 @@ if (typeof ReadableStream === 'undefined') {
       };
     }
     cancel(reason) {
+      this._disturbed = true;
       if (this._state === "errored") return Promise.reject(this._error);
       this._queue.length = 0;
       if (this._state === "closed") return Promise.resolve();
@@ -17801,27 +18143,43 @@ if (typeof ReadableStream === 'undefined') {
       return transform.readable;
     }
     tee() {
-      let leftController;
-      let rightController;
-      const left = new ReadableStream({start(controller) { leftController = controller; }});
-      const right = new ReadableStream({start(controller) { rightController = controller; }});
-      (async () => {
-        try {
-          const reader = this.getReader();
-          while (true) {
-            const {value, done} = await reader.read();
-            if (done) break;
-            leftController.enqueue(value);
-            rightController.enqueue(value);
-          }
-          leftController.close();
-          rightController.close();
-        } catch (error) {
-          leftController.error(error);
-          rightController.error(error);
+      const reader = this.getReader(), controllers = [], cancelled = [false, false], reasons = [];
+      let reading = null, finished = false, completeCancel, rejectCancel;
+      const cancellation = new Promise((resolve, reject) => { completeCancel = resolve; rejectCancel = reject; });
+      cancellation.catch(() => {});
+      const errorBranches = error => {
+        if (finished) return;
+        finished = true;
+        for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].error(error);
+        reader.releaseLock(); completeCancel();
+      };
+      reader.closed.catch(errorBranches);
+      const pull = () => {
+        if (!reading && !finished) {
+          reading = reader.read().then(({value, done}) => {
+            if (finished) return;
+            if (done) {
+              finished = true;
+              for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].close();
+              reader.releaseLock(); completeCancel();
+            } else {
+              for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].enqueue(value);
+            }
+          }, errorBranches).finally(() => { reading = null; });
         }
-      })();
-      return [left, right];
+        return reading;
+      };
+      return [0, 1].map(index => new ReadableStream({
+        start(controller) { controllers[index] = controller; }, pull,
+        cancel(reason) {
+          cancelled[index] = true; reasons[index] = reason;
+          if (cancelled[0] && cancelled[1]) {
+            finished = true;
+            Promise.resolve(reader.cancel(reasons)).then(completeCancel, rejectCancel).finally(() => reader.releaseLock());
+          }
+          return cancellation;
+        },
+      }));
     }
     [Symbol.asyncIterator]() {
       const reader = this.getReader();
@@ -18053,6 +18411,14 @@ if (!globalThis.crypto.subtle) {
     }
   }
 
+  async function runOpAsync(fn) {
+    try { return await fn(); }
+    catch (e) {
+      if (e instanceof DOMException) throw e;
+      throw new DOMException(String((e && e.message) || e), "OperationError");
+    }
+  }
+
   // The JWK `alg` of an AES or HMAC key, or undefined for the others.
   function jwkAlg(key, bytes) {
     const algorithm = keyMaterial.get(key).algorithm;
@@ -18177,7 +18543,7 @@ if (!globalThis.crypto.subtle) {
         const hash = normalizeHash(alg.hash);
         const salt = toBytes(alg.salt);
         const iterations = alg.iterations >>> 0;
-        return bufferOf(runOp(() => __inbrowseCore.ops.op_subtle_pbkdf2(hash, bytes, salt, iterations, lenBytes)));
+        return bufferOf(await runOpAsync(() => __inbrowseCore.ops.op_subtle_pbkdf2(hash, bytes, salt, iterations, lenBytes)));
       }
       if (alg.name === "HKDF") {
         const hash = normalizeHash(alg.hash);
@@ -19493,6 +19859,8 @@ const _documentMembers = Object.freeze(Object.fromEntries([
   }],
   ['checkVisibility', Element.prototype.checkVisibility],
   ['elementStyle', function() { return _elementStyle(this); }],
+  ['windowOrigin', _windowOriginDescriptor.get],
+  ['setWindowOrigin', _windowOriginDescriptor.set],
 ]));
 
 globalThis.__inbrowse_init = (function() {
@@ -19591,6 +19959,7 @@ globalThis.__inbrowse_init = (function() {
     const src = frame.getAttribute('src');
     if (frame.hasAttribute('srcdoc')) frame._loadIframeSrcdoc();
     else if (src && src !== 'about:blank') frame._loadIframeSrc(src);
+    else if (frame.namespaceURI === 'http://www.w3.org/1999/xhtml') _ensureInitialFrameRealm(frame);
   }
 
   // Hide internals (_*, inbrowse, Inbrowse). The set of keys is static at

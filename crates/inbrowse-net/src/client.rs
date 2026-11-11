@@ -1601,9 +1601,12 @@ impl InbrowseHttpClient {
             }
 
             let in_flight = InFlightGuard::new(&self.in_flight);
-            let resp = req_builder.send().await.map_err(|e| {
-                InbrowseNetError::Network(format!("{}: {}", current_url, error_chain(&e)))
-            })?;
+            let idempotent = matches!(method, Method::GET | Method::HEAD);
+            let resp = send_with_connection_retry(req_builder, idempotent, &current_url)
+                .await
+                .map_err(|e| {
+                    InbrowseNetError::Network(format!("{}: {}", current_url, error_chain(&e)))
+                })?;
 
             let status = resp.status();
             validate_reqwest_cors_response(
@@ -1725,6 +1728,114 @@ pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     text
+}
+
+/// Send `request`, and send an idempotent one once more when its connection
+/// failed or was reset before any response arrived. A server that is starved
+/// or recycling a keep-alive socket drops such connections; a browser retries
+/// them on a fresh connection instead of failing the load. The stealth client
+/// does the same (`send_get_with_connection_reset_retry`).
+async fn send_with_connection_retry(
+    request: reqwest::RequestBuilder,
+    idempotent: bool,
+    url: &Url,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let retry = if idempotent { request.try_clone() } else { None };
+    match request.send().await {
+        Err(error) if error.is_connect() || is_connection_reset(&error) => {
+            let Some(retry) = retry else {
+                return Err(error);
+            };
+            tracing::debug!(%url, "retrying request after a failed connection");
+            retry.send().await
+        }
+        result => result,
+    }
+}
+
+/// Whether the connection was reset or closed before a response, found from
+/// the I/O error kind in the source chain rather than from message text.
+fn is_connection_reset(error: &reqwest::Error) -> bool {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            );
+        }
+        source = cause.source();
+    }
+    false
+}
+
+#[cfg(test)]
+mod connection_retry_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    /// Resets the first connection after reading its request, then answers
+    /// `ok` on the next one when `answer_retry` is set. Returns the number of
+    /// connections it accepted.
+    fn reset_once(answer_retry: bool) -> (u16, std::thread::JoinHandle<usize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let connections = if answer_retry { 2 } else { 1 };
+            for connection in 0..connections {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let read = stream.read(&mut buf).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..read]);
+                }
+                if connection == 0 {
+                    let socket = socket2::Socket::from(stream);
+                    socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    drop(socket);
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                        .unwrap();
+                }
+            }
+            connections
+        });
+        (port, server)
+    }
+
+    #[tokio::test]
+    async fn an_idempotent_request_is_sent_again_after_a_connection_reset() {
+        let (port, server) = reset_once(true);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let response = send_with_connection_retry(client.get(url.as_str()), true, &url)
+            .await
+            .expect("a GET recovers from one connection reset");
+        assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(server.join().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_non_idempotent_request_is_not_sent_twice() {
+        let (port, server) = reset_once(false);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let request = client.post(url.as_str()).body("payload");
+        send_with_connection_retry(request, false, &url)
+            .await
+            .expect_err("a POST is never replayed");
+        assert_eq!(server.join().unwrap(), 1);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

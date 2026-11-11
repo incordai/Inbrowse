@@ -28,6 +28,19 @@ All notable changes to Inbrowse are recorded here. The format follows
 - `extract --password` (CLI) and `password` (MCP) open encrypted PDFs; a missing
   or wrong password is a clear error (#24).
 - `new FormData(form, submitter)` and `select.selectedOptions` (#1, #2).
+- `fetch --dump json` and MCP `browser_markdown` with `format: "json"`: the
+  page as one JSON object (`url`, `status`, `title`, `description`, `lang`,
+  `publishedTime`, `content`, `links`, `images`), modelled on Jina Reader's
+  response.
+- `fetch --boilerplate keep|drop`, MCP and CDP `boilerplate` options.
+- Markdown: code fences carry the language, `~~strikethrough~~`, and a `data:`
+  image keeps its alt text without its payload. Conversion is checked against
+  test cases adapted from jina-ai/reader.
+- On-demand `Response` streams, `window.event`, the `DOMImplementation` global,
+  distinct HTML interface brands, worker-scope built-ins, custom element
+  reactions, retained render invalidation with shadow roots, and lifecycle
+  replay for late `Page.setLifecycleEventsEnabled` subscribers (from upstream
+  obscura).
 
 ### Changed
 
@@ -43,6 +56,13 @@ All notable changes to Inbrowse are recorded here. The format follows
 - CDP DOM and Input commands whose page-side step throws now answer with that
   error instead of success, and `DOM.focus` / `DOM.setFileInputFiles` on a node
   that is not an element is an error.
+- `--dump markdown`, `--dump json` and `--dump text`, MCP `browser_markdown`
+  and CDP `LP.getMarkdown` leave out navigation, the page header and footer,
+  and sidebars by default; `--boilerplate keep` (MCP and CDP
+  `boilerplate: "keep"`) gives the full page. A `<header>` or `<footer>`
+  inside an article, main or section is kept.
+- Markdown link and image URLs are absolute, resolved against the final URL or
+  `<base href>`.
 - A document's script phase is capped at the navigation timeout as well as
   30 s, so `fetch --timeout 5` no longer spends 30 s in a looping page script
   (#27).
@@ -63,9 +83,17 @@ All notable changes to Inbrowse are recorded here. The format follows
 - `extract`: tables in DOCX, PPTX, ODT and ODP are tab-separated rows with
   merged cells kept aligned (#20); DOCX headers, footers, footnotes, endnotes
   and comments and PPTX speaker notes are separate sections (#19, #22).
+- Network-idle waits use the navigation timeout, count stealth requests, and
+  fail at the timeout instead of reporting a false idle (from upstream
+  obscura).
 
 ### Fixed
 
+- Markdown leaves out content hidden by `display: none` or
+  `visibility: hidden`, keeps blank lines in code blocks, and no longer leaves
+  stray markers for empty headings or emphasis or runs a heading into the text
+  before it. `--dump text` leaves out style-hidden content in render builds,
+  and `--dump links` resolves against `<base href>`.
 - The MCP server no longer keeps its pages open forever. After
   `--idle-timeout` seconds (default 300, `0` turns it off) with no request it
   closes every page and keeps cookies and storage; the next call opens a new
@@ -96,6 +124,14 @@ All notable changes to Inbrowse are recorded here. The format follows
   full page, `browser_screenshot`) and PDFs (`Page.printToPDF`, `browser_pdf`)
   paint iframe content. Same-origin, `srcdoc` and `data:` frames, nested ones
   included, render inside the frame's content box, clipped to it (#4).
+- Iframe documents load their subresources through the page's resource
+  pipeline: linked and `@import`ed stylesheets, images, CSS backgrounds and
+  web fonts, under the page's network policy, private-network gate, block
+  list, cookies and referrer rules. The sheets apply to the frame's style,
+  layout and `getComputedStyle` (#4).
+- A frame's viewport, `innerWidth`/`innerHeight` and `matchMedia` follow the
+  iframe's content box (`srcdoc` frames were fixed at 300x150), and `resize`
+  fires in the frame when that box changes (#4).
 - `Accessibility.getFullAXTree` returns one connected tree rooted at a
   focusable, titled `RootWebArea` with `frameId`, so Puppeteer and Playwright
   accessibility snapshots no longer collapse to a single node. Nodes hidden
@@ -184,6 +220,36 @@ All notable changes to Inbrowse are recorded here. The format follows
   `EventTarget.prototype` reaches `window`. Web-component polyfills rely on
   that: calling a saved `EventTarget` method on `window` threw "is not a
   function", so the page's components never rendered.
+- Page JavaScript could reach the engine's internal op table through
+  `__bootstrap` (from upstream obscura).
+- A CSS `@import` with a multibyte character, an SVG with a short `viewBox` and
+  a grid `span 0` placement no longer abort the process, and a stalled grid
+  track-sizing loop ends (from upstream obscura).
+- `confirm()` returns false in non-interactive runs instead of accepting (from
+  upstream obscura).
+- Deeply nested documents no longer overflow the CDP connection stack (from
+  upstream obscura).
+- Serialized HTML escapes `textarea` and `title` text, attribute values and
+  `nbsp`, and writes void elements and `xml:` attributes correctly (from
+  upstream obscura).
+- Web Storage keeps working after a page replaces the `Storage` constructor;
+  robots.txt groups and wildcard matching; DOMParser no longer depends on a
+  page's `startsWith` (from upstream obscura).
+- Each CDP connection gets private `localStorage` and IndexedDB, both starting
+  from the profile and merged back into it, and onto disk with
+  `--storage-dir`, when the connection closes (from upstream obscura).
+- PBKDF2 runs on bounded blocking workers and `window.origin` is replaceable;
+  `DOM.setFileInputFiles` validates the target and files before reading any
+  path and honours `multiple`; stealth requests, `--dump original` downloads
+  and `navigator.userAgent` honour `--user-agent` (from upstream obscura).
+- Markdown extraction has no recursion limit on deeply nested pages (from
+  upstream obscura).
+
+### Security
+
+- `zstd`, `zstd-safe` and `zstd-sys` updated to patched versions.
+- `calamine` updated to 0.38.0 (RUSTSEC-2026-0436) and `quinn-proto` to
+  0.11.19.
 
 ## [0.3.0] - 2026-11-03
 

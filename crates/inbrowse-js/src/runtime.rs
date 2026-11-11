@@ -97,6 +97,163 @@ impl FrameHost {
     }
 }
 
+/// The document a document's subresource loads answer to: its own URL, or for
+/// an `about:srcdoc` or `about:blank` frame the document that created it.
+#[cfg(feature = "render")]
+fn resource_document_url(state: &InbrowseState) -> &str {
+    state.about_base_url.as_deref().unwrap_or(&state.url)
+}
+
+/// Resources cache-only layout or paint asked for and did not have, ready
+/// for the page transport: blocked URLs are remembered as missing instead
+/// of returned, URLs already loading are skipped, the rest are marked in
+/// flight. Cheap when nothing was missed.
+#[cfg(feature = "render")]
+fn take_resource_requests(
+    state: &mut InbrowseState,
+) -> Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)> {
+    if !state.render_resources.has_sync_misses() {
+        return Vec::new();
+    }
+    let misses = state.render_resources.take_sync_misses();
+    let mut requests = Vec::new();
+    for (url, profile, is_font) in misses {
+        // Fetch interception patterns pause requests; they are not a URL
+        // blocklist. Static renderer resources currently pass through,
+        // while Network.setBlockedURLs remains authoritative here.
+        let blocked = state
+            .blocked_urls
+            .iter()
+            .any(|pattern| crate::ops::glob_match(pattern, &url));
+        let allowed = page_render_resource_url_allowed(resource_document_url(state), &url);
+        if blocked || !allowed {
+            match profile {
+                Some(profile) => state.render_resources.seed_image_missing(url, profile),
+                None => state.render_resources.seed_missing(url),
+            }
+            continue;
+        }
+        if state.render_resource_in_flight.len() >= MAX_PENDING_RENDER_RESOURCES {
+            continue;
+        }
+        if state
+            .render_resource_in_flight
+            .insert((url.clone(), profile, is_font))
+        {
+            requests.push((url, profile, is_font));
+        }
+    }
+    requests
+}
+
+/// Mark resources a scan found as loading, returning the ones that were not
+/// already in flight and fit the in-flight bound.
+#[cfg(feature = "render")]
+fn mark_resources_in_flight(
+    state: &mut InbrowseState,
+    candidates: Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)>,
+) -> Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)> {
+    let available =
+        MAX_PENDING_RENDER_RESOURCES.saturating_sub(state.render_resource_in_flight.len());
+    candidates
+        .into_iter()
+        .filter(|(url, profile, is_font)| {
+            state
+                .render_resource_in_flight
+                .insert((url.clone(), *profile, *is_font))
+        })
+        .take(available)
+        .collect()
+}
+
+/// Insert one page-transport resource outcome into the retained renderer
+/// cache. Successful image/font bytes queue one resource-dependent layout
+/// refresh while preserving computed styles and any DOM damage already
+/// queued. A negative outcome cannot change geometry and preserves the
+/// retained layout/scroll.
+#[cfg(feature = "render")]
+fn seed_shared_resource(
+    state: &mut InbrowseState,
+    url: String,
+    bytes: Option<std::sync::Arc<[u8]>>,
+) {
+    match bytes {
+        Some(bytes) => {
+            state.render_resources.seed_shared(url, bytes);
+            crate::ops::invalidate_render_resource_geometry(state);
+        }
+        None => state.render_resources.seed_missing(url),
+    }
+}
+
+#[cfg(feature = "render")]
+fn seed_shared_image_resource(
+    state: &mut InbrowseState,
+    url: String,
+    profile: crate::ops::ImageRequestProfile,
+    bytes: Option<std::sync::Arc<[u8]>>,
+) {
+    match bytes {
+        Some(bytes) if inbrowse_render::image_intrinsic_dimensions(&bytes).is_some() => {
+            let needs_geometry = match (&state.prepared_render, &state.dom) {
+                (Some(prepared), Some(dom)) => {
+                    prepared.image_resource_needs_geometry(dom, &url, profile)
+                }
+                _ => true,
+            };
+            state.render_resources.seed_image_shared(url, profile, bytes);
+            state.activity_generation = state.activity_generation.wrapping_add(1);
+            if needs_geometry {
+                crate::ops::invalidate_render_resource_geometry(state);
+            }
+        }
+        _ => state.render_resources.seed_image_missing(url, profile),
+    }
+}
+
+/// Apply every finished page-transport load of one document without waiting.
+/// Returns the number of loads that stored usable bytes.
+#[cfg(feature = "render")]
+fn apply_resource_results(state: &mut InbrowseState) -> usize {
+    let mut loads = Vec::new();
+    while let Ok(load) = state.render_resource_rx.try_recv() {
+        loads.push(load);
+    }
+    let mut loaded = 0;
+    for load in loads {
+        if load.generation != state.document_generation {
+            // A previous document's response: no seed, no event, and it
+            // must not clear a same-URL request of the current document.
+            tracing::debug!(url = %load.url, "discarded render resource load of a retired document");
+            continue;
+        }
+        state.render_resource_in_flight.remove(&(
+            load.url.clone(),
+            load.profile,
+            load.is_font,
+        ));
+        let is_font = load.is_font;
+        let bytes = match &load.response {
+            Some(response) if (200..300).contains(&response.status) => {
+                loaded += 1;
+                Some(std::sync::Arc::clone(&response.body))
+            }
+            _ => None,
+        };
+        tracing::debug!(url = %load.url, loaded = bytes.is_some(), "applied render resource load");
+        match load.profile {
+            Some(profile) => seed_shared_image_resource(state, load.url, profile, bytes),
+            None => seed_shared_resource(state, load.url, bytes),
+        }
+        if let Some(response) = load.response {
+            state
+                .render_resource_events
+                .push(crate::ops::RenderResourceEvent { is_font, response });
+        }
+    }
+    loaded
+}
+
 #[cfg(feature = "render")]
 struct RuntimeCanvasSurfaceSource<'a> {
     canvases: &'a HashMap<NodeId, crate::ops::CanvasBackingSurface>,
@@ -1064,8 +1221,9 @@ impl InbrowseJsRuntime {
     /// the global so page script can never reach `Deno.core.ops`.
     ///
     /// Bootstrap keeps the core reference in a private const. Once deno_core
-    /// has bound the ops, this removes both public globals before page code can
-    /// run, leaving the handoff as the host's only route to child realms.
+    /// has bound the ops, this removes the public globals (`Deno`, the handoff
+    /// and deno_core's `__bootstrap`) before page code can run, leaving the
+    /// handoff as the host's only route to child realms.
     fn take_ops_handoff(&mut self) -> Option<deno_core::v8::Global<deno_core::v8::Value>> {
         use deno_core::v8;
 
@@ -1078,6 +1236,10 @@ impl InbrowseJsRuntime {
 
         let handoff_key = v8::String::new(scope, "__inbrowse_core_handoff")?;
         let deno_key = v8::String::new(scope, "Deno")?;
+        // deno_core's own alias of the same core object (`__bootstrap.core`).
+        // Deno's runtime deletes it after bootstrap (99_main.js); left here it
+        // handed every page the raw op table.
+        let bootstrap_key = v8::String::new(scope, "__bootstrap")?;
         let ops_key = v8::String::new(scope, "ops")?;
         let global = context.global(scope);
 
@@ -1090,6 +1252,7 @@ impl InbrowseJsRuntime {
         let ops = v8::Global::new(scope, ops);
         global.delete(scope, handoff_key.into());
         global.delete(scope, deno_key.into());
+        global.delete(scope, bootstrap_key.into());
         Some(ops)
     }
 
@@ -1187,6 +1350,9 @@ impl InbrowseJsRuntime {
         let Some(deno_key) = v8::String::new(scope, "Deno") else {
             return false;
         };
+        let Some(bootstrap_key) = v8::String::new(scope, "__bootstrap") else {
+            return false;
+        };
         let global = context.global(scope);
         let Some(core) = global.get(scope, handoff_key.into()) else {
             return false;
@@ -1225,6 +1391,7 @@ impl InbrowseJsRuntime {
         // The child realm must not expose the handoff to frame script either.
         global.delete(scope, handoff_key.into());
         global.delete(scope, deno_key.into());
+        global.delete(scope, bootstrap_key.into());
         copied > 0
     }
 
@@ -1694,6 +1861,13 @@ impl InbrowseJsRuntime {
     }
 
     pub fn set_blocked_urls(&self, patterns: Vec<String>) {
+        // Frames copied the list when they were created; keep them on the
+        // page's policy.
+        for (_, _, frame) in self.realm_states().borrow().frame_realms() {
+            if let Ok(mut frame) = frame.try_borrow_mut() {
+                frame.blocked_urls = patterns.clone();
+            }
+        }
         self.state.borrow_mut().blocked_urls = patterns;
     }
 
@@ -2475,14 +2649,7 @@ impl InbrowseJsRuntime {
 
     #[cfg(feature = "render")]
     fn seed_shared_render_resource(&mut self, url: String, bytes: Option<std::sync::Arc<[u8]>>) {
-        let mut state = self.state.borrow_mut();
-        match bytes {
-            Some(bytes) => {
-                state.render_resources.seed_shared(url, bytes);
-                crate::ops::invalidate_render_resource_geometry(&mut state);
-            }
-            None => state.render_resources.seed_missing(url),
-        }
+        seed_shared_resource(&mut self.state.borrow_mut(), url, bytes);
     }
 
     #[cfg(feature = "render")]
@@ -2492,35 +2659,12 @@ impl InbrowseJsRuntime {
         profile: crate::ops::ImageRequestProfile,
         bytes: Option<Vec<u8>>,
     ) {
-        self.seed_shared_render_image_resource(url, profile, bytes.map(std::sync::Arc::from));
-    }
-
-    #[cfg(feature = "render")]
-    fn seed_shared_render_image_resource(
-        &mut self,
-        url: String,
-        profile: crate::ops::ImageRequestProfile,
-        bytes: Option<std::sync::Arc<[u8]>>,
-    ) {
-        let mut state = self.state.borrow_mut();
-        match bytes {
-            Some(bytes) if inbrowse_render::image_intrinsic_dimensions(&bytes).is_some() => {
-                let needs_geometry = match (&state.prepared_render, &state.dom) {
-                    (Some(prepared), Some(dom)) => {
-                        prepared.image_resource_needs_geometry(dom, &url, profile)
-                    }
-                    _ => true,
-                };
-                state
-                    .render_resources
-                    .seed_image_shared(url, profile, bytes);
-                state.activity_generation = state.activity_generation.wrapping_add(1);
-                if needs_geometry {
-                    crate::ops::invalidate_render_resource_geometry(&mut state);
-                }
-            }
-            _ => state.render_resources.seed_image_missing(url, profile),
-        }
+        seed_shared_image_resource(
+            &mut self.state.borrow_mut(),
+            url,
+            profile,
+            bytes.map(std::sync::Arc::from),
+        );
     }
 
     #[cfg(feature = "render")]
@@ -2548,39 +2692,7 @@ impl InbrowseJsRuntime {
     pub fn take_render_resource_requests(
         &self,
     ) -> Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)> {
-        let mut state = self.state.borrow_mut();
-        if !state.render_resources.has_sync_misses() {
-            return Vec::new();
-        }
-        let misses = state.render_resources.take_sync_misses();
-        let mut requests = Vec::new();
-        for (url, profile, is_font) in misses {
-            // Fetch interception patterns pause requests; they are not a URL
-            // blocklist. Static renderer resources currently pass through,
-            // while Network.setBlockedURLs remains authoritative here.
-            let blocked = state
-                .blocked_urls
-                .iter()
-                .any(|pattern| crate::ops::glob_match(pattern, &url));
-            let allowed = page_render_resource_url_allowed(&state.url, &url);
-            if blocked || !allowed {
-                match profile {
-                    Some(profile) => state.render_resources.seed_image_missing(url, profile),
-                    None => state.render_resources.seed_missing(url),
-                }
-                continue;
-            }
-            if state.render_resource_in_flight.len() >= MAX_PENDING_RENDER_RESOURCES {
-                continue;
-            }
-            if state
-                .render_resource_in_flight
-                .insert((url.clone(), profile, is_font))
-            {
-                requests.push((url, profile, is_font));
-            }
-        }
-        requests
+        take_resource_requests(&mut self.state.borrow_mut())
     }
 
     /// Mark resources the page discovered itself (navigation warmup scan) as
@@ -2590,18 +2702,48 @@ impl InbrowseJsRuntime {
         &self,
         candidates: Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)>,
     ) -> Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)> {
-        let mut state = self.state.borrow_mut();
-        let available =
-            MAX_PENDING_RENDER_RESOURCES.saturating_sub(state.render_resource_in_flight.len());
-        candidates
-            .into_iter()
-            .filter(|(url, profile, is_font)| {
-                state
-                    .render_resource_in_flight
-                    .insert((url.clone(), *profile, *is_font))
-            })
-            .take(available)
-            .collect()
+        mark_resources_in_flight(&mut self.state.borrow_mut(), candidates)
+    }
+
+    /// Whether the cache of frame document `frame_id` already has an outcome
+    /// for `url`.
+    #[cfg(feature = "render")]
+    pub fn frame_render_resource_is_known(&self, frame_id: u32, url: &str) -> bool {
+        let Some(frame) = self.realm_states().borrow().by_frame_id(frame_id) else {
+            return true;
+        };
+        frame
+            .try_borrow()
+            .map_or(true, |frame| frame.render_resources.has_live_outcome(url))
+    }
+
+    /// Remember `url` as unavailable in the cache of frame document
+    /// `frame_id`, for a reference the page's policy refuses.
+    #[cfg(feature = "render")]
+    pub fn seed_frame_render_resource_missing(&self, frame_id: u32, url: String) {
+        if let Some(frame) = self.realm_states().borrow().by_frame_id(frame_id) {
+            if let Ok(mut frame) = frame.try_borrow_mut() {
+                frame.render_resources.seed_missing(url);
+            }
+        }
+    }
+
+    /// Start page-transport loads for resources the scan of frame document
+    /// `frame_id` found, against that document. Returns the number started.
+    #[cfg(feature = "render")]
+    pub fn start_frame_render_resource_candidates(
+        &self,
+        frame_id: u32,
+        candidates: Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)>,
+    ) -> usize {
+        let Some(frame) = self.realm_states().borrow().by_frame_id(frame_id) else {
+            return 0;
+        };
+        let requests = {
+            let Ok(mut state) = frame.try_borrow_mut() else { return 0 };
+            mark_resources_in_flight(&mut state, candidates)
+        };
+        Self::start_state_resource_loads(&frame, requests)
     }
 
     /// Abort every background load of this document and discard results
@@ -2677,10 +2819,22 @@ impl InbrowseJsRuntime {
         &self,
         requests: Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)>,
     ) -> usize {
+        Self::start_state_resource_loads(&self.state, requests)
+    }
+
+    /// `start_render_resource_loads` for the document owning `shared`: the
+    /// page or one of its frames. A frame's loads use the frame's own document
+    /// as referrer and its own result channel, and otherwise the page's
+    /// transport, cookies, policy and concurrency limit.
+    #[cfg(feature = "render")]
+    fn start_state_resource_loads(
+        shared: &crate::ops::SharedState,
+        requests: Vec<(String, Option<crate::ops::ImageRequestProfile>, bool)>,
+    ) -> usize {
         if requests.is_empty() {
             return 0;
         }
-        let mut state = self.state.borrow_mut();
+        let mut state = shared.borrow_mut();
         if tokio::runtime::Handle::try_current().is_err() {
             state.render_resource_backlog.extend(requests);
             return 0;
@@ -2690,7 +2844,7 @@ impl InbrowseJsRuntime {
         let http_client = state.http_client.clone();
         #[cfg(feature = "stealth")]
         let stealth_client = state.stealth_client.clone();
-        let initiator = url::Url::parse(&state.url).ok();
+        let initiator = url::Url::parse(resource_document_url(&state)).ok();
         if !crate::ops::has_page_transport(&state) || initiator.is_none() {
             // No transport or no document URL: nothing can be loaded; forget
             // the in-flight marks so a later scan may retry.
@@ -2846,8 +3000,19 @@ impl InbrowseJsRuntime {
     /// the number of loads that stored usable bytes.
     #[cfg(feature = "render")]
     pub fn service_render_resources(&mut self) -> usize {
+        let mut loaded = Self::service_state_resources(&self.state);
+        for frame in self.frame_render_states() {
+            loaded += Self::service_state_resources(&frame);
+        }
+        self.sync_frame_viewports(false);
+        loaded
+    }
+
+    /// `service_render_resources` for one document, the page or a frame.
+    #[cfg(feature = "render")]
+    fn service_state_resources(shared: &crate::ops::SharedState) -> usize {
         {
-            let state = self.state.borrow();
+            let Ok(state) = shared.try_borrow() else { return 0 };
             if state.render_resource_rx.is_empty()
                 && state.render_resource_backlog.is_empty()
                 && !state.render_resources.has_sync_misses()
@@ -2855,17 +3020,142 @@ impl InbrowseJsRuntime {
                 return 0;
             }
         }
-        let loaded = self.apply_render_resource_results();
-        let mut requests = std::mem::take(&mut self.state.borrow_mut().render_resource_backlog);
-        requests.extend(self.take_render_resource_requests());
-        self.start_render_resource_loads(requests);
+        let mut state = shared.borrow_mut();
+        let loaded = apply_resource_results(&mut state);
+        let mut requests = std::mem::take(&mut state.render_resource_backlog);
+        requests.extend(take_resource_requests(&mut state));
+        drop(state);
+        Self::start_state_resource_loads(shared, requests);
         loaded
     }
 
-    /// Whether page-transport loads are still running for this document.
+    /// The states of the live frame documents. Empty, without touching the
+    /// frame registry, for a page that never hosted a frame.
+    #[cfg(feature = "render")]
+    fn frame_render_states(&self) -> Vec<crate::ops::SharedState> {
+        if self.state.borrow().frame_id_counter == 0 {
+            return Vec::new();
+        }
+        self.realm_states()
+            .borrow()
+            .frame_realms()
+            .into_iter()
+            .map(|(_, _, state)| state)
+            .collect()
+    }
+
+    /// Lay out every live frame document at its current viewport so the
+    /// resources its styles and images need are reported as misses, for the
+    /// next `service_render_resources`. The page cannot see them any earlier:
+    /// a frame is only laid out when something reads or paints it.
+    #[cfg(feature = "render")]
+    pub fn discover_frame_render_resources(&mut self) {
+        self.sync_frame_viewports(true);
+        for frame in self.frame_render_states() {
+            let Ok(mut state) = frame.try_borrow_mut() else { continue };
+            with_sync_render_loading_disabled(&mut state, |state| {
+                let _ = ensure_resolved_scroll(state);
+            });
+        }
+    }
+
+    /// Make each frame document's viewport the content box of its iframe in
+    /// the hosting document's layout, so the frame's layout, `innerWidth`,
+    /// `innerHeight`, media queries and observers follow it. A frame whose
+    /// box changed after its first sizing also receives `resize`. `force`
+    /// lays out a stale host first; without it a host with no current layout
+    /// is skipped, which keeps the per-turn caller from forcing layout.
+    #[cfg(feature = "render")]
+    pub fn sync_frame_viewports(&mut self, force: bool) {
+        if self.state.borrow().frame_id_counter == 0 {
+            return;
+        }
+        let frames = self.realm_states().borrow().frame_realms();
+        for (frame_id, context, state) in frames {
+            let Some(size) = self.frame_content_size(frame_id, force) else { continue };
+            self.apply_frame_viewport(&context, &state, size);
+        }
+    }
+
+    /// The whole-pixel content-box size of the iframe hosting `frame_id`.
+    #[cfg(feature = "render")]
+    fn frame_content_size(&self, frame_id: u32, force: bool) -> Option<(u32, u32)> {
+        let (host, node) = self.realm_states().borrow().frame_host(frame_id)?;
+        let mut host = host.try_borrow_mut().ok()?;
+        let (width, height) = with_sync_render_loading_disabled(&mut host, |host| {
+            if force {
+                crate::ops::ensure_prepared_render(host)?;
+            } else if !host.pending_style_mutations.is_empty() {
+                return None;
+            }
+            host.prepared_render.as_ref()?.element_content_size(node)
+        })?;
+        Some((width.round().max(1.0) as u32, height.round().max(1.0) as u32))
+    }
+
+    #[cfg(feature = "render")]
+    fn apply_frame_viewport(
+        &mut self,
+        context: &v8::Global<v8::Context>,
+        frame: &crate::ops::SharedState,
+        size: (u32, u32),
+    ) {
+        let (width, height) = size;
+        let previous = {
+            let Ok(mut frame) = frame.try_borrow_mut() else { return };
+            frame.set_viewport(f64::from(width), f64::from(height));
+            frame.frame_viewport.replace(size)
+        };
+        if previous == Some(size) {
+            return;
+        }
+        let resize = if previous.is_some() {
+            "try{window.dispatchEvent(new Event('resize'));}catch(_){}"
+        } else {
+            ""
+        };
+        let script = format!(
+            "globalThis.innerWidth={width};globalThis.innerHeight={height};\
+             if(globalThis.visualViewport){{\
+               globalThis.visualViewport.width={width};globalThis.visualViewport.height={height};}}\
+             if(typeof globalThis.__inbrowse_recompute_media_queries==='function'){{\
+               globalThis.__inbrowse_recompute_media_queries();}}\
+             if(typeof globalThis.__inbrowse_recompute_intersections==='function'){{\
+               globalThis.__inbrowse_recompute_intersections();}}\
+             if(typeof globalThis.__inbrowse_recompute_resizes==='function'){{\
+               globalThis.__inbrowse_recompute_resizes();}}\
+             {resize}"
+        );
+        let _ = self.eval_in_realm(context, &script);
+    }
+
+    /// Start page-transport loads for what the live frame documents missed,
+    /// each against its own document. Returns the number started.
+    #[cfg(feature = "render")]
+    pub fn start_frame_render_resource_loads(&mut self) -> usize {
+        let mut started = 0;
+        for frame in self.frame_render_states() {
+            let requests = {
+                let Ok(mut state) = frame.try_borrow_mut() else { continue };
+                let mut requests = std::mem::take(&mut state.render_resource_backlog);
+                requests.extend(take_resource_requests(&mut state));
+                requests
+            };
+            started += Self::start_state_resource_loads(&frame, requests);
+        }
+        started
+    }
+
+    /// Whether page-transport loads are still running for this document or
+    /// for one of its frames.
     #[cfg(feature = "render")]
     pub fn has_pending_render_resources(&self) -> bool {
         !self.state.borrow().render_resource_in_flight.is_empty()
+            || self.frame_render_states().iter().any(|frame| {
+                frame
+                    .try_borrow()
+                    .is_ok_and(|state| !state.render_resource_in_flight.is_empty())
+            })
     }
 
     /// Apply every finished page-transport load without waiting. Called at
@@ -2875,56 +3165,26 @@ impl InbrowseJsRuntime {
     /// number of loads that stored usable bytes.
     #[cfg(feature = "render")]
     pub fn apply_render_resource_results(&mut self) -> usize {
-        let loads = {
-            let mut state = self.state.borrow_mut();
-            let mut loads = Vec::new();
-            while let Ok(load) = state.render_resource_rx.try_recv() {
-                loads.push(load);
-            }
-            loads
-        };
-        let mut loaded = 0;
-        for load in loads {
-            let generation = self.state.borrow().document_generation;
-            if load.generation != generation {
-                // A previous document's response: no seed, no event, and it
-                // must not clear a same-URL request of the current document.
-                tracing::debug!(url = %load.url, "discarded render resource load of a retired document");
-                continue;
-            }
-            self.state.borrow_mut().render_resource_in_flight.remove(&(
-                load.url.clone(),
-                load.profile,
-                load.is_font,
-            ));
-            let is_font = load.is_font;
-            let bytes = match &load.response {
-                Some(response) if (200..300).contains(&response.status) => {
-                    loaded += 1;
-                    Some(std::sync::Arc::clone(&response.body))
-                }
-                _ => None,
-            };
-            tracing::debug!(url = %load.url, loaded = bytes.is_some(), "applied render resource load");
-            match load.profile {
-                Some(profile) => self.seed_shared_render_image_resource(load.url, profile, bytes),
-                None => self.seed_shared_render_resource(load.url, bytes),
-            }
-            if let Some(response) = load.response {
-                self.state
-                    .borrow_mut()
-                    .render_resource_events
-                    .push(crate::ops::RenderResourceEvent { is_font, response });
+        let mut loaded = apply_resource_results(&mut self.state.borrow_mut());
+        for frame in self.frame_render_states() {
+            if let Ok(mut state) = frame.try_borrow_mut() {
+                loaded += apply_resource_results(&mut state);
             }
         }
         loaded
     }
 
     /// Applied transport responses the page has not reported as Network
-    /// events yet.
+    /// events yet, including those of its frames.
     #[cfg(feature = "render")]
     pub fn take_render_resource_events(&self) -> Vec<crate::ops::RenderResourceEvent> {
-        std::mem::take(&mut self.state.borrow_mut().render_resource_events)
+        let mut events = std::mem::take(&mut self.state.borrow_mut().render_resource_events);
+        for frame in self.frame_render_states() {
+            if let Ok(mut state) = frame.try_borrow_mut() {
+                events.append(&mut state.render_resource_events);
+            }
+        }
+        events
     }
 
     #[cfg(feature = "render")]
@@ -4620,9 +4880,55 @@ impl InbrowseJsRuntime {
         state.dom.as_ref().map(f)
     }
 
+    /// Change the DOM of a live frame document natively, as the page does for
+    /// the stylesheets it fetched, and drop the layout built before the change.
+    #[cfg(feature = "render")]
+    pub fn edit_frame_dom<R>(&self, frame_id: u32, f: impl FnOnce(&DomTree) -> R) -> Option<R> {
+        let frame = self.realm_states().borrow().by_frame_id(frame_id)?;
+        let mut frame = frame.try_borrow_mut().ok()?;
+        frame.base_url_cache.borrow_mut().take();
+        let result = frame.dom.as_ref().map(f)?;
+        frame.activity_generation = frame.activity_generation.wrapping_add(1);
+        frame.prepared_render = None;
+        frame.pending_style_mutations.clear();
+        frame.resolved_scroll = None;
+        Some(result)
+    }
+
+    /// The URL a frame document's subresource requests answer to (its own, or
+    /// its creator's for `about:srcdoc`) and the base URL its relative
+    /// references resolve against.
+    #[cfg(feature = "render")]
+    pub fn frame_document_urls(&self, frame_id: u32) -> Option<(String, Option<String>)> {
+        let frame = self.realm_states().borrow().by_frame_id(frame_id)?;
+        let frame = frame.try_borrow().ok()?;
+        Some((resource_document_url(&frame).to_string(), document_base_url(&frame)))
+    }
+
     #[cfg(feature = "render")]
     pub fn accessibility_styles(&self) -> HashMap<NodeId, AccessibilityStyle> {
-        let mut state = self.state.borrow_mut();
+        Self::accessibility_styles_of(&self.state)
+    }
+
+    /// [`Self::accessibility_styles`] for the document of child frame
+    /// `frame_id`, cascaded with that frame's own stylesheets and viewport.
+    /// Empty once the frame is gone or while its realm is in use.
+    #[cfg(feature = "render")]
+    pub fn frame_accessibility_styles(&self, frame_id: u32) -> HashMap<NodeId, AccessibilityStyle> {
+        if frame_id == 0 {
+            return self.accessibility_styles();
+        }
+        match self.realm_states().borrow().by_frame_id(frame_id) {
+            Some(state) => Self::accessibility_styles_of(&state),
+            None => HashMap::new(),
+        }
+    }
+
+    #[cfg(feature = "render")]
+    fn accessibility_styles_of(
+        state: &Rc<RefCell<InbrowseState>>,
+    ) -> HashMap<NodeId, AccessibilityStyle> {
+        let mut state = state.borrow_mut();
         crate::ops::sample_live_document_animations(&mut state);
         if state.animation_timeline.waapi_nodes().is_empty() {
             let style_pass_started = std::time::Instant::now();
@@ -5111,6 +5417,30 @@ impl Default for InbrowseJsRuntime {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn noninteractive_dialogs_do_not_accept_destructive_confirmation() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        assert_eq!(rt.evaluate(r#"(() => {
+            const records = ["keep"];
+            const accepted = confirm("Delete this record?");
+            if (accepted) records.pop();
+            return {accepted, records, prompt: prompt("Edit", "draft"),
+                alertResult: typeof alert("Notice")};
+        })()"#).unwrap(), serde_json::json!({
+            "accepted": false, "records": ["keep"], "prompt": null,
+            "alertResult": "undefined",
+        }));
+    }
+
+    #[test]
+    fn noninteractive_dialog_defaults_apply_to_child_realms() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let frame = crate::frame::FrameRealm::new(&mut rt, 1, 0,
+            "http://example.com/child", "<html><body></body></html>").unwrap();
+        assert_eq!(frame.evaluate(&mut rt, "confirm('Delete?')").unwrap(),
+            serde_json::json!(false));
+    }
+
     #[cfg(inbrowse_external_bootstrap)]
     #[test]
     fn snapshot_core_methods_have_bytecode_before_first_use() {
@@ -5355,9 +5685,26 @@ mod tests {
         rt.evaluate("delete globalThis.__inbrowse_test_ops").unwrap();
 
         assert_eq!(
-            rt.evaluate("[typeof Deno, typeof __inbrowseCore, typeof __inbrowse_core_handoff]")
+            rt.evaluate("[typeof Deno, typeof __inbrowseCore, typeof __inbrowse_core_handoff, typeof __bootstrap]")
                 .unwrap(),
-            serde_json::json!(["undefined", "undefined", "undefined"])
+            serde_json::json!(["undefined", "undefined", "undefined", "undefined"])
+        );
+        // A list of names missed deno_core's `__bootstrap.core` alias, which
+        // handed every page the raw ops. Check what any global leads to.
+        assert_eq!(
+            rt.evaluate(r#"(() => {
+                const names = new Set([...Reflect.ownKeys(globalThis), ...(globalThis.__inbrowse_hide_list || [])]);
+                const reaches = (value) => {
+                    try {
+                        return !!value && (typeof value === 'object' || typeof value === 'function')
+                            && [value, value.core, value.ops && value, value.core && value.core.ops && value.core]
+                                .some((v) => v && v.ops && typeof v.ops.op_dom === 'function');
+                    } catch (e) { return false; }
+                };
+                return [...names].filter((name) => { try { return reaches(globalThis[name]); } catch (e) { return false; } }).map(String);
+            })()"#).unwrap(),
+            serde_json::json!([]),
+            "no page-visible global may lead to the op table"
         );
         assert_eq!(
             rt.evaluate("document.getElementById('value').textContent")
@@ -6852,6 +7199,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn worker_scope_exposes_builtins_as_properties() {
+        // Go's wasm_exec uses `self` as its global object and reads
+        // self.Object / self.Promise / self.JSON; an undefined one makes the
+        // wasm panic with "call of Value.Invoke on undefined".
+        let mut rt = setup_runtime("<html><body></body></html>");
+        rt.execute_script(
+            "worker-scope-builtins",
+            r#"
+            globalThis.__workerReplies = [];
+            const source = `
+                const names = ['Object', 'Array', 'Promise', 'JSON', 'Uint8Array', 'Date', 'Reflect', 'WebAssembly', 'Headers', 'AbortController'];
+                postMessage({
+                    missing: names.filter(n => typeof self[n] === 'undefined'),
+                    viaGlobalThis: names.filter(n => typeof globalThis[n] === 'undefined'),
+                    sameObject: self.Object === Object && self.Promise === Promise,
+                    globalThisIsSelf: globalThis === self,
+                    noDocument: typeof self.document === 'undefined' && typeof self.window === 'undefined',
+                    callable: self.JSON.stringify(new self.Promise(() => {}) instanceof self.Promise),
+                });
+            `;
+            const url = URL.createObjectURL(new Blob([source], { type: 'application/javascript' }));
+            const worker = new Worker(url);
+            worker.onmessage = event => {
+                __workerReplies.push(event.data);
+                worker.terminate();
+                URL.revokeObjectURL(url);
+            };
+        "#,
+        )
+        .unwrap();
+        rt.run_event_loop_bounded(100).await.unwrap();
+        assert_eq!(
+            rt.evaluate("__workerReplies").unwrap(),
+            serde_json::json!([{
+                "missing": [], "viaGlobalThis": [], "sameObject": true,
+                "globalThisIsSelf": true, "noDocument": true, "callable": "true",
+            }])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn worker_initialization_error_does_not_rerun_source() {
         let mut rt = setup_runtime("<html><body></body></html>");
         rt.execute_script(
@@ -8173,6 +8561,23 @@ mod tests {
             .evaluate("(function(){var d=new DOMParser().parseFromString('<a><b></a>','application/xml'); return d.querySelector('parsererror') ? true : false;})()")
             .unwrap();
         assert_eq!(has_err, serde_json::json!(true));
+    }
+
+    #[test]
+    fn dom_parser_ignores_page_startswith_polyfill() {
+        // iasWorld county sites replace startsWith with a polyfill that ignores
+        // the position argument; their SOAP responses start with `<?xml`.
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt
+            .evaluate(r#"(function(){
+                String.prototype.startsWith = function(a){ return this.substr(0, a.length) === a; };
+                var xml = '<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><R xmlns="http://tempuri.org/"><GetSearchExistsResult>true</GetSearchExistsResult></R></soap:Body></soap:Envelope>';
+                var d = new DOMParser().parseFromString(xml, 'text/xml');
+                if (d.querySelector('parsererror')) return 'ERR';
+                return d.getElementsByTagName('GetSearchExistsResult')[0].textContent;
+            })()"#)
+            .unwrap();
+        assert_eq!(result, serde_json::json!("true"));
     }
 
     #[test]
@@ -9518,6 +9923,197 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, serde_json::json!([1, 0, true]));
+    }
+
+    #[test]
+    fn custom_element_attribute_reactions_observe_removal_and_can_restore_the_attribute() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.evaluate(r#"
+            const log = [];
+            class RestoreEl extends HTMLElement {
+                static get observedAttributes() { return ['mode']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                    log.push([oldValue, newValue, this.getAttribute(name)]);
+                    if (newValue === null) this.setAttribute(name, 'restored');
+                }
+            }
+            customElements.define('restore-el', RestoreEl);
+            const results = [];
+            for (const remove of [
+                el => el.removeAttribute('mode'),
+                el => el.toggleAttribute('mode', false),
+                el => el.removeAttributeNS(null, 'mode'),
+            ]) {
+                const el = document.createElement('restore-el');
+                el.setAttribute('mode', 'before');
+                log.length = 0;
+                remove(el);
+                results.push([log.slice(), el.getAttribute('mode'), el.getAttributeNS(null, 'mode')]);
+            }
+            return results;
+        "#).unwrap();
+        let expected = serde_json::json!([
+            [["before", null, null], [null, "restored", "restored"]], "restored", "restored"
+        ]);
+        assert_eq!(result, serde_json::json!([expected, expected, expected]));
+    }
+
+    #[test]
+    fn custom_element_namespace_reactions_observe_updated_attributes_and_style() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.evaluate(r#"
+            const log = [];
+            class StyledEl extends HTMLElement {
+                static get observedAttributes() { return ['style']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                    log.push([newValue, this.getAttribute(name), this.style.color]);
+                    if (newValue === null) this.setAttribute('style', 'color: red');
+                }
+            }
+            customElements.define('styled-el', StyledEl);
+            const el = document.createElement('styled-el');
+            el.setAttribute('style', 'color: blue');
+            log.length = 0;
+            el.setAttributeNS(null, 'style', 'color: green');
+            el.removeAttributeNS(null, 'style');
+            return [log, el.getAttribute('style'), el.style.color];
+        "#).unwrap();
+        assert_eq!(result, serde_json::json!([
+            [["color: green", "color: green", "green"], [null, null, ""],
+                ["color: red", "color: red", "red"]],
+            "color: red", "red"
+        ]));
+    }
+
+    #[test]
+    fn custom_elements_connect_and_upgrade_on_insertion() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt
+            .evaluate(
+                r#"
+                const log = [];
+                class XEl extends HTMLElement {
+                    constructor() { super(); log.push('ctor'); }
+                    connectedCallback() {
+                        log.push('connected');
+                        if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+                    }
+                    disconnectedCallback() { log.push('disconnected'); }
+                }
+                customElements.define('x-el', XEl);
+                const created = document.createElement('x-el');
+                log.push('created');
+                document.body.appendChild(created);
+                log.push('appended:' + (created.shadowRoot !== null));
+                const holder = document.createElement('div');
+                holder.innerHTML = '<x-el></x-el>';
+                log.push('parsed:' + (holder.firstChild instanceof XEl));
+                document.body.appendChild(holder);
+                log.push('inner:' + (holder.firstChild.shadowRoot !== null));
+                document.body.innerHTML = '<x-el></x-el>';
+                log.push('set:' + (document.body.firstChild instanceof XEl));
+                document.body.firstChild.remove();
+                return log;
+                "#,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!([
+                "ctor", "created", "connected", "appended:true",
+                "parsed:false", "ctor", "connected", "inner:true",
+                "disconnected", "disconnected", "ctor", "connected", "set:true",
+                "disconnected"
+            ])
+        );
+    }
+
+    #[test]
+    fn custom_elements_get_reactions_for_moves_and_observed_attributes() {
+        let mut rt = setup_runtime(r#"<html><body><a-el id="a" mode="x" other="y"></a-el><p id="p"></p></body></html>"#);
+        let result = rt
+            .evaluate(
+                r#"
+                const log = [];
+                class AEl extends HTMLElement {
+                    static get observedAttributes() { return ['mode']; }
+                    attributeChangedCallback(name, oldValue, newValue) {
+                        log.push(name + ':' + oldValue + '>' + newValue);
+                    }
+                    connectedCallback() { log.push('connected'); }
+                    disconnectedCallback() { log.push('disconnected'); }
+                }
+                customElements.define('a-el', AEl);
+                const a = document.getElementById('a');
+                a.setAttribute('mode', 'y');
+                a.setAttribute('other', 'z');
+                a.removeAttribute('mode');
+                a.removeAttribute('mode');
+                document.getElementById('p').appendChild(a);
+                const detached = document.createElement('div');
+                detached.appendChild(a);
+                detached.removeChild(a);
+                return log;
+                "#,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!([
+                "mode:null>x", "connected", "mode:x>y", "mode:y>null",
+                "disconnected", "connected", "disconnected"
+            ])
+        );
+    }
+
+    #[test]
+    fn custom_elements_in_a_connected_shadow_tree_connect() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt
+            .evaluate(
+                r#"
+                const log = [];
+                class InEl extends HTMLElement {
+                    connectedCallback() { log.push('inner'); }
+                }
+                class OutEl extends HTMLElement {
+                    connectedCallback() {
+                        const root = this.attachShadow({ mode: 'open' });
+                        root.innerHTML = '<in-el></in-el>';
+                        log.push('outer');
+                    }
+                }
+                customElements.define('in-el', InEl);
+                customElements.define('out-el', OutEl);
+                const host = document.createElement('out-el');
+                document.body.appendChild(host);
+                host.shadowRoot.appendChild(document.createElement('in-el'));
+                return [log, host.shadowRoot.firstChild instanceof InEl];
+                "#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!([["inner", "outer", "inner"], true]));
+    }
+
+    #[test]
+    fn throwing_connected_callback_is_reported_not_thrown() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt
+            .evaluate(
+                r#"
+                const reported = [];
+                globalThis.reportError = (e) => reported.push(e.message);
+                class BadEl extends HTMLElement {
+                    connectedCallback() { throw new Error('connect failed'); }
+                }
+                customElements.define('bad-el', BadEl);
+                const el = document.createElement('bad-el');
+                document.body.appendChild(el);
+                return [el.isConnected, reported];
+                "#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!([true, ["connect failed"]]));
     }
 
     #[test]
@@ -19506,6 +20102,135 @@ mod tests {
     }
 
     #[test]
+    fn file_input_validation_is_nonmutating_and_selection_honors_multiple() {
+        let mut rt = setup_runtime("<input id=single type=file><input id=multi type=file multiple><div id=wrong></div>");
+        assert_eq!(rt.evaluate(r#"(() => {
+            const single = document.getElementById('single');
+            const multi = document.getElementById('multi');
+            const specs = [{name:'one',b64:'AID/'},{name:'two',b64:'BAU='}];
+            const events = [];
+            for (const type of ['input','change']) {
+                single.addEventListener(type, event => events.push([type,event.isTrusted]));
+            }
+            const selected = __inbrowse_setInputFiles(single, specs);
+            const previous = single.files;
+            const validation = __inbrowse_setInputFiles(single, [], true);
+            const preserved = single.files === previous;
+            __inbrowse_setInputFiles(multi, specs);
+            const counts = [single.files.length, multi.files.length];
+            const invalid = __inbrowse_setInputFiles(document.getElementById('wrong'), specs);
+            const forged = __inbrowse_setInputFiles(Object.create(HTMLInputElement.prototype), specs);
+            __inbrowse_setInputFiles(single, []);
+            return {selected,validation,preserved,counts,invalid,forged,events,empty:single.files.length};
+        })()"#).unwrap(), serde_json::json!({
+            "selected":true, "validation":true, "preserved":true, "counts":[1,2],
+            "invalid":false, "forged":false,
+            "events":[["input",true],["change",true],["input",true],["change",true]], "empty":0,
+        }));
+    }
+
+    #[test]
+    fn window_origin_is_replaceable_without_changing_the_document_origin() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        assert_eq!(rt.evaluate(r#"(() => {
+            const descriptor = Object.getOwnPropertyDescriptor(window, 'origin');
+            const initial = origin;
+            const value = { replaced: true };
+            origin = value;
+            const replaced = Object.getOwnPropertyDescriptor(window, 'origin');
+            const errors = [];
+            for (const member of [descriptor.get, descriptor.set]) {
+                try { member.call({}, 'fake'); errors.push('allowed'); }
+                catch (error) { errors.push(error.name); }
+            }
+            location.href = 'https://destination.example/next';
+            return [initial, descriptor.configurable, descriptor.enumerable,
+                descriptor.get.name, descriptor.set.name,
+                descriptor.get.length, descriptor.set.length,
+                origin === value, replaced.writable, replaced.configurable,
+                replaced.enumerable, descriptor.get.call(window), location.origin, errors];
+        })()"#).unwrap(), serde_json::json!([
+            "http://example.com", true, true, "get origin", "set origin", 0, 1,
+            true, true, true, true, "http://example.com", "https://destination.example",
+            ["TypeError", "TypeError"]
+        ]));
+    }
+
+    #[test]
+    fn window_origin_uses_the_receiver_realm_and_inherits_blank_frame_origins() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        assert_eq!(rt.evaluate(r#"(() => {
+            const frame = document.createElement('iframe');
+            document.body.append(frame);
+            const child = frame.contentWindow;
+            const descriptor = Object.getOwnPropertyDescriptor(window, 'origin');
+            const initial = [origin, child.origin, child.location.origin,
+                descriptor.get.call(child)];
+            const value = { child: true };
+            descriptor.set.call(child, value);
+            const replaced = child.origin === value;
+            const parentUnchanged = origin === 'http://example.com';
+            const deleted = delete child.origin;
+            return [initial, replaced, parentUnchanged, deleted,
+                descriptor.get.call(child), Object.hasOwn(child, 'origin')];
+        })()"#).unwrap(), serde_json::json!([
+            ["http://example.com", "http://example.com", "null", "http://example.com"],
+            true, true, true, "http://example.com", false
+        ]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pbkdf2_derivation_does_not_block_page_timers() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.call_function_on_for_cdp(r#"async () => {
+            const key = await crypto.subtle.importKey(
+                'raw', new TextEncoder().encode('password'), 'PBKDF2', false, ['deriveBits']);
+            const derivation = crypto.subtle.deriveBits({
+                name: 'PBKDF2', hash: 'SHA-256',
+                salt: new TextEncoder().encode('salt'), iterations: 1000000,
+            }, key, 256);
+            const first = await Promise.race([
+                derivation.then(() => 'derivation'),
+                new Promise(resolve => setTimeout(() => resolve('timer'), 0)),
+            ]);
+            return [first, (await derivation).byteLength];
+        }"#, None, &[], true, true).await.unwrap();
+        assert_eq!(result.value, Some(serde_json::json!(["timer", 32])));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pbkdf2_async_derivation_snapshots_buffers_and_reports_operation_errors() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.call_function_on_for_cdp(r#"async () => {
+            const key = await crypto.subtle.importKey(
+                'raw', new TextEncoder().encode('password'), 'PBKDF2', false, ['deriveBits']);
+            const salt = new TextEncoder().encode('salt');
+            const derivation = crypto.subtle.deriveBits({
+                name: 'PBKDF2', hash: 'SHA-1', salt, iterations: 4096,
+            }, key, 160);
+            salt.fill(0);
+            const hex = Array.from(new Uint8Array(await derivation),
+                byte => byte.toString(16).padStart(2, '0')).join('');
+            const errors = [];
+            for (const [iterations, bits] of [[0, 256], [10000001, 256], [10000000, 8388608]]) {
+                try {
+                    await crypto.subtle.deriveBits({
+                        name: 'PBKDF2', hash: 'SHA-1', salt, iterations,
+                    }, key, bits);
+                    errors.push('allowed');
+                } catch (error) {
+                    errors.push([error instanceof DOMException, error.name]);
+                }
+            }
+            return [hex, errors];
+        }"#, None, &[], true, true).await.unwrap();
+        assert_eq!(result.value, Some(serde_json::json!([
+            "4b007901b765489abead49d926f721d065a429c1",
+            [[true, "OperationError"], [true, "OperationError"], [true, "OperationError"]]
+        ])));
+    }
+
+    #[test]
     fn test_button_click_dispatches_listener() {
         let mut rt = setup_runtime(r#"<button id="go">Go</button>"#);
         let result = rt
@@ -24491,6 +25216,41 @@ mod tests {
     }
 
     #[test]
+    fn document_implementation_is_a_dom_implementation_interface() {
+        let mut rt = setup_runtime("<!DOCTYPE html><html><body></body></html>");
+        let result = rt.evaluate(r#"(function() {
+            const impl = document.implementation;
+            let illegal = false;
+            try { new DOMImplementation(); } catch (e) { illegal = e instanceof TypeError; }
+            const doc = impl.createHTMLDocument("t");
+            return [typeof DOMImplementation, impl instanceof DOMImplementation,
+                impl === document.implementation, illegal,
+                Object.prototype.toString.call(impl),
+                Object.getOwnPropertyDescriptor(globalThis, "DOMImplementation").enumerable,
+                doc.implementation instanceof DOMImplementation,
+                doc.implementation !== impl,
+                impl.createDocumentType("html", "", "").ownerDocument === document];
+        })()"#).unwrap();
+        assert_eq!(result, serde_json::json!([
+            "function", true, true, true, "[object DOMImplementation]",
+            false, true, true, true
+        ]));
+    }
+
+    #[test]
+    fn document_adopted_stylesheets_is_configurable() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.evaluate(r#"(function() {
+            const desc = Object.getOwnPropertyDescriptor(Document.prototype, "adoptedStyleSheets");
+            Object.defineProperty(Document.prototype, "adoptedStyleSheets", {
+                get: desc.get, set: desc.set, configurable: true,
+            });
+            return [desc.configurable, Array.isArray(document.adoptedStyleSheets)];
+        })()"#).unwrap();
+        assert_eq!(result, serde_json::json!([true, true]));
+    }
+
+    #[test]
     fn test_xml_serializer_doctype() {
         let mut rt = setup_runtime("<!DOCTYPE html><html><body></body></html>");
         let result = rt
@@ -24696,6 +25456,114 @@ mod tests {
                 [true, true, ""]
             ])
         );
+    }
+
+    #[test]
+    fn web_storage_survives_global_constructor_replacement() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt.evaluate(r#"(() => {
+            const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'Storage');
+            const NativeStorage = Storage;
+            let reads = 0;
+            const exercise = store => {
+                store.clear();
+                store.setItem('alpha', 'one');
+                store.beta = 'two';
+                const result = [store.getItem('alpha'), store.beta, Object.keys(store).join(','),
+                    Object.getOwnPropertyDescriptor(store, 'beta').value, 'beta' in store,
+                    store.length, store.key(1), delete store.beta];
+                store.removeItem('alpha');
+                return [...result, store.getItem('beta'), store.getItem('alpha'), store.length,
+                    store.constructor === NativeStorage];
+            };
+            const mutations = [
+                () => { globalThis.Storage = {}; },
+                () => { globalThis.Storage = null; },
+                () => { globalThis.Storage = undefined; },
+                () => { globalThis.Storage = function PageStorage() {}; },
+                () => { delete globalThis.Storage; },
+                () => Object.defineProperty(globalThis, 'Storage', {configurable:true,
+                    get() { reads++; throw new Error('page constructor getter'); }}),
+                () => Object.defineProperty(globalThis, 'Storage', {configurable:true, writable:true,
+                    value:new Proxy(function PageStorage() {}, {
+                        get() { reads++; throw new Error('page constructor proxy'); }
+                    })}),
+            ];
+            try {
+                const runs = mutations.map(mutate => {
+                    mutate();
+                    return [localStorage, sessionStorage].map(exercise);
+                });
+                return {runs, reads};
+            } finally {
+                Object.defineProperty(globalThis, 'Storage', descriptor);
+            }
+        })()"#).unwrap();
+        let store = serde_json::json!([
+            "one", "two", "alpha,beta", "two", true, 2, "beta", true, null, null, 0, true,
+        ]);
+        assert_eq!(result, serde_json::json!({"runs":vec![vec![store; 2]; 7], "reads":0}));
+    }
+
+    #[test]
+    fn web_storage_original_prototype_remains_live_after_constructor_replacement() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        assert_eq!(rt.evaluate(r#"(() => {
+            const NativeStorage = Storage;
+            const prototype = NativeStorage.prototype;
+            const store = localStorage;
+            globalThis.Storage = {};
+            try {
+                Object.defineProperty(prototype, 'extra', {configurable:true, get() { return 42; }});
+                store.setItem('extra', 'named');
+                const result = [store.extra, store.getItem('extra'), 'extra' in store];
+                delete prototype.extra;
+                return [...result, store.extra];
+            } finally {
+                delete prototype.extra;
+                globalThis.Storage = NativeStorage;
+            }
+        })()"#).unwrap(), serde_json::json!([42, "named", true, "named"]));
+    }
+
+    #[test]
+    fn web_storage_constructor_replacement_keeps_child_origin_buckets() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let frame = crate::frame::FrameRealm::new(&mut rt, 1, 0,
+            "http://example.com/child", "<html><body>child</body></html>").unwrap();
+        assert_eq!(frame.evaluate(&mut rt, r#"(() => {
+            globalThis.Storage = null;
+            localStorage.shared = 'child';
+            sessionStorage.shared = 'same-tab';
+            return [localStorage.getItem('shared'), sessionStorage.shared,
+                localStorage.constructor.name, Object.keys(localStorage)];
+        })()"#).unwrap(), serde_json::json!(["child", "same-tab", "Storage", ["shared"]]));
+        assert_eq!(rt.evaluate(r#"(() => {
+            globalThis.Storage = {};
+            return [localStorage.shared, sessionStorage.shared];
+        })()"#).unwrap(), serde_json::json!(["child", "same-tab"]));
+        let foreign = crate::frame::FrameRealm::new(&mut rt, 2, 0,
+            "http://foreign.test/child", "<html><body>foreign</body></html>").unwrap();
+        assert_eq!(foreign.evaluate(&mut rt, r#"(() => {
+            globalThis.Storage = undefined;
+            const before = [localStorage.getItem('shared'), sessionStorage.getItem('shared')];
+            localStorage.shared = 'foreign';
+            return before;
+        })()"#).unwrap(), serde_json::json!([null, null]));
+        assert_eq!(rt.evaluate("[localStorage.shared, sessionStorage.shared]").unwrap(),
+            serde_json::json!(["child", "same-tab"]));
+    }
+
+    #[test]
+    fn web_storage_constructor_replacement_keeps_opaque_origin_checks() {
+        let mut rt = setup_runtime("<html><body></body></html>");
+        rt.evaluate("(() => { globalThis.savedStores = [localStorage, sessionStorage]; globalThis.Storage = {}; return true; })()").unwrap();
+        rt.set_url("data:text/html,opaque");
+        assert_eq!(rt.evaluate(r#"[
+            ...['localStorage', 'sessionStorage'].map(name => () => globalThis[name]),
+            ...savedStores.map(store => () => store.getItem('token')),
+        ].map(read => { try { read(); return 'allowed'; } catch (error) { return error.name; } })"#).unwrap(),
+            serde_json::json!(["SecurityError", "SecurityError", "SecurityError", "SecurityError"]));
     }
 
     #[test]

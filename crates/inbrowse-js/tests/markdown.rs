@@ -58,3 +58,63 @@ fn a_select_shows_its_selected_option_and_hidden_content_is_skipped() {
         "Size M",
     );
 }
+
+/// The converter on a page whose structure `build` makes with script, so the
+/// nesting is as deep as the test needs whatever the parser allows. It runs on
+/// a thread with the stack the engine's own threads get, because the engine's
+/// DOM operations recurse natively on a tree this deep.
+fn markdown_of_built_page(build: &str) -> String {
+    let build = build.to_string();
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let mut rt = InbrowseJsRuntime::new();
+            rt.set_dom(inbrowse_dom::parse_html("<html><body></body></html>"));
+            rt.run_page_init();
+            rt.evaluate(&build).unwrap();
+            rt.evaluate(HTML_TO_MARKDOWN_JS).unwrap().as_str().unwrap().to_string()
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn thousands_of_nested_blocks_convert_without_exhausting_the_stack() {
+    let md = markdown_of_built_page(
+        "(() => { let parent = document.body; \
+         for (let i = 0; i < 5000; i++) { const div = document.createElement('div'); \
+         parent.appendChild(div); parent = div; } \
+         parent.appendChild(document.createTextNode('deep text')); return 1; })()",
+    );
+    assert_eq!(md, "deep text");
+}
+
+#[test]
+fn thousands_of_nested_lists_keep_every_level_and_its_indent() {
+    let md = markdown_of_built_page(
+        "(() => { let parent = document.body; \
+         for (let i = 0; i < 2000; i++) { const list = document.createElement('ul'); \
+         const item = document.createElement('li'); \
+         item.appendChild(document.createTextNode('level ' + i)); \
+         list.appendChild(item); parent.appendChild(list); parent = item; } return 1; })()",
+    );
+    let lines: Vec<&str> = md.lines().collect();
+    assert_eq!(lines.len(), 2000);
+    assert_eq!(lines[0], "- level 0");
+    assert_eq!(lines[1999], format!("{}- level 1999", " ".repeat(2 * 1999)));
+}
+
+#[test]
+fn a_table_cell_holding_a_deep_tree_is_converted_once_and_in_order() {
+    let md = markdown_of_built_page(
+        "(() => { const table = document.createElement('table'); \
+         table.innerHTML = '<tr><th>A</th><th>B</th></tr><tr><td id=c>x</td><td>y | z</td></tr>'; \
+         let parent = table.querySelector('#c'); \
+         for (let i = 0; i < 3000; i++) { const span = document.createElement('div'); \
+         parent.appendChild(span); parent = span; } \
+         parent.appendChild(document.createTextNode('bottom')); \
+         document.body.appendChild(table); return 1; })()",
+    );
+    assert_eq!(md, "| A | B |\n|---|---|\n| x bottom | y \\| z |");
+}

@@ -59,3 +59,42 @@ async fn frame_scripts_run_before_the_parents_load_event() {
     // A same-origin frame's window relates to the page by identity.
     assert_eq!(page.evaluate("window.__links").unwrap(), json!("true,true,true"));
 }
+
+fn page() -> Page {
+    Page::new("blank-frames".into(), Arc::new(BrowserContext::new("blank-frames".into())))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parser_created_blank_iframes_are_frames_without_a_script_touching_them() {
+    let mut page = page();
+    page.navigate("data:text/html,<iframe></iframe><iframe src='about:blank'></iframe><p>no frame here</p>")
+        .await
+        .unwrap();
+    page.adopt_pending_frames().await;
+    assert_eq!(page.frame_urls(), vec!["about:blank", "about:blank"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_script_created_iframe_is_a_frame_with_a_document_at_once() {
+    let mut page = page();
+    page.navigate("data:text/html,<p>no frames yet</p>").await.unwrap();
+    assert!(page.frames.is_empty());
+    assert_eq!(
+        page.evaluate(
+            "const f = document.createElement('iframe'); document.body.appendChild(f); \
+             [f.contentDocument !== null, f.contentDocument.URL, f.contentWindow.parent === window].join()"
+        )
+        .unwrap(),
+        json!("true,about:blank,true")
+    );
+    page.adopt_pending_frames().await;
+    assert_eq!(page.frame_urls(), vec!["about:blank"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_page_without_iframes_has_no_frame_work() {
+    let mut page = page();
+    page.navigate("data:text/html,<p>plain</p>").await.unwrap();
+    page.adopt_pending_frames().await;
+    assert!(page.frames.is_empty());
+}

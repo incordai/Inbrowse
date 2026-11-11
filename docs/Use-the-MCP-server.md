@@ -92,6 +92,16 @@ Read the page:
   metadata. Descriptions preview at most 80 characters per name or value and
   do not include password control values.
 - `browser_markdown`, `browser_links`, `browser_extract`: page as markdown, link list, or structured content.
+  `browser_markdown` takes `max_chars` (default 4000), `boilerplate` (`drop`,
+  the default, leaves out navigation, the page header and footer and sidebars;
+  `keep` returns the full page) and `format`: `markdown` (default) or `json`.
+  With `json` the result is one JSON object with `url`,
+  `status`, `title`, `description`, `lang`, `publishedTime`, `content` (the
+  markdown), `links` (absolute URL to link text) and `images` (absolute URL to
+  alt text), the same object as `inbrowse fetch --dump json`
+  ([fields](CLI-reference.md)); `lang` and `publishedTime` are left out when the
+  page states none. `max_chars` then truncates `content` only, so the object
+  stays valid JSON.
 - `browser_interactive_elements`, `browser_detect_forms`: actionable elements and form fields.
 
 Snapshots and interactive-element listings exclude HTML/ARIA-hidden content;

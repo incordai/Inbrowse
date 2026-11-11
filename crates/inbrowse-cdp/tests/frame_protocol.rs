@@ -18,6 +18,7 @@ fn page_html() -> String {
          <iframe id=ifr src=\"/frame.html\" style=\"border:0;width:300px;height:100px\"></iframe>\
          <iframe id=sd srcdoc=\"{}\" style=\"border:0;width:300px;height:100px\"></iframe>\
          <iframe id=du src=\"data:text/html,<p id=dp>DATA_CONTENT</p>\" style=\"border:0\"></iframe>\
+         <iframe id=bl></iframe><iframe id=bl2 src=\"about:blank\"></iframe>\
          <script>window.addEventListener('load', () => {{ \
            window.__atLoad = document.getElementById('ifr').contentDocument.getElementById('fp').textContent; }});</script>",
         SRCDOC.replace('"', "&quot;")
@@ -28,6 +29,8 @@ const FRAME_HTML: &str = "<!doctype html><body style=\"margin:0\"><title>child</
     <p id=fp style=\"margin:0\">IFRAME_CONTENT</p>\
     <button id=fb style=\"display:block;width:100px;height:30px\" \
      onclick=\"document.getElementById('fp').textContent='CLICKED'\">click</button>\
+    <button style=\"display:none\">DISPLAY_HIDDEN</button>\
+    <button style=\"visibility:hidden\">VISIBILITY_HIDDEN</button>\
     <script>document.getElementById('fp').textContent += ' (ran)';</script>";
 
 async fn serve() -> String {
@@ -120,7 +123,7 @@ impl Fixture {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let tree = fixture.call("Page.getFrameTree", json!({})).await;
-            let built = tree["frameTree"]["childFrames"].as_array().map_or(0, Vec::len) == 3;
+            let built = tree["frameTree"]["childFrames"].as_array().map_or(0, Vec::len) == 5;
             if built || std::time::Instant::now() >= deadline {
                 break;
             }
@@ -360,6 +363,78 @@ async fn an_element_of_a_frame_resolves_measures_and_clicks_in_page_coordinates(
         page.eval(Some(context), "document.getElementById('fp').textContent").await,
         "CLICKED"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blank_iframes_are_frames_with_contexts_and_a_document() {
+    let mut page = Fixture::open().await;
+    let tree = page.call("Page.getFrameTree", json!({})).await;
+    let blank: Vec<String> = tree["frameTree"]["childFrames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|child| child["frame"]["url"] == "about:blank")
+        .map(|child| child["frame"]["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(blank.len(), 2, "an iframe with no src and one with src=about:blank are frames: {tree}");
+    for id in &blank {
+        let context = page.default_context(id);
+        assert_eq!(page.eval(Some(context), "document.URL").await, "about:blank");
+    }
+    assert_eq!(
+        page.eval(None, "document.getElementById('bl').contentDocument.URL").await,
+        "about:blank"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_iframe_created_by_script_is_a_frame_when_the_command_returns() {
+    let mut page = Fixture::open().await;
+    let before = page.ctx.pending_events.len();
+    let reply = page
+        .eval(
+            None,
+            "(() => { const f = document.createElement('iframe'); f.id = 'made'; document.body.append(f); \
+             return [f.contentDocument !== null, f.contentDocument.URL, f.contentWindow.parent === window].join(); })()",
+        )
+        .await;
+    assert_eq!(reply, "true,about:blank,true");
+
+    // No settle in between: the very next command already sees the frame.
+    // Target.createTarget leaves a second session on the page and every
+    // session is told, so a client's count is of the events on its own.
+    let attached: Vec<&CdpEvent> = page.ctx.pending_events[before..]
+        .iter()
+        .filter(|event| {
+            event.method == "Page.frameAttached" && event.session_id.as_deref() == Some(page.session.as_str())
+        })
+        .collect();
+    assert_eq!(attached.len(), 1, "the new iframe was not attached by the command that created it");
+    let made = attached[0].params["frameId"].as_str().unwrap().to_string();
+    let tree = page.call("Page.getFrameTree", json!({})).await;
+    assert!(
+        tree["frameTree"]["childFrames"].as_array().unwrap().iter().any(|child| child["frame"]["id"] == made.as_str()),
+        "the new iframe is not in the frame tree: {tree}"
+    );
+    let context = page.default_context(&made);
+    assert_eq!(page.eval(Some(context), "document.URL").await, "about:blank");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hidden_content_inside_a_frame_is_not_in_its_accessibility_tree() {
+    let mut page = Fixture::open().await;
+    let src = page.child_frame(|url| url.ends_with("/frame.html")).await;
+    let tree = page.call("Accessibility.getFullAXTree", json!({"frameId": src})).await;
+    let listed = |name: &str| {
+        tree["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"]["value"] == name && node["ignored"] != true)
+    };
+    assert!(listed("click"), "the visible button is in the frame's tree: {tree}");
+    assert!(!listed("DISPLAY_HIDDEN"), "display:none content must not be exposed: {tree}");
+    assert!(!listed("VISIBILITY_HIDDEN"), "visibility:hidden content must not be exposed: {tree}");
 }
 
 #[tokio::test(flavor = "current_thread")]

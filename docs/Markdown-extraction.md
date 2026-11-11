@@ -16,12 +16,41 @@ inbrowse fetch https://example.com --dump markdown
 - Code blocks (`<pre>`, `<code>`)
 - Tables
 
+## How it is written
+
+- Headings are ATX (`# Title`), bullets are `- `, emphasis is `*x*`, strong is
+  `**x**`, strikethrough is `~~x~~`, rules are `---`.
+- Link and image URLs are absolute and normalized as a browser's `a.href` is
+  (`https://example.com` is written `https://example.com/`), resolved against
+  the page's final URL or its `<base href>`. `javascript:` links and `#`-only links keep their text and lose
+  the link.
+- A `data:` image keeps its alt text and its type, not its payload:
+  `![Logo](data:image/png)`.
+- `<pre>` is a fenced block that keeps its text verbatim. A `language-x`,
+  `lang-x` or `highlight-source-x` class, or a `data-lang`, becomes the fence's
+  info string (```` ```js ````). A fence is longer than any backtick run inside.
+- Tables are GFM pipe tables: bold, links and code in cells are kept, `|` is
+  escaped, and a table without a header row uses its first row.
+- Lists and block quotes nest; code inside either stays indented under it.
+- Content that is not shown is left out: the `hidden` attribute,
+  `display: none`, and `visibility: hidden` (unless a descendant sets
+  `visibility: visible`).
+
 ## What gets stripped
 
 - `<script>`, `<style>`, `<noscript>`
 - Inline styles
 - ARIA attributes
 - Tracking pixels and beacons
+- Navigation, the page's header and footer, and sidebars (see
+  [CLI reference](CLI-reference.md)). `--boilerplate keep` keeps them. A header
+  or footer inside an article, main or section stays.
+
+## As JSON
+
+`--dump json` adds the title, description, language, publication time, final
+URL, status and the link and image lists around the same Markdown; see the
+[CLI reference](CLI-reference.md).
 
 ## Save to file
 
@@ -54,4 +83,6 @@ inbrowse fetch https://example.com --selector "main" --dump markdown
 inbrowse fetch https://example.com --selector "article.post" --dump markdown
 ```
 
-Useful for skipping nav, sidebars, and footers.
+Navigation, sidebars and the page header and footer are already left out by
+default (`--boilerplate keep` brings them back); `--selector` is for narrowing
+further. An element you select is kept even if it is one of those.
