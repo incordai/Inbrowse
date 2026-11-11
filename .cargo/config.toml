@@ -1,6 +1,14 @@
 [env]
 RUST_TEST_THREADS = "1"
 
+# V8's prebuilt rusty_v8.lib is compiled against the static C runtime
+# (/MT, libcmt). Linking it into a dynamic-CRT (/MD) binary mixes two C
+# runtimes in one process and gives LNK4098, so Windows builds use the static
+# CRT throughout, as Deno does. cc and cmake builds (BoringSSL) follow this
+# flag; vcpkg libvpx must use the x64-windows-static triplet (release.yml).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [alias]
 # Local runtime iteration only. Benchmark with the normal non-incremental build.
 test-js = "nextest run --release --features render -p inbrowse-js --lib --config profile.release.package.inbrowse-js.incremental=true"

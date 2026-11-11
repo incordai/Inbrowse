@@ -390,6 +390,13 @@ pub struct Page {
     /// a time limit stopped them, as one line each. Cleared when a document
     /// starts executing scripts; read by [`Page::take_script_warnings`].
     script_warnings: Vec<String>,
+    /// When the navigation in progress hits its timeout. Set by
+    /// `navigate_with_wait_post` and `navigate_from_document` (the only
+    /// callers of `navigate_with_wait_post_inner`) and cleared when they
+    /// return; `execute_scripts_with_module_budget` ends the script fetch
+    /// phase before it, so a slow script is reported instead of failing the
+    /// whole navigation.
+    navigation_deadline: Option<tokio::time::Instant>,
     /// Navigation history for Page.getNavigationHistory / navigateToHistoryEntry.
     /// Entries are URLs in visit order; `history_index` is the current position.
     /// Pushed on every successful navigation; truncated on goBack -> new nav.
@@ -794,7 +801,12 @@ fn css_resource_urls(css: &str, base: &url::Url) -> Vec<String> {
     urls
 }
 
-/// Record one `url(...)` value when it names a network resource.
+/// Record one `url(...)` value when it names a fetchable resource: http(s),
+/// or `file:` for a sheet of a local page. Whether a `file:` URL may load is
+/// decided by the callers of `dom_css_resource_candidates`
+/// (`Page::render_resource_candidates` and `Page::spawn_frame_css_resources`), which pass
+/// every candidate through `subresource_allowed`, so a network page never
+/// reaches a local file.
 ///
 /// Shared by the generic scan and the `@font-face` path so the two cannot
 /// disagree about quoting, fragments, `data:` or an unresolved `var()`.
@@ -818,7 +830,7 @@ fn push_css_url(raw: &str, base: &url::Url, urls: &mut Vec<String>) {
     }
     if let Ok(mut url) = base.join(value) {
         url.set_fragment(None);
-        if matches!(url.scheme(), "http" | "https") {
+        if matches!(url.scheme(), "http" | "https" | "file") {
             urls.push(url.to_string());
         }
     }
@@ -1325,6 +1337,7 @@ impl Page {
             script_timeout: None,
             settle_timer_horizon: std::time::Duration::ZERO,
             script_warnings: Vec::new(),
+            navigation_deadline: None,
             history: Vec::new(),
             history_index: 0,
             document_history_start: 0,
@@ -2725,15 +2738,32 @@ impl Page {
         // navigation timeout). Without the variable the phase is also capped
         // at this page's navigation timeout, so a caller asking for a 5 s
         // navigation does not wait 30 s for page scripts.
-        let script_deadline_ms: u64 = std::env::var("INBROWSE_SCRIPT_DEADLINE_MS")
+        let mut script_deadline_ms: u64 = std::env::var("INBROWSE_SCRIPT_DEADLINE_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| {
                 DEFAULT_SCRIPT_PHASE_MS.min(duration_millis_u64(self.navigation_timeout()))
             });
         self.script_warnings.clear();
-        let script_deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(script_deadline_ms);
+        let phase_start = tokio::time::Instant::now();
+        let mut script_deadline =
+            phase_start + tokio::time::Duration::from_millis(script_deadline_ms);
+        // The phase starts after the document and its stylesheets arrived, so
+        // a budget as long as the navigation timeout would outlive it: the
+        // whole navigation would fail on one slow script. End the fetch phase
+        // early enough to run what arrived and fire load (a quarter of the
+        // timeout, at most 2 s), and report the scripts still in flight.
+        if let Some(navigation_deadline) = self.navigation_deadline {
+            let reserve = (self.navigation_timeout() / 4).min(std::time::Duration::from_secs(2));
+            let latest = navigation_deadline
+                .checked_sub(reserve)
+                .unwrap_or(phase_start)
+                .max(phase_start);
+            if latest < script_deadline {
+                script_deadline = latest;
+                script_deadline_ms = duration_millis_u64(latest - phase_start);
+            }
+        }
 
         // Hard backstop over the WHOLE script-execution phase. Inline scripts
         // run back-to-back with no await between them, so neither the soft
@@ -3547,12 +3577,14 @@ impl Page {
         let nav_timeout = self.navigation_timeout();
         let nav_timeout_ms = duration_millis_u64(nav_timeout);
 
-        let result = match tokio::time::timeout(
+        self.navigation_deadline = Some(tokio::time::Instant::now() + nav_timeout);
+        let outcome = tokio::time::timeout(
             nav_timeout,
             self.navigate_with_wait_post_inner(url_str, wait_until, method, body, ""),
         )
-        .await
-        {
+        .await;
+        self.navigation_deadline = None;
+        let result = match outcome {
             Ok(r) => r,
             Err(_) => {
                 self.lifecycle = crate::lifecycle::LifecycleState::Failed;
@@ -5667,12 +5699,15 @@ impl Page {
         }).unwrap_or_default();
         let nav_timeout = self.navigation_timeout();
         let nav_timeout_ms = duration_millis_u64(nav_timeout);
-        tokio::time::timeout(
+        self.navigation_deadline = Some(tokio::time::Instant::now() + nav_timeout);
+        let result = tokio::time::timeout(
             nav_timeout,
             self.navigate_with_wait_post_inner(
                 url, crate::lifecycle::WaitUntil::Load, method, body, &source_url,
             ),
-        ).await.map_err(|_| {
+        ).await;
+        self.navigation_deadline = None;
+        result.map_err(|_| {
             self.lifecycle = crate::lifecycle::LifecycleState::Failed;
             PageError::NetworkError(format!("navigation exceeded {nav_timeout_ms}ms deadline"))
         })??;
@@ -5724,8 +5759,9 @@ mod tests {
         navigation_chain_limit_from_env_value, navigation_referrer,
         navigation_timeout_from_env_value, parse_import_url, rebase_css_urls,
         register_linked_stylesheet_script, script_response_is_executable, split_css_imports,
-        stylesheet_graph_is_origin_clean, truncate_on_char_boundary, url_matches_cdp_pattern,
-        LoadedStylesheet, PendingFrameWork, StylesheetImport, DEFAULT_NAVIGATION_CHAIN_LIMIT,
+        stylesheet_graph_is_origin_clean, subresource_allowed, truncate_on_char_boundary,
+        url_matches_cdp_pattern, LoadedStylesheet, PendingFrameWork, StylesheetImport,
+        DEFAULT_NAVIGATION_CHAIN_LIMIT,
     };
     #[cfg(feature = "render")]
     use super::remaining_settle_resource_warmup_ms;
@@ -6220,6 +6256,18 @@ mod tests {
                 "https://cdn.test/icon.svg".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn css_resource_discovery_keeps_file_assets_and_the_gate_limits_them_to_file_pages() {
+        let base = url::Url::parse("file:///site/css/style.css").unwrap();
+        let css = ".bg { background: url('../img/bg.png'); } .x { cursor: url(ftp://h/c.cur), auto; }";
+        let found = css_resource_urls(css, &base);
+        assert_eq!(found, vec!["file:///site/img/bg.png".to_string()]);
+        let file_page = url::Url::parse("file:///site/page.html").unwrap();
+        let web_page = url::Url::parse("https://example.test/").unwrap();
+        assert!(subresource_allowed(Some(&file_page), &found[0]));
+        assert!(!subresource_allowed(Some(&web_page), &found[0]));
     }
 
     #[test]

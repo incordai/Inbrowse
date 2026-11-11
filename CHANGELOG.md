@@ -86,6 +86,10 @@ All notable changes to Inbrowse are recorded here. The format follows
 - Network-idle waits use the navigation timeout, count stealth requests, and
   fail at the timeout instead of reporting a false idle (from upstream
   obscura).
+- Windows builds link the static C runtime, the one V8's prebuilt library is
+  built against, so one process no longer mixes two C runtimes (linker
+  warning LNK4098). libvpx for Windows media builds now uses the vcpkg
+  `x64-windows-static` triplet.
 
 ### Fixed
 
@@ -244,6 +248,15 @@ All notable changes to Inbrowse are recorded here. The format follows
   and `navigator.userAgent` honour `--user-agent` (from upstream obscura).
 - Markdown extraction has no recursion limit on deeply nested pages (from
   upstream obscura).
+- A page opened from a `file:` URL loads its relative images, stylesheets,
+  CSS background images and iframes; a network page still never reaches local
+  files.
+- A `GET` or `HEAD` whose connection is reset, or closed before any response,
+  is sent once more on a fresh connection instead of failing the load. Other
+  methods are never replayed.
+- A script that has not arrived before the navigation deadline is reported by
+  name (`Warning: script ... did not load`) and the page loads without it,
+  instead of the whole navigation failing.
 
 ### Security
 

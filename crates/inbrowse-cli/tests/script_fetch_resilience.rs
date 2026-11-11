@@ -79,7 +79,11 @@ fn fetch(base: &str, timeout: &str) -> (String, String, Duration) {
 fn a_dropped_script_connection_is_retried_and_a_dead_script_is_reported() {
     let base = serve(0);
     let (stdout, stderr, _) = fetch(&base, "20");
-    assert_eq!(stdout, "[1,1,null]", "fast and retried flaky scripts run; stderr: {stderr}");
+    // slow.js answers at once here (serve(0)), so all three scripts run.
+    assert_eq!(
+        stdout, "[1,1,1]",
+        "fast, retried flaky and immediate slow scripts run; stderr: {stderr}"
+    );
     assert!(
         stderr.contains("Warning:") && stderr.contains("/dead.js"),
         "the script that never loaded must be reported: {stderr}"

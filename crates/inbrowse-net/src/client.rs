@@ -1754,10 +1754,17 @@ async fn send_with_connection_retry(
 }
 
 /// Whether the connection was reset or closed before a response, found from
-/// the I/O error kind in the source chain rather than from message text.
+/// the error types in the source chain rather than from message text: an I/O
+/// reset, or hyper's "connection closed before message completed" (the
+/// server closed the socket without answering).
 fn is_connection_reset(error: &reqwest::Error) -> bool {
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {
+        if let Some(hyper_error) = cause.downcast_ref::<hyper::Error>() {
+            if hyper_error.is_incomplete_message() {
+                return true;
+            }
+        }
         if let Some(io) = cause.downcast_ref::<std::io::Error>() {
             return matches!(
                 io.kind(),
@@ -1778,10 +1785,11 @@ mod connection_retry_tests {
     use std::io::{Read, Write};
     use std::time::Duration;
 
-    /// Resets the first connection after reading its request, then answers
-    /// `ok` on the next one when `answer_retry` is set. Returns the number of
-    /// connections it accepted.
-    fn reset_once(answer_retry: bool) -> (u16, std::thread::JoinHandle<usize>) {
+    /// Drops the first connection after reading its request (an abortive
+    /// reset when `reset` is set, else a plain close with no response), then
+    /// answers `ok` on the next one when `answer_retry` is set. Returns the
+    /// number of connections it accepted.
+    fn drop_first(answer_retry: bool, reset: bool) -> (u16, std::thread::JoinHandle<usize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -1800,7 +1808,9 @@ mod connection_retry_tests {
                 }
                 if connection == 0 {
                     let socket = socket2::Socket::from(stream);
-                    socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    if reset {
+                        socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    }
                     drop(socket);
                 } else {
                     stream
@@ -1815,7 +1825,7 @@ mod connection_retry_tests {
 
     #[tokio::test]
     async fn an_idempotent_request_is_sent_again_after_a_connection_reset() {
-        let (port, server) = reset_once(true);
+        let (port, server) = drop_first(true, true);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let response = send_with_connection_retry(client.get(url.as_str()), true, &url)
@@ -1827,7 +1837,7 @@ mod connection_retry_tests {
 
     #[tokio::test]
     async fn a_non_idempotent_request_is_not_sent_twice() {
-        let (port, server) = reset_once(false);
+        let (port, server) = drop_first(false, true);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let request = client.post(url.as_str()).body("payload");
@@ -1835,6 +1845,18 @@ mod connection_retry_tests {
             .await
             .expect_err("a POST is never replayed");
         assert_eq!(server.join().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_idempotent_request_is_sent_again_after_a_close_without_response() {
+        let (port, server) = drop_first(true, false);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let response = send_with_connection_retry(client.get(url.as_str()), true, &url)
+            .await
+            .expect("a GET recovers from a connection closed before any response");
+        assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(server.join().unwrap(), 2);
     }
 }
 

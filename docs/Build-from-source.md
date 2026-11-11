@@ -136,16 +136,18 @@ older macOS releases, build libvpx yourself with the same
 ### Windows
 
 Install libvpx with [vcpkg](https://github.com/microsoft/vcpkg), using the
-`x64-windows-static-md` triplet. That triplet makes a static library built
-against the same C runtime that Rust uses. Run this in PowerShell:
+`x64-windows-static` triplet. Windows builds of Inbrowse use the static C
+runtime (`+crt-static` in `.cargo/config.toml`, because V8's prebuilt library
+is built against it), and that triplet makes a static library built against
+the same runtime. Run this in PowerShell:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
 C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg install libvpx:x64-windows-static-md
+C:\vcpkg\vcpkg install libvpx:x64-windows-static
 
-$env:VPX_LIB_DIR     = "C:\vcpkg\installed\x64-windows-static-md\lib"
-$env:VPX_INCLUDE_DIR = "C:\vcpkg\installed\x64-windows-static-md\include"
+$env:VPX_LIB_DIR     = "C:\vcpkg\installed\x64-windows-static\lib"
+$env:VPX_INCLUDE_DIR = "C:\vcpkg\installed\x64-windows-static\include"
 $env:VPX_VERSION     = "1.16.0"   # Version: line of lib\pkgconfig\vpx.pc
 $env:VPX_STATIC      = "1"
 
