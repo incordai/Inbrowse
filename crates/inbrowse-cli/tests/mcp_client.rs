@@ -132,8 +132,14 @@ struct McpClient {
 
 impl McpClient {
     fn spawn() -> Self {
+        Self::spawn_with(&[])
+    }
+
+    /// `inbrowse mcp` with extra arguments, initialized.
+    fn spawn_with(args: &[&str]) -> Self {
         let mut child = Command::new(INBROWSE)
-            .args(["mcp"])
+            .arg("mcp")
+            .args(args)
             .env("INBROWSE_ALLOW_PRIVATE_NETWORK", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -241,6 +247,52 @@ fn test_initialize() {
     );
     assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(resp["result"]["serverInfo"]["name"], "inbrowse-mcp");
+}
+
+#[test]
+fn idle_pages_close_and_the_next_call_says_so() {
+    let mut client = McpClient::spawn_with(&["--idle-timeout", "1"]);
+    let first = client.tool("browser_navigate", serde_json::json!({ "url": TIMER_TEST_INITIAL_PAGE }));
+    assert_ne!(first["result"]["isError"], true, "{first}");
+    // A page that always has work queued must not keep itself open.
+    let busy = client.tool(
+        "browser_evaluate",
+        serde_json::json!({ "expression": "setInterval(() => {}, 0), 'busy'" }),
+    );
+    assert_eq!(content_text(&busy), "busy", "{busy}");
+
+    std::thread::sleep(Duration::from_millis(2_500));
+    let tabs = client.tool("browser_tab_list", serde_json::json!({}));
+    assert_eq!(content_text(&tabs), "No tabs open.", "idle pages must close: {tabs}");
+
+    let reopened = client.tool("browser_navigate", serde_json::json!({ "url": INLINE_TEXT_URL }));
+    let content = reopened["result"]["content"].as_array().expect("tool content");
+    assert_eq!(content.len(), 2, "{reopened}");
+    let note = content[1]["text"].as_str().unwrap_or("");
+    assert!(note.contains("after 1 second with no requests"), "{note}");
+    assert!(note.contains("The last page was data:text/html,"), "{note}");
+    let snapshot = client.tool("browser_snapshot", serde_json::json!({}));
+    assert!(content_text(&snapshot).contains("Hello, world!"), "the new page works: {snapshot}");
+    assert_eq!(snapshot["result"]["content"].as_array().map(Vec::len), Some(1), "the note is given once");
+}
+
+#[test]
+fn a_message_that_is_not_json_rpc_2_is_an_invalid_request() {
+    let mut client = McpClient::spawn();
+    let response = client.call_raw(serde_json::json!({ "jsonrpc": "1.0", "id": 7, "method": "ping" }));
+    assert_eq!(response["id"], 7, "{response}");
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+    let ping = client.call("ping", serde_json::json!({}));
+    assert!(ping.get("error").is_none(), "the server keeps answering: {ping}");
+}
+
+#[test]
+fn idle_timeout_zero_keeps_pages_open() {
+    let mut client = McpClient::spawn_with(&["--idle-timeout", "0"]);
+    client.tool("browser_navigate", serde_json::json!({ "url": TIMER_TEST_INITIAL_PAGE }));
+    std::thread::sleep(Duration::from_millis(1_500));
+    let tabs = client.tool("browser_tab_list", serde_json::json!({}));
+    assert!(content_text(&tabs).contains("tab-1"), "{tabs}");
 }
 
 #[test]

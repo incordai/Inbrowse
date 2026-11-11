@@ -189,11 +189,54 @@ async fn big_image_is_tiled_and_seams_merged() {
     let seams: Vec<_> = result.lines.iter().filter(|l| l.text == "SEAM").collect();
     assert_eq!(seams.len(), 1, "{:?}", result.lines);
     assert_eq!(seams[0].bbox, [140, 10, 20, 12]);
-    for x in [0u32, 68, 136, 200] {
+    // Four equal 93 px columns (the tiles' own lines sit at their starts).
+    for x in [0u32, 69, 138, 207] {
         let own = result.lines.iter().find(|l| l.text == format!("tile {x}")).expect("tile line");
         assert_eq!(own.bbox, [x + 2, 40, 10, 10]);
     }
     assert!(result.text.contains("SEAM"));
+}
+
+/// An image just over the engine's width limit: two equal columns that
+/// overlap normally (not two max-width columns 90% on top of each other),
+/// and a line cut at the seam comes back once, read whole, with the other
+/// tile's misread fragment of it dropped.
+#[tokio::test]
+async fn image_just_over_the_width_limit_is_read_in_two_columns() {
+    let line = [4400u32, 60, 600, 100];
+    let handler = answer(move |seen, _| {
+        let (gx, gy) = seen.origin();
+        let tile = seen.image();
+        let (left, right) = (gx.max(line[0]), (gx + tile.width()).min(line[0] + line[2]));
+        let lines = if right <= left {
+            vec![]
+        } else if right - left == line[2] {
+            vec![json!({"text": "HUGE IMAGE TEXT", "box": [line[0] - gx, line[1] - gy, line[2], line[3]], "confidence": 0.9})]
+        } else {
+            // Cut by this tile's edge: a short misread of the visible part.
+            vec![json!({"text": "FE TEXT", "box": [left - gx, line[1] - gy, right - left, line[3]], "confidence": 0.4})]
+        };
+        ok(json!({"text": "", "lines": lines, "model": "m1", "elapsed_ms": 1, "warnings": []}))
+    });
+    let (url, seen) = engine(handler).await;
+    let limits = Limits { max_pixels: 1_000_000, ..Limits::default() };
+    let png = encode(positions(9000, 200), ImageFormat::Png);
+    let result = client(&url, limits).recognize(&png, None).await.unwrap();
+
+    assert_eq!(result.tiles, 2, "{:?}", result.warnings);
+    let seen = seen.lock().unwrap();
+    let mut spans: Vec<(u32, u32)> = seen.iter().map(|s| (s.origin().0, s.origin().0 + s.image().width())).collect();
+    spans.sort_unstable();
+    assert!(spans.iter().all(|(a, b)| b - a <= 8192), "{spans:?}");
+    assert_eq!(spans[0].0, 0);
+    assert_eq!(spans[1].1, 9000);
+    // A normal overlap of a tenth of a column, nowhere near 90%.
+    let overlap = spans[0].1 - spans[1].0;
+    assert!((160..=1000).contains(&overlap), "{spans:?}");
+    // The line lies whole in the second column only.
+    let texts: Vec<&str> = result.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, vec!["HUGE IMAGE TEXT"], "{:?}", result.lines);
+    assert_eq!(result.lines[0].bbox, line);
 }
 
 /// 413 with a reason on the whole image: decode, tile, retry.

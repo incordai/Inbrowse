@@ -1,8 +1,8 @@
 //! EventTarget is its own base class, as in browsers: Node and the Window
 //! global inherit it (js/bootstrap.js `class EventTarget` and the Window
 //! prototype wiring). Before this, EventTarget was an alias of Node, so
-//! `window` was not an EventTarget and YouTube's Shady DOM polyfill threw on
-//! `window.__shady_native_addEventListener`.
+//! `window` was not an EventTarget and a web-component polyfill that calls a
+//! saved `EventTarget.prototype` method on `window` threw.
 
 use inbrowse_js::runtime::InbrowseJsRuntime;
 use serde_json::json;
@@ -58,7 +58,7 @@ fn a_constructed_event_target_is_not_a_node() {
 
 #[test]
 fn a_method_saved_on_event_target_prototype_reaches_window() {
-    // What webcomponents-sd.js does: keep the native method under another
+    // What web-component polyfills do: keep the native method under another
     // name on EventTarget.prototype, then call it on window.
     let mut rt = runtime();
     let result = rt

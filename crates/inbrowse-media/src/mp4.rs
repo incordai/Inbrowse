@@ -5,8 +5,10 @@
 //! Matroska/WebM. Box parsing is mp4-atom; `mdat` is never decoded as a box
 //! (mp4-atom would copy it), samples are sliced out of the input instead.
 
+use std::borrow::Cow;
+
 use bytes::Bytes;
-use mp4_atom::{Atom, Codec as Mp4Codec, Decode, FourCC, Moof, Moov, StszSamples, Trak};
+use mp4_atom::{Atom, Codec as Mp4Codec, Decode, Elst, FixedPoint, FourCC, Moof, Moov, StszSamples, Trak};
 
 use crate::demux::{language, opus_head, Codec, Demuxed, Kind, Sample, TextFormat, Track};
 use crate::MediaError;
@@ -26,9 +28,156 @@ pub(crate) fn sniff(data: &[u8]) -> bool {
 struct TrackState {
     id: u32,
     timescale: u32,
+    placement: Placement,
     /// Index into `Demuxed::tracks`.
     index: usize,
     next_dts: u64,
+}
+
+/// Where a track's media timeline sits on the presentation timeline, from the
+/// track's edit list (`edts/elst`). Built by [`Placement::of`] in [`read`] and
+/// applied to every sample time there, in [`progressive`] and in the
+/// fragmented loop, for video, audio and subtitle tracks alike, so they stay
+/// aligned. Only the common shapes are honoured: leading empty edits and the
+/// start of the first non-empty edit. A time before that start comes out
+/// negative and callers clamp it (`video.rs`, `captions.rs`) or trim it
+/// (`audio.rs`); the delay is also stored as `Track::start_us`, which
+/// `audio.rs` writes as leading silence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Placement {
+    /// `media_time` of the first non-empty edit, in the media timescale:
+    /// subtracted from every sample time.
+    media_start: i128,
+    /// Microseconds the track is delayed by leading empty edits.
+    delay_us: i64,
+}
+
+impl Placement {
+    /// The placement for `trak`, with a warning for each part of its edit list
+    /// that is not applied: later edits after the first non-empty one, and a
+    /// playback rate other than 1. `movie_timescale` is the `mvhd` one, the
+    /// unit of an edit's `segment_duration`.
+    fn of(trak: &Trak, movie_timescale: u32, warnings: &mut Vec<String>) -> Self {
+        let Some(elst) = trak.edts.as_ref().and_then(|e| e.elst.as_ref()) else {
+            return Self::default();
+        };
+        let id = trak.tkhd.track_id;
+        if movie_timescale == 0 {
+            warnings.push(format!("track {id}: the movie timescale is 0, so its edit list is ignored"));
+            return Self::default();
+        }
+        let mut delay_ticks = 0i128;
+        let mut media_start = None;
+        let mut non_empty = 0usize;
+        for edit in &elst.entries {
+            match edit.media_time {
+                Some(start) => {
+                    non_empty += 1;
+                    media_start.get_or_insert(start);
+                }
+                None if media_start.is_none() => delay_ticks += i128::from(edit.segment_duration),
+                None => {}
+            }
+        }
+        if non_empty > 1 {
+            warnings.push(format!(
+                "track {id}: the edit list has {non_empty} segments; only the first is applied"
+            ));
+        }
+        let one = FixedPoint::<i16>::from(1);
+        if elst.entries.iter().any(|e| e.media_time.is_some() && e.media_rate != one) {
+            warnings.push(format!(
+                "track {id}: the edit list changes the playback rate; the rate is ignored"
+            ));
+        }
+        Self {
+            media_start: media_start.map_or(0, i128::from),
+            delay_us: to_us(delay_ticks, movie_timescale),
+        }
+    }
+
+    /// Presentation time in microseconds of a sample at `ticks` (decode time
+    /// plus composition offset) in the track's `timescale`. Media before the
+    /// edit's start is not presented, so it stays negative whatever the delay;
+    /// the rest is delayed by `delay_us`.
+    fn pts_us(self, ticks: i128, timescale: u32) -> i64 {
+        let from_start = ticks - self.media_start;
+        let us = to_us(from_start, timescale);
+        if from_start < 0 {
+            us
+        } else {
+            us.saturating_add(self.delay_us)
+        }
+    }
+}
+
+/// A box found by [`children`]: `at` is its first byte, `body` its first byte
+/// after the header, `end` one past its last.
+struct Child {
+    kind: [u8; 4],
+    at: usize,
+    body: usize,
+    end: usize,
+}
+
+/// The boxes laid end to end in `data[body..end]`, stopping at the first one
+/// whose header does not fit.
+fn children(data: &[u8], body: usize, end: usize) -> Vec<Child> {
+    let mut out = Vec::new();
+    let mut at = body;
+    while at.saturating_add(8) <= end {
+        let size = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+        let kind = [data[at + 4], data[at + 5], data[at + 6], data[at + 7]];
+        let (header, len) = match size {
+            0 => (8, end - at),
+            1 if at.saturating_add(16) <= end => {
+                let mut big = [0u8; 8];
+                big.copy_from_slice(&data[at + 8..at + 16]);
+                (16, usize::try_from(u64::from_be_bytes(big)).unwrap_or(usize::MAX))
+            }
+            1 => break,
+            n => (8, n as usize),
+        };
+        if len < header || len > end - at {
+            break;
+        }
+        out.push(Child { kind, at, body: at + header, end: at + len });
+        at += len;
+    }
+    out
+}
+
+/// The `moov` box with every unreadable `elst` renamed to `skip`, a box
+/// mp4-atom passes over. mp4-atom refuses a whole `moov` for one `elst` whose
+/// `media_time` is below -1 (the only negative the format defines), which
+/// would fail the file over timing data; its track then simply has no edit
+/// list. Warns once with the count. Called by [`read`] before decoding `moov`.
+fn hide_unreadable_edit_lists<'a>(moov: &'a [u8], warnings: &mut Vec<String>) -> Cow<'a, [u8]> {
+    let mut found = vec![Child { kind: [0; 4], at: 0, body: 0, end: moov.len() }];
+    for kind in [b"moov", b"trak", b"edts", b"elst"] {
+        let next: Vec<Child> = found
+            .iter()
+            .flat_map(|parent| children(moov, parent.body, parent.end))
+            .filter(|c| &c.kind == kind)
+            .collect();
+        found = next;
+    }
+    let unreadable: Vec<&Child> = found
+        .iter()
+        .filter(|c| Elst::decode(&mut &moov[c.at..c.end]).is_err())
+        .collect();
+    if unreadable.is_empty() {
+        return Cow::Borrowed(moov);
+    }
+    warnings.push(format!(
+        "{} unreadable edit list(s) ignored; those tracks' timestamps are not adjusted",
+        unreadable.len()
+    ));
+    let mut copy = moov.to_vec();
+    for c in unreadable {
+        copy[c.at + 4..c.at + 8].copy_from_slice(b"skip");
+    }
+    Cow::Owned(copy)
 }
 
 fn malformed(what: impl std::fmt::Display) -> MediaError {
@@ -84,7 +233,8 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
         }
         match &kind {
             b"moov" => {
-                moov = Some(Moov::decode(&mut &data[pos..end]).map_err(malformed)?);
+                let body = hide_unreadable_edit_lists(&data[pos..end], warnings);
+                moov = Some(Moov::decode(&mut &*body).map_err(malformed)?);
             }
             b"moof" => {
                 fragments.push((pos, Moof::decode(&mut &data[pos..end]).map_err(malformed)?));
@@ -107,7 +257,9 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
             warnings.push(format!("{} track has timescale 0; skipped", track.codec_name));
             continue;
         }
-        track.samples = progressive(trak, timescale, track.kind, data, &mut total, warnings)?;
+        let placement = Placement::of(trak, moov.mvhd.timescale, warnings);
+        track.start_us = placement.delay_us;
+        track.samples = progressive(trak, timescale, placement, track.kind, data, &mut total, warnings)?;
         let next_dts = trak
             .mdia
             .minf
@@ -120,6 +272,7 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
         states.push(TrackState {
             id: trak.tkhd.track_id,
             timescale,
+            placement,
             index: tracks.len(),
             next_dts,
         });
@@ -174,7 +327,7 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                             return Err(MediaError::TooLarge(format!("more than {MAX_SAMPLES} samples")));
                         }
                         track.samples.push(Sample {
-                            pts_us: to_us(pts, state.timescale),
+                            pts_us: state.placement.pts_us(pts, state.timescale),
                             dur_us: Some(to_us(i128::from(duration), state.timescale)),
                             key: track.kind != Kind::Video || is_sync_sample(flags),
                             data: data.slice(data_pos..end),
@@ -303,6 +456,7 @@ fn sized(mut track: Track, width: u16, height: u16) -> Track {
 fn progressive(
     trak: &Trak,
     timescale: u32,
+    placement: Placement,
     kind: Kind,
     data: &Bytes,
     total: &mut usize,
@@ -392,7 +546,7 @@ fn progressive(
         let end = offset.saturating_add(size);
         if end <= data.len() {
             samples.push(Sample {
-                pts_us: to_us(i128::from(dts) + i128::from(cts), timescale),
+                pts_us: placement.pts_us(i128::from(dts) + i128::from(cts), timescale),
                 dur_us: Some(to_us(i128::from(delta), timescale)),
                 key: kind != Kind::Video || key,
                 data: data.slice(offset..end),
@@ -412,7 +566,9 @@ fn progressive(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use mp4_atom::Encode;
+
     use super::*;
 
     /// A 2 s, 10 fps H.264 file with B-frames whose ctts is version 0 but holds
@@ -428,5 +584,174 @@ mod tests {
         pts.sort_unstable();
         let expected: Vec<i64> = (0..20).map(|n| n * 100_000).collect();
         assert_eq!(pts, expected, "{warnings:?}");
+    }
+
+    const CTTS_V0: &[u8] = include_bytes!("../tests/fixtures/h264_ctts_v0_negative.mp4");
+    const H264_AAC: &[u8] = include_bytes!("../tests/fixtures/h264_aac.mp4");
+    const FRAGMENTED: &[u8] = include_bytes!("../tests/fixtures/h264_aac_fragmented.mp4");
+
+    /// `fixture` with its `moov` box rewritten by `edit`, for building edit
+    /// list cases from the checked-in files. Also used by `audio.rs` tests.
+    /// The progressive fixtures keep `moov` after `mdat`, so chunk offsets stay
+    /// valid; the fragmented one's `trun` offsets are relative to each `moof`.
+    pub(crate) fn rewrite_moov(fixture: &[u8], edit: impl FnOnce(&mut Moov)) -> Bytes {
+        let moov = children(fixture, 0, fixture.len())
+            .into_iter()
+            .find(|c| &c.kind == b"moov")
+            .expect("a moov box");
+        let mut decoded = Moov::decode(&mut &fixture[moov.at..moov.end]).expect("moov decodes");
+        edit(&mut decoded);
+        let mut out = fixture[..moov.at].to_vec();
+        decoded.encode(&mut out).expect("moov encodes");
+        out.extend_from_slice(&fixture[moov.end..]);
+        Bytes::from(out)
+    }
+
+    fn edit(segment_duration: u64, media_time: Option<u64>) -> mp4_atom::ElstEntry {
+        mp4_atom::ElstEntry { segment_duration, media_time, media_rate: 1.into() }
+    }
+
+    fn set_edits(trak: &mut Trak, entries: Vec<mp4_atom::ElstEntry>) {
+        trak.edts = Some(mp4_atom::Edts { elst: Some(Elst { entries }) });
+    }
+
+    fn sorted_pts(track: &crate::demux::Track) -> Vec<i64> {
+        let mut pts: Vec<i64> = track.samples.iter().map(|s| s.pts_us).collect();
+        pts.sort_unstable();
+        pts
+    }
+
+    fn at_100_ms(from: i64) -> Vec<i64> {
+        (0..20).map(|n| from + n * 100_000).collect()
+    }
+
+    /// The case from the issue: x264 delays composition by the B-frame depth
+    /// (here 2 frames, 2048 ticks) and the edit list starts at it, so the
+    /// first frame is shown at 0, not at 0.2 s.
+    #[test]
+    fn edit_list_start_is_subtracted_from_presentation_times() {
+        let shifted = |edits: Option<Vec<mp4_atom::ElstEntry>>| {
+            rewrite_moov(CTTS_V0, |moov| {
+                let trak = &mut moov.trak[0];
+                for entry in &mut trak.mdia.minf.stbl.ctts.as_mut().unwrap().entries {
+                    // The fixture's version 0 box is decoded unsigned: read it signed first.
+                    entry.sample_offset = i64::from(entry.sample_offset as i32) + 2048;
+                }
+                match edits {
+                    Some(entries) => set_edits(trak, entries),
+                    None => trak.edts = None,
+                }
+            })
+        };
+        let mut warnings = Vec::new();
+        let without = read(&shifted(None), &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&without.tracks[0]), at_100_ms(200_000), "no edit list: the offset stays");
+
+        let with = read(&shifted(Some(vec![edit(2000, Some(2048))])), &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&with.tracks[0]), at_100_ms(0), "{warnings:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn leading_empty_edit_delays_the_track() {
+        // 500 ms of nothing (movie timescale 1000), then the media from its start.
+        let data = rewrite_moov(CTTS_V0, |moov| {
+            set_edits(&mut moov.trak[0], vec![edit(500, None), edit(2000, Some(0))]);
+        });
+        let mut warnings = Vec::new();
+        let demuxed = read(&data, &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(500_000), "{warnings:?}");
+        assert_eq!(demuxed.tracks[0].start_us, 500_000);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Media before the edit's start is never presented, so a delay does not
+    /// move it into view.
+    #[test]
+    fn delay_does_not_bring_cut_off_media_into_view() {
+        let data = rewrite_moov(CTTS_V0, |moov| {
+            set_edits(&mut moov.trak[0], vec![edit(500, None), edit(2000, Some(2048))]);
+        });
+        let demuxed = read(&data, &mut Vec::new()).unwrap();
+        let mut expected = vec![-200_000, -100_000];
+        expected.extend((0..18).map(|n| 500_000 + n * 100_000));
+        assert_eq!(sorted_pts(&demuxed.tracks[0]), expected);
+    }
+
+    /// An edit that starts after a sample's time leaves it before 0: it is
+    /// kept (the decoder needs it as a reference) with a negative time that
+    /// callers clamp.
+    #[test]
+    fn samples_before_the_edit_start_get_negative_times() {
+        let data = rewrite_moov(CTTS_V0, |moov| set_edits(&mut moov.trak[0], vec![edit(2000, Some(2048))]));
+        let mut warnings = Vec::new();
+        let demuxed = read(&data, &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(-200_000));
+    }
+
+    #[test]
+    fn extra_segments_and_other_rates_warn_and_the_first_edit_is_used() {
+        let data = rewrite_moov(CTTS_V0, |moov| {
+            let mut fast = edit(1000, Some(0));
+            fast.media_rate = 2.into();
+            set_edits(&mut moov.trak[0], vec![edit(1000, Some(2048)), fast]);
+        });
+        let mut warnings = Vec::new();
+        let demuxed = read(&data, &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(-200_000));
+        assert!(warnings.iter().any(|w| w.contains("2 segments") && w.contains("only the first")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("playback rate")), "{warnings:?}");
+    }
+
+    /// The first audio edit of `h264_aac.mp4` is AAC's 1024-sample encoder
+    /// delay: audio starts 1024 ticks (21 ms) before 0 and video at 0.
+    #[test]
+    fn audio_edit_list_aligns_the_priming_samples() {
+        let mut warnings = Vec::new();
+        let demuxed = read(&Bytes::from_static(H264_AAC), &mut warnings).unwrap();
+        assert_eq!(demuxed.tracks[0].samples[0].pts_us, 0);
+        assert_eq!(demuxed.tracks[1].samples[0].pts_us, -21_333);
+        assert_eq!(demuxed.tracks[1].samples[1].pts_us, 0);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// `media_time` below -1 makes mp4-atom reject the whole `moov`; the file
+    /// still reads, without that track's edit list.
+    #[test]
+    fn unreadable_edit_list_is_ignored_with_a_warning() {
+        let mut data = H264_AAC.to_vec();
+        // The second `elst` is the audio track's: media_time sits 16 bytes in.
+        let audio_elst = data.windows(4).enumerate().filter(|(_, w)| *w == b"elst").nth(1).unwrap().0;
+        data[audio_elst + 16..audio_elst + 20].copy_from_slice(&(-2i32).to_be_bytes());
+        assert!(Moov::decode(&mut &data[9067..]).is_err(), "the premise: mp4-atom refuses it");
+
+        let mut warnings = Vec::new();
+        let demuxed = read(&Bytes::from(data), &mut warnings).unwrap();
+        assert_eq!(demuxed.tracks.len(), 2);
+        assert_eq!(demuxed.tracks[1].samples[0].pts_us, 0, "the audio edit list is dropped");
+        assert_eq!(demuxed.tracks[0].samples[0].pts_us, 0);
+        assert!(warnings.iter().any(|w| w.contains("1 unreadable edit list")), "{warnings:?}");
+    }
+
+    /// Fragmented files keep their edit list in the initial `moov` and place
+    /// every `moof` sample with it too.
+    #[test]
+    fn edit_list_applies_to_fragmented_files() {
+        let mut warnings = Vec::new();
+        let plain = read(&Bytes::from_static(FRAGMENTED), &mut warnings).unwrap();
+        let first = sorted_pts(&plain.tracks[0])[0];
+        let ticks = first * 10_240 / 1_000_000;
+        assert!(ticks > 0, "the fixture's B-frames delay the first picture");
+
+        let data = rewrite_moov(FRAGMENTED, |moov| {
+            set_edits(&mut moov.trak[0], vec![edit(1900, Some(ticks as u64))]);
+            set_edits(&mut moov.trak[1], vec![edit(500, None), edit(1900, Some(0))]);
+        });
+        let edited = read(&data, &mut warnings).unwrap();
+        assert_eq!(sorted_pts(&edited.tracks[0])[0], 0, "{warnings:?}");
+        assert_eq!(edited.tracks[0].samples.len(), plain.tracks[0].samples.len());
+        let audio_first = plain.tracks[1].samples[0].pts_us;
+        assert_eq!(edited.tracks[1].samples[0].pts_us, audio_first + 500_000);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

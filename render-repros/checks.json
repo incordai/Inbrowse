@@ -408,6 +408,13 @@
   "reduced-motion-emulation": [
     {"name": "normal motion keeps the default width", "color": "#22aa66", "width": 100, "height": 30}
   ],
+  "iframe-content": [
+    {"name": "srcdoc frame paints its document in the content box", "color": "#e8590c", "x": 20, "y": 20, "width": 120, "height": 80},
+    {"name": "data URL frame paints its document in the content box", "color": "#1971c2", "x": 180, "y": 20, "width": 120, "height": 80},
+    {"name": "frame content sits inside border and padding", "color": "#7048e8", "x": 30, "y": 150, "width": 120, "height": 80},
+    {"name": "frame content is laid out at the frame width", "color": "#0b7285", "x": 180, "y": 140, "width": 120, "height": 30},
+    {"name": "frame content is clipped to the frame", "color": "#862e9c", "x": 180, "y": 170, "width": 120, "height": 30}
+  ],
   "table-display-keywords": [
     {"name": "explicit row and group display override display none", "color": "#1971c2", "x": 20, "y": 20, "width": 40, "height": 20},
     {"name": "CSS rows share their first column", "color": "#087f5b", "x": 150, "y": 20, "width": 30, "height": 40},

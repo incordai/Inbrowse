@@ -38,3 +38,14 @@ data[at + 4] = 0
 open("h264_ctts_v0_negative.mp4", "wb").write(data)
 EOF
 ```
+
+`aac_5p1_tones.m4a` is 1.5 seconds of 5.1 AAC-LC at 16 kHz. A 440 Hz tone at
+amplitude 0.5 plays on one channel at a time for 0.25 s each, in the order
+front left, front right, centre, LFE, rear left, rear right, so a test can tell
+which channel each decoded element landed on:
+
+```bash
+T='0.5*sin(2*PI*440*t)'; g() { echo "if(between(t,$1,$2),$T,0)"; }
+E="$(g 0 .25)|$(g .25 .5)|$(g .5 .75)|$(g .75 1)|$(g 1 1.25)|$(g 1.25 1.5)"
+ffmpeg -f lavfi -i "aevalsrc='$E':c=5.1:s=16000:d=1.5" -c:a aac -b:a 48k aac_5p1_tones.m4a
+```

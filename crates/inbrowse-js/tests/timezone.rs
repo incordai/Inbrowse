@@ -1,6 +1,6 @@
 // The page's timezone follows the process TZ on every platform. On Windows ICU
 // ignored TZ and reported the host zone, so INBROWSE_TIMEZONE had no effect
-// (runtime.rs `pin_icu_timezone_from_tz`). Its own test binary: TZ must be set
+// (timezone.rs `process_default`). Its own test binary: TZ must be set
 // before the first isolate in the process is created.
 
 use inbrowse_js::runtime::InbrowseJsRuntime;

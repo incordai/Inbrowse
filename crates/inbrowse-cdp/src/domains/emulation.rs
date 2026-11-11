@@ -189,6 +189,17 @@ pub async fn handle(
             page.set_locale_override((!locale.is_empty()).then(|| locale.to_string()));
             Ok(json!({}))
         }
+        "setTimezoneOverride" => {
+            let zone = params
+                .get("timezoneId")
+                .and_then(Value::as_str)
+                .ok_or("Emulation.setTimezoneOverride requires timezoneId")?;
+            let page = ctx
+                .get_session_page_mut(session_id)
+                .ok_or("No page for session")?;
+            page.set_time_zone_override(Some(zone.to_string()))?;
+            Ok(json!({}))
+        }
         // Touch emulation does not affect layout yet, but acknowledging it is
         // compatible with clients that pair it with a metrics override.
         "setTouchEmulationEnabled" => Ok(json!({})),

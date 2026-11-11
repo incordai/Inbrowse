@@ -72,6 +72,10 @@ taffy = { path = "vendor/taffy" }
 # Carry the same canonical variable-font coordinates through shaping and
 # rasterization until the upstream API exposes them.
 cosmic-text = { path = "vendor/cosmic-text" }
+# Decode AAC-LC with more than two channels (5.1 and the other channel
+# configurations 1 to 7). The upstream decoder and its wrapper stop at stereo.
+moq-audio = { path = "vendor/moq-audio" }
+symphonia-codec-aac = { path = "vendor/symphonia-codec-aac" }
 
 # Unwinding (the Rust default) is REQUIRED for the anti-panic protocol: ops wrap
 # their bodies in std::panic::catch_unwind so a panic degrades to an error return

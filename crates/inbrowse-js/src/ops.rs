@@ -422,6 +422,9 @@ pub struct InbrowseState {
     pub frame_id_counter: u32,
     /// Which frame this state belongs to; 0 is the page's own realm.
     pub frame_id: u32,
+    /// The frame whose element took focus last, recorded on the page's state:
+    /// keyboard input goes to that frame. 0 is the page itself.
+    pub focused_frame: u32,
     // postMessage traffic between realms, waiting to be delivered. A realm
     // cannot reach another realm's context on its own, so the message is queued
     // here and the Page dispatches it, the same way frames themselves are
@@ -565,6 +568,8 @@ pub struct InbrowseState {
     /// Cheap native signal that the current parser script wrote another
     /// script. This avoids polling V8 after every ordinary parser script.
     pub(crate) document_write_inserted_script: Cell<bool>,
+    /// Style and layout passes this document has run, for `Performance.getMetrics`.
+    pub(crate) render_passes: crate::metrics::RenderPasses,
 }
 
 /// A frame document waiting to be given a realm.
@@ -679,6 +684,7 @@ impl InbrowseState {
             pending_frame_bytes: 0,
             frame_id_counter: 0,
             frame_id: 0,
+            focused_frame: 0,
             pending_frame_messages: Vec::new(),
             pending_frame_message_bytes: 0,
             page_in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -746,6 +752,7 @@ impl InbrowseState {
             already_started_scripts: RefCell::new(HashSet::new()),
             write_stream: RefCell::new(None),
             document_write_inserted_script: Cell::new(false),
+            render_passes: Default::default(),
         }
     }
     #[cfg(feature = "render")]
@@ -772,6 +779,8 @@ pub struct RuntimeExceptionEvent {
     pub exception_id: u64,
     pub name: String,
     pub description: String,
+    /// True for an unhandled promise rejection (`Uncaught (in promise)`).
+    pub in_promise: bool,
     pub url: String,
     pub line_number: i64,
     pub column_number: i64,
@@ -1251,6 +1260,53 @@ impl RealmStates {
             .iter()
             .find(|(_, id, _)| *id == frame_id)
             .map(|(_, _, state)| state.clone())
+    }
+
+    /// The child frame whose realm is `context`, or `None` for any other.
+    pub(crate) fn frame_id_of(&self, context: v8::Local<v8::Context>) -> Option<u32> {
+        self.entries.iter().find(|(known, _, _)| *known == context).map(|(_, id, _)| *id)
+    }
+
+    /// The frame id of the document that holds child frame `frame_id`'s
+    /// `<iframe>` element, and that element's node there. `None` once the frame
+    /// has been retired or its owner document replaced.
+    pub(crate) fn frame_owner(&self, frame_id: u32) -> Option<(u32, NodeId)> {
+        let timers = self.frame_timers.get(&frame_id)?;
+        if timers.cancel.is_canceled() {
+            return None;
+        }
+        let (parent, node, generation) = timers.owner.as_ref()?;
+        let parent = parent.upgrade()?;
+        let parent = parent.try_borrow().ok()?;
+        (parent.document_generation == *generation).then_some((parent.frame_id, *node))
+    }
+
+    /// The live document hosted by the frame element `node` of `host`, whose
+    /// current `document_generation` is `generation`. Reading only: the host
+    /// may be borrowed by the caller. A reloaded frame leaves older ids behind
+    /// until they are released, so the newest realm wins.
+    #[cfg(feature = "render")]
+    pub(crate) fn hosted_frame(
+        &self,
+        host: &SharedState,
+        generation: u64,
+        node: NodeId,
+    ) -> Option<SharedState> {
+        let id = self
+            .frame_timers
+            .iter()
+            .filter(|(_, timers)| {
+                !timers.cancel.is_canceled()
+                    && timers.owner.as_ref().is_some_and(|(parent, owner, owner_generation)| {
+                        parent.as_ptr() == Rc::as_ptr(host)
+                            && *owner == node
+                            && *owner_generation == generation
+                    })
+            })
+            .map(|(id, _)| *id)
+            .filter(|id| self.entries.iter().any(|(_, known, _)| known == id))
+            .max()?;
+        self.by_frame_id(id)
     }
 }
 
@@ -3291,10 +3347,52 @@ fn op_runtime_events_enabled(state: &OpState) -> bool {
         .runtime_events_enabled
 }
 
+/// Append one line to the embedder's console buffer (drained by
+/// `take_pending_console_messages`, the source of the MCP
+/// `browser_console_messages` tool). Does nothing unless the embedder asked
+/// for console messages; the oldest line is dropped past 1024 entries.
+/// Callers: `op_console_msg` and `record_uncaught_exception`.
+fn push_console_message(state: &mut InbrowseState, level: &str, message: &str) {
+    if !state.console_messages_enabled {
+        return;
+    }
+    if state.pending_console_messages.len() >= 1_024 {
+        state.pending_console_messages.pop_front();
+    }
+    state
+        .pending_console_messages
+        .push_back(format!("[{level}] {message}"));
+}
+
+/// Record an error thrown out of a script the engine ran itself (a classic
+/// script, a module). It becomes an `[error] Uncaught ...` line in the console
+/// buffer, as a browser console shows it, and a `Runtime.exceptionThrown`
+/// event. Errors thrown from event-loop callbacks and unhandled promise
+/// rejections reach the page's JS, which logs them through `console`, so they
+/// use `op_report_browser_exception` and `queue_exception_event` instead and
+/// are not logged twice. Callers: `InbrowseJsRuntime::record_uncaught_exception`.
 pub(crate) fn record_uncaught_exception(
     state: &mut InbrowseState,
     error: &deno_core::error::JsError,
     fallback_url: &str,
+) {
+    let message = match error.stack.as_deref() {
+        Some(stack) => format!("Uncaught {stack}"),
+        None => error.exception_message.clone(),
+    };
+    push_console_message(state, "error", &message);
+    queue_exception_event(state, error, fallback_url, false);
+}
+
+/// Queue the `Runtime.exceptionThrown` data for one uncaught error. Does
+/// nothing unless CDP runtime events are enabled. `in_promise` marks an
+/// unhandled promise rejection, reported as `Uncaught (in promise)`. Callers:
+/// `record_uncaught_exception` and `op_report_browser_exception`.
+fn queue_exception_event(
+    state: &mut InbrowseState,
+    error: &deno_core::error::JsError,
+    fallback_url: &str,
+    in_promise: bool,
 ) {
     if !state.runtime_events_enabled {
         return;
@@ -3327,6 +3425,7 @@ pub(crate) fn record_uncaught_exception(
         exception_id: state.runtime_exception_counter,
         name: error.name.clone().unwrap_or_else(|| "Error".to_string()),
         description: error.stack.clone().unwrap_or_else(|| error.exception_message.clone()),
+        in_promise,
         url,
         line_number,
         column_number,
@@ -3335,12 +3434,17 @@ pub(crate) fn record_uncaught_exception(
     }));
 }
 
+/// Report an error the page's JS saw escape a callback (`in_promise` false) or
+/// an unhandled promise rejection (`in_promise` true) as a
+/// `Runtime.exceptionThrown` event. The console line is the caller's job: both
+/// JS call sites log the error through `console` themselves.
 #[op2(nofast)]
 fn op_report_browser_exception<'s, 'i>(
     scope: &mut v8::PinScope<'s, 'i>,
     state: &OpState,
     error: v8::Local<'s, v8::Value>,
     frame_id: u32,
+    in_promise: bool,
 ) {
     let Some(owner) = posted_task_owner(state, frame_id) else { return; };
     let Ok(page) = owner.try_borrow() else { return; };
@@ -3349,7 +3453,7 @@ fn op_report_browser_exception<'s, 'i>(
     drop(page);
     let error = deno_core::error::JsError::from_v8_exception(scope, error);
     if let Ok(mut page) = owner.try_borrow_mut() {
-        record_uncaught_exception(&mut page, &error, &url);
+        queue_exception_event(&mut page, &error, &url, in_promise);
     };
 }
 
@@ -3368,13 +3472,7 @@ fn op_console_msg(
 
     let page = state.borrow::<SharedState>().clone();
     let mut page = page.borrow_mut();
-    if page.console_messages_enabled {
-        if page.pending_console_messages.len() >= 1_024 {
-            page.pending_console_messages.pop_front();
-        }
-        page.pending_console_messages
-            .push_back(format!("[{level}] {msg}"));
-    }
+    push_console_message(&mut page, level, msg);
     if !page.runtime_events_enabled {
         return;
     }
@@ -6656,6 +6754,14 @@ fn op_frame_document_ready(
     frame_id
 }
 
+// Records which frame holds keyboard focus. Every realm calls this from its
+// elements' focus(), so the host can route key events without asking each
+// realm's document.
+#[op2(fast)]
+fn op_note_focus(state: &OpState, frame_id: u32) {
+    state.borrow::<SharedState>().borrow_mut().focused_frame = frame_id;
+}
+
 // deno_core owns the context-state and module-map slots. Store traced V8 values
 // after them, not Global handles that would keep the context alive after detach.
 const DOCUMENT_MEMBERS_SLOT: i32 = deno_core::MODULE_MAP_SLOT_INDEX + 1;
@@ -7817,6 +7923,7 @@ pub fn build_extension() -> Extension {
         op_initial_frame(),
         op_document_realm_member(),
         op_register_document_realm(),
+        op_note_focus(),
         op_post_frame_message(),
         op_sleep(),
         op_async_runtime_available(),
@@ -8155,6 +8262,7 @@ fn ensure_prepared_render_with_base_url(
         incompatible || prepared.animation_sample() != animation_sample
     }) || !state.pending_style_mutations.is_empty();
     if needs_rebuild {
+        let pass_started = std::time::Instant::now();
         if let Some(dom) = state.dom.as_ref() {
             state.animation_timeline.materialize_start_candidates(dom);
         }
@@ -8223,6 +8331,7 @@ fn ensure_prepared_render_with_base_url(
                 .animation_timeline
                 .retain_nodes(|node| connected.contains(&node));
         }
+        state.render_passes.record_layout(pass_started.elapsed());
         state.prepared_render = Some(prepared);
         state.resolved_scroll = None;
     }

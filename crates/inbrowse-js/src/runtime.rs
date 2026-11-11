@@ -23,23 +23,102 @@ use crate::ops::{
     InbrowseState, OriginStorage, RuntimeEvent, StoredNetworkResponseBody,
     begin_animation_task, build_extension, node_is_script,
 };
+use crate::metrics::{EntryTimer, IsolateClock, PageMetrics, RenderPasses};
+use crate::timezone::{IsolateZone, ZonePermit};
 #[cfg(feature = "render")]
 use crate::ops::{
     clamp_scroll_offset, document_base_url, ensure_resolved_scroll,
 };
 
+/// How many documents deep a capture follows iframes. The page is level 0.
 #[cfg(feature = "render")]
-struct RuntimeCanvasSurfaceSource<'a>(&'a HashMap<NodeId, crate::ops::CanvasBackingSurface>);
+const MAX_FRAME_RASTER_DEPTH: usize = 4;
+
+/// The document whose iframes a capture rasterizes. It cannot read that
+/// document's state, which the capture holds, so it carries what it needs.
+#[cfg(feature = "render")]
+struct FrameHost {
+    realms: Rc<RefCell<crate::ops::RealmStates>>,
+    document: crate::ops::SharedState,
+    generation: u64,
+    depth: usize,
+}
+
+#[cfg(feature = "render")]
+impl FrameHost {
+    /// Paint the document hosted by an iframe at the iframe's content box
+    /// size, over a transparent surface. The frame keeps the viewport it is
+    /// painted at, so a repeated capture reuses its retained layout.
+    fn raster(&self, request: inbrowse_render::FrameRasterRequest) -> Option<inbrowse_render::Pixmap> {
+        if self.depth >= MAX_FRAME_RASTER_DEPTH {
+            return None;
+        }
+        let hosted = self
+            .realms
+            .try_borrow()
+            .ok()?
+            .hosted_frame(&self.document, self.generation, request.node)?;
+        let mut hosted_state = hosted.try_borrow_mut().ok()?;
+        hosted_state.set_viewport(f64::from(request.size.0), f64::from(request.size.1));
+        let host = FrameHost {
+            realms: self.realms.clone(),
+            document: hosted.clone(),
+            generation: hosted_state.document_generation,
+            depth: self.depth + 1,
+        };
+        with_sync_render_loading_disabled(&mut hosted_state, |state| {
+            ensure_resolved_scroll(state)?;
+            let InbrowseState {
+                dom,
+                prepared_render,
+                render_resources,
+                resolved_scroll,
+                canvas_surfaces,
+                ..
+            } = state;
+            let (_, scroll) = resolved_scroll.as_ref()?;
+            let (scroll_x, scroll_y) = scroll.root_offset();
+            let mut visible = request.visible;
+            visible.x += scroll_x;
+            visible.y += scroll_y;
+            let surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames: host };
+            inbrowse_render::paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces(
+                dom.as_ref()?,
+                prepared_render.as_mut()?,
+                render_resources,
+                scroll,
+                visible,
+                request.paint_backgrounds,
+                [0, 0, 0, 0],
+                &surfaces,
+            )
+            .ok()
+        })
+    }
+}
+
+#[cfg(feature = "render")]
+struct RuntimeCanvasSurfaceSource<'a> {
+    canvases: &'a HashMap<NodeId, crate::ops::CanvasBackingSurface>,
+    frames: FrameHost,
+}
 
 #[cfg(feature = "render")]
 impl inbrowse_render::CanvasSurfaceSource for RuntimeCanvasSurfaceSource<'_> {
     fn surface(&self, node: NodeId) -> Option<inbrowse_render::CanvasSurface<'_>> {
-        let surface = self.0.get(&node)?;
+        let surface = self.canvases.get(&node)?;
         inbrowse_render::CanvasSurface::from_rgba8(
             surface.width,
             surface.height,
             surface.pixels.as_ref(),
         )
+    }
+
+    fn frame_raster(
+        &self,
+        request: inbrowse_render::FrameRasterRequest,
+    ) -> Option<inbrowse_render::Pixmap> {
+        self.frames.raster(request)
     }
 }
 
@@ -101,37 +180,6 @@ fn remember_classic_code(origin: &str, name: &str, source: &str, data: &[u8]) {
         data: std::sync::Arc::from(data),
     });
 }
-
-/// Make ICU's default zone the process `TZ` on Windows.
-///
-/// The CLI sets `TZ` from `INBROWSE_TIMEZONE`, else `Europe/Berlin`
-/// (inbrowse-cli/src/main.rs `run_cli`). ICU reads `TZ` on Unix, but on Windows
-/// it asks the OS, so pages saw the host's real zone and `INBROWSE_TIMEZONE` did
-/// nothing. V8's `Date` and `Intl` both take the zone from ICU's default, so
-/// setting it here before the first isolate keeps them consistent.
-/// Called once, beside `icu::set_default_locale`, in `InbrowseJsRuntime` creation.
-#[cfg(windows)]
-fn pin_icu_timezone_from_tz() {
-    // ICU 77 is what the v8 crate links (see `v8::icu::set_common_data_77`); a
-    // V8 upgrade that moves ICU fails here at link time, not silently.
-    unsafe extern "C" {
-        fn ucal_setDefaultTimeZone_77(zone_id: *const u16, status: *mut i32);
-    }
-    let Some(tz) = std::env::var("TZ").ok().filter(|tz| !tz.trim().is_empty()) else {
-        return;
-    };
-    let zone: Vec<u16> = tz.trim().encode_utf16().chain(std::iter::once(0)).collect();
-    let mut status = 0i32;
-    // SAFETY: `zone` is NUL-terminated UTF-16 that outlives the call, and ICU
-    // copies it. Runs under the first-creation lock, before any isolate exists.
-    unsafe { ucal_setDefaultTimeZone_77(zone.as_ptr(), &mut status) };
-    if status > 0 {
-        tracing::warn!("could not set timezone {tz:?} (ICU status {status})");
-    }
-}
-
-#[cfg(not(windows))]
-fn pin_icu_timezone_from_tz() {}
 
 /// Enter a tokio runtime context when the caller is not already in one.
 ///
@@ -323,6 +371,11 @@ pub struct InbrowseJsRuntime {
     ops_handoff: Option<deno_core::v8::Global<deno_core::v8::Value>>,
     // Pending commands are runtime-owned, not client handles that releaseObjectGroup can discard.
     pending_cdp_evaluations: HashMap<String, v8::Global<v8::Value>>,
+    /// Time this page's isolate has been entered; also in the op state, where
+    /// the event loop's entry path finds it.
+    isolate_clock: Rc<IsolateClock>,
+    /// The time zone this page's isolate runs under; see `crate::timezone`.
+    zone: Rc<IsolateZone>,
     // Keep the runtime last: custom `Drop` enters its isolate, then every
     // V8-backed field above is released before `OwnedIsolate` performs the
     // matching exit and disposes the isolate.
@@ -337,6 +390,20 @@ fn exception_text(
         Some(exception) => exception.to_rust_string_lossy(scope),
         None => "unknown error".to_string(),
     }
+}
+
+/// The realm an object id was produced in: 0 for the page, otherwise a child
+/// frame's id. Evaluation results carry it as `injectedScriptId` (frame id
+/// plus one) and console arguments name the frame in their id.
+fn object_id_realm(object_id: &str) -> u32 {
+    if let Some(rest) = object_id.strip_prefix("console-") {
+        return rest.split_once('-').and_then(|(frame, _)| frame.parse().ok()).unwrap_or(0);
+    }
+    object_id
+        .strip_prefix("{\"injectedScriptId\":")
+        .map(|rest| rest.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .and_then(|digits| digits.parse::<u32>().ok())
+        .map_or(0, |script| script.saturating_sub(1))
 }
 
 fn cdp_result_record<'s>(
@@ -447,6 +514,59 @@ fn remaining_deadline_ms(deadline: tokio::time::Instant) -> Option<u64> {
     Some(millis.min(u128::from(u64::MAX)) as u64)
 }
 
+/// One-shot timers still waiting to fire ([`InbrowseJsRuntime::pending_timeouts`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PendingTimeouts {
+    pub count: u64,
+    /// Milliseconds until the nearest one fires.
+    pub next_ms: f64,
+}
+
+/// Why a page script did not run to completion
+/// ([`InbrowseJsRuntime::execute_script_with_timeout`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptError {
+    /// The script threw or failed to compile; holds V8's description.
+    Thrown(String),
+    /// The script's own time limit ran out and the watchdog stopped it.
+    TimedOut(std::time::Duration),
+    /// An enclosing watchdog stopped it: the navigation's script phase or an
+    /// event-loop pump ran out of time while this script was running.
+    Interrupted,
+}
+
+impl std::fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Thrown(message) => f.write_str(message),
+            Self::TimedOut(limit) => {
+                write!(f, "stopped after its {} ms time limit", limit.as_millis())
+            }
+            Self::Interrupted => f.write_str("stopped when the page ran out of script time"),
+        }
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+/// How `InbrowseJsRuntime::run_classic_script` failed.
+enum ClassicFailure {
+    /// A watchdog terminated the script; the termination is already cleared.
+    Terminated,
+    /// The script threw or did not compile: the message, and V8's error when
+    /// there is one (recorded as an uncaught exception for the page).
+    Thrown(String, Option<Box<deno_core::error::JsError>>),
+}
+
+impl ClassicFailure {
+    fn into_message(self) -> String {
+        match self {
+            Self::Terminated => "JS error: Uncaught Error: execution terminated".to_string(),
+            Self::Thrown(message, _) => message,
+        }
+    }
+}
+
 /// Handle to an armed V8 execution watchdog (see [`InbrowseJsRuntime::arm_watchdog`]).
 /// Holds a deadline on the shared watchdog; pass it back to
 /// `disarm_watchdog` to stop the watchdog and learn whether it fired.
@@ -513,29 +633,49 @@ const WATCHDOG_SCHEDULING_MARGIN_MS: u64 = 500;
 /// So the isolate is exited once construction finishes and entered again only
 /// around work that touches V8. Entries are then properly nested no matter how
 /// many pages exist or what order they are used and dropped in.
-struct EnteredRuntime<'a>(&'a mut JsRuntime);
+///
+/// `_zone` is the page's time zone permit (see `crate::timezone`). It is
+/// released after the isolate is exited, when the guard's fields drop.
+/// `_timer` charges the time spent entered to the page's metrics clock.
+struct EnteredRuntime<'a> {
+    runtime: &'a mut JsRuntime,
+    _zone: ZonePermit,
+    _timer: EntryTimer,
+}
 
 /// Enters an isolate only while an async deno_core operation is being polled.
 /// Holding an entry across `.await` would let interleaved page futures violate
 /// V8's per-thread isolate stack.
 struct EnteredRuntimeFuture<F> {
     isolate: *mut deno_core::v8::Isolate,
+    zone: Rc<IsolateZone>,
+    clock: Rc<IsolateClock>,
     future: Option<Pin<Box<F>>>,
     _not_send: PhantomData<Rc<()>>,
 }
 
-struct IsolateEntry(*mut deno_core::v8::Isolate);
+/// An entered isolate under its page's time zone.
+struct IsolateEntry {
+    isolate: *mut deno_core::v8::Isolate,
+    zone: Option<ZonePermit>,
+}
 
 impl IsolateEntry {
-    unsafe fn new(isolate: *mut deno_core::v8::Isolate) -> Self {
-        unsafe { (&mut *isolate).enter() };
-        Self(isolate)
+    unsafe fn new(isolate: *mut deno_core::v8::Isolate, zone: &IsolateZone) -> Self {
+        let permit = zone.acquire();
+        unsafe {
+            (&mut *isolate).enter();
+            zone.sync(&mut *isolate, &permit);
+        }
+        Self { isolate, zone: Some(permit) }
     }
 }
 
 impl Drop for IsolateEntry {
     fn drop(&mut self) {
-        unsafe { (&mut *self.0).exit() };
+        unsafe { (&mut *self.isolate).exit() };
+        // Release the zone only after the isolate is exited.
+        drop(self.zone.take());
     }
 }
 
@@ -546,7 +686,8 @@ impl<F: Future> Future for EnteredRuntimeFuture<F> {
         // SAFETY: construction ties the pointer and future to the same
         // borrowed JsRuntime, which cannot move or drop while this exists.
         let this = unsafe { self.get_unchecked_mut() };
-        let _entry = unsafe { IsolateEntry::new(this.isolate) };
+        let _entry = unsafe { IsolateEntry::new(this.isolate, &this.zone) };
+        let _timer = EntryTimer::start(&this.clock);
         this.future
             .as_mut()
             .expect("entered runtime future polled after drop")
@@ -559,24 +700,28 @@ impl<F> Drop for EnteredRuntimeFuture<F> {
     fn drop(&mut self) {
         // deno_core futures can own V8 handles, so drop them while their
         // isolate is current too.
-        let _entry = unsafe { IsolateEntry::new(self.isolate) };
+        let _entry = unsafe { IsolateEntry::new(self.isolate, &self.zone) };
         drop(self.future.take());
     }
 }
 
 fn entered_runtime_future<'a, F>(
     runtime: &'a mut JsRuntime,
+    zone: Rc<IsolateZone>,
     make_future: impl FnOnce(&'a mut JsRuntime) -> F,
 ) -> EnteredRuntimeFuture<F>
 where
     F: Future,
 {
     let isolate: *mut deno_core::v8::Isolate = &mut **runtime.v8_isolate();
-    let entry = unsafe { IsolateEntry::new(isolate) };
+    let clock = runtime.op_state().borrow().borrow::<Rc<IsolateClock>>().clone();
+    let entry = unsafe { IsolateEntry::new(isolate, &zone) };
     let future = Box::pin(make_future(runtime));
     drop(entry);
     EnteredRuntimeFuture {
         isolate,
+        zone,
+        clock,
         future: Some(future),
         _not_send: PhantomData,
     }
@@ -586,13 +731,13 @@ impl std::ops::Deref for EnteredRuntime<'_> {
     type Target = JsRuntime;
 
     fn deref(&self) -> &JsRuntime {
-        self.0
+        self.runtime
     }
 }
 
 impl std::ops::DerefMut for EnteredRuntime<'_> {
     fn deref_mut(&mut self) -> &mut JsRuntime {
-        self.0
+        self.runtime
     }
 }
 
@@ -603,7 +748,7 @@ impl Drop for EnteredRuntime<'_> {
         // isolate entered since belongs to a nested operation that has already
         // exited it.
         unsafe {
-            self.0.v8_isolate().exit();
+            self.runtime.v8_isolate().exit();
         }
     }
 }
@@ -636,17 +781,78 @@ impl InbrowseJsRuntime {
     /// guard lives. Every path that touches V8 goes through here; see
     /// [`EnteredRuntime`] for why.
     fn runtime(&mut self) -> EnteredRuntime<'_> {
+        let permit = self.zone.acquire();
         // SAFETY: entering is always sound -- it pushes this isolate onto the
         // current thread's entry stack -- and the guard's `Drop` pops it.
         unsafe {
             self.js_runtime.v8_isolate().enter();
         }
-        EnteredRuntime(&mut self.js_runtime)
+        self.zone.sync(self.js_runtime.v8_isolate(), &permit);
+        EnteredRuntime {
+            runtime: &mut self.js_runtime,
+            _zone: permit,
+            _timer: EntryTimer::start(&self.isolate_clock),
+        }
+    }
+
+    /// Run this page's script under `zone` from now on, or under the process
+    /// zone with `None`. The caller checks that ICU knows `zone`
+    /// ([`crate::timezone::is_known_zone`]). Other pages are not affected.
+    pub fn set_time_zone_override(&mut self, zone: Option<&str>) {
+        self.zone.set(zone);
+    }
+
+    /// The zone this page's `Date` and `Intl` use.
+    pub fn time_zone_id(&self) -> String {
+        self.zone.id().to_string()
     }
 
     /// Read native isolate statistics without evaluating scripts or forcing GC.
     pub fn heap_statistics(&mut self) -> v8::HeapStatistics {
         self.runtime().v8_isolate().get_heap_statistics()
+    }
+
+    /// Counts and durations for `Performance.getMetrics`. Everything is read
+    /// from counters kept as the page runs, so the cost does not grow with the
+    /// document: no tree is walked.
+    pub fn page_metrics(&mut self) -> PageMetrics {
+        const LISTENER_COUNT: &str = "typeof globalThis.__inbrowse_event_listener_count === 'function' \
+            ? globalThis.__inbrowse_event_listener_count() : 0";
+        let isolate_time = self.isolate_clock.elapsed();
+        let realms = self.realm_states().borrow().media_realms();
+        let mut passes = RenderPasses::default();
+        let mut nodes = 0;
+        let documents = std::iter::once(self.state.clone()).chain(realms.iter().map(|(_, state)| state.clone()));
+        for state in documents {
+            // A document being torn down may hold its state; it has no live nodes to count.
+            let Ok(state) = state.try_borrow() else { continue };
+            nodes += state.dom.as_ref().map_or(0, DomTree::len);
+            passes.add(&state.render_passes);
+        }
+        let mut contexts = vec![self.runtime().main_context()];
+        contexts.extend(realms.iter().map(|(context, _)| context.clone()));
+        let mut js_event_listeners = 0;
+        for context in &contexts {
+            if let Ok(count) = self.eval_in_realm(context, LISTENER_COUNT) {
+                js_event_listeners += count.parse::<u64>().unwrap_or(0);
+            }
+        }
+        let heap = self.heap_statistics();
+        let (script_duration, task_duration) = PageMetrics::durations(isolate_time, &passes);
+        PageMetrics {
+            documents: 1 + realms.len(),
+            frames: 1 + realms.len(),
+            nodes,
+            js_event_listeners,
+            layout_count: passes.layout_count,
+            recalc_style_count: passes.recalc_style_count,
+            layout_duration: passes.layout_time,
+            recalc_style_duration: passes.recalc_style_time,
+            script_duration,
+            task_duration,
+            js_heap_used_size: heap.used_heap_size(),
+            js_heap_total_size: heap.total_heap_size(),
+        }
     }
 
     /// Run a full collection only when an automation client explicitly asks.
@@ -736,7 +942,7 @@ impl InbrowseJsRuntime {
             // Set it under the first-creation lock, before parallel restorations.
             if !ISOLATE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
                 deno_core::v8::icu::set_default_locale("en-US");
-                pin_icu_timezone_from_tz();
+                crate::timezone::process_default();
             }
 
             let mut runtime = JsRuntime::new(RuntimeOptions {
@@ -795,10 +1001,13 @@ impl InbrowseJsRuntime {
             evaluated_module_specifiers: HashMap::new(),
             ops_handoff: None,
             pending_cdp_evaluations: HashMap::new(),
+            isolate_clock: Rc::new(IsolateClock::default()),
+            zone: IsolateZone::new(),
             js_runtime: runtime,
         };
         // Take the op table before any page script can run, and drop the global
         // that exposed it in the same step.
+        instance.js_runtime.op_state().borrow_mut().put(instance.isolate_clock.clone());
         instance.ops_handoff = instance.take_ops_handoff();
         #[cfg(test)]
         instance.expose_ops_for_tests();
@@ -1117,6 +1326,17 @@ impl InbrowseJsRuntime {
 
     pub fn forget_frame_state(&mut self, frame_id: u32) {
         self.realm_states().borrow_mut().forget_frame(frame_id);
+        // Handles issued for the frame's values would otherwise keep its
+        // objects, and through them its DOM, alive in the page's store.
+        let issued: Vec<String> = self
+            .object_store
+            .keys()
+            .filter(|object_id| object_id_realm(object_id) == frame_id)
+            .cloned()
+            .collect();
+        for object_id in issued {
+            self.release_object(&object_id);
+        }
     }
 
     /// Pending initial realms can already own children before Page adopts them.
@@ -1239,6 +1459,19 @@ impl InbrowseJsRuntime {
             .borrow()
             .borrow::<Rc<RefCell<crate::ops::RealmStates>>>()
             .clone()
+    }
+
+    /// The page document as the host of the iframes a capture paints.
+    /// `generation` is the page's current `document_generation`, read by the
+    /// caller because the capture holds the page state.
+    #[cfg(feature = "render")]
+    fn frame_host(&self, generation: u64) -> FrameHost {
+        FrameHost {
+            realms: self.realm_states(),
+            document: self.state.clone(),
+            generation,
+            depth: 0,
+        }
     }
 
     /// Frame documents fetched by any realm that still need one of their own.
@@ -1543,7 +1776,6 @@ impl InbrowseJsRuntime {
     fn record_uncaught_exception(&self, error: &deno_core::error::JsError, fallback_url: &str) {
         crate::ops::record_uncaught_exception(&mut self.state.borrow_mut(), error, fallback_url);
     }
-
     pub fn get_network_response_body(&self, request_id: &str) -> Option<StoredNetworkResponseBody> {
         self.state
             .borrow()
@@ -1928,6 +2160,7 @@ impl InbrowseJsRuntime {
         }
         with_sync_render_loading_disabled(&mut state, |state| {
             ensure_resolved_scroll(state)?;
+            let frames = self.frame_host(state.document_generation);
             let InbrowseState {
                 dom,
                 prepared_render,
@@ -1937,7 +2170,7 @@ impl InbrowseJsRuntime {
                 ..
             } = state;
             let (_, scroll) = resolved_scroll.as_ref()?;
-            let canvas_surfaces = RuntimeCanvasSurfaceSource(canvas_surfaces);
+            let canvas_surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames };
             inbrowse_render::screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces(
                 dom.as_ref()?,
                 prepared_render.as_mut()?,
@@ -1999,6 +2232,7 @@ impl InbrowseJsRuntime {
         let mut state = self.state.borrow_mut();
         with_sync_render_loading_disabled(&mut state, |state| {
             ensure_resolved_scroll(state).ok_or(inbrowse_render::CaptureError::PaintFailed)?;
+            let frames = self.frame_host(state.document_generation);
             let InbrowseState {
                 dom,
                 prepared_render,
@@ -2010,7 +2244,7 @@ impl InbrowseJsRuntime {
             let (_, scroll) = resolved_scroll
                 .as_ref()
                 .ok_or(inbrowse_render::CaptureError::PaintFailed)?;
-            let canvas_surfaces = RuntimeCanvasSurfaceSource(canvas_surfaces);
+            let canvas_surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames };
             inbrowse_render::paint_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces(
                 dom.as_ref()
                     .ok_or(inbrowse_render::CaptureError::PaintFailed)?,
@@ -2037,6 +2271,7 @@ impl InbrowseJsRuntime {
         let mut state = self.state.borrow_mut();
         with_sync_render_loading_disabled(&mut state, |state| {
             ensure_resolved_scroll(state).ok_or(inbrowse_render::CaptureError::PaintFailed)?;
+            let frames = self.frame_host(state.document_generation);
             let InbrowseState {
                 dom,
                 prepared_render,
@@ -2048,7 +2283,7 @@ impl InbrowseJsRuntime {
             let (_, scroll) = resolved_scroll
                 .as_ref()
                 .ok_or(inbrowse_render::CaptureError::PaintFailed)?;
-            let canvas_surfaces = RuntimeCanvasSurfaceSource(canvas_surfaces);
+            let canvas_surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames };
             inbrowse_render::screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces(
                 dom.as_ref()
                     .ok_or(inbrowse_render::CaptureError::PaintFailed)?,
@@ -2078,6 +2313,7 @@ impl InbrowseJsRuntime {
         let mut state = self.state.borrow_mut();
         with_sync_render_loading_disabled(&mut state, |state| {
             ensure_resolved_scroll(state).ok_or(inbrowse_render::CaptureError::PaintFailed)?;
+            let frames = self.frame_host(state.document_generation);
             let InbrowseState {
                 dom,
                 prepared_render,
@@ -2098,7 +2334,7 @@ impl InbrowseJsRuntime {
                     element_scroll_offsets,
                     (region.width, region.height),
                 );
-            let canvas_surfaces = RuntimeCanvasSurfaceSource(canvas_surfaces);
+            let canvas_surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames };
             inbrowse_render::screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces(
                 dom,
                 prepared_render
@@ -2786,7 +3022,7 @@ impl InbrowseJsRuntime {
         await_promise: bool,
         await_timeout_ms: u64,
     ) -> Result<RemoteObjectInfo, String> {
-        let evaluation = self.start_cdp_evaluation(expression, return_by_value, await_promise)?;
+        let evaluation = self.start_cdp_evaluation(expression, return_by_value, await_promise, 0)?;
         self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.evaluate").await
     }
 
@@ -2796,14 +3032,16 @@ impl InbrowseJsRuntime {
         expression: &str,
         return_by_value: bool,
         await_promise: bool,
+        frame_id: u32,
     ) -> Result<CdpEvaluation, String> {
         self.begin_javascript_task();
         self.object_counter += 1;
-        let oid = self.make_oid(self.object_counter);
+        let oid = self.make_oid(frame_id);
+        let realm = self.cdp_realm_context(frame_id)?;
         // Compile the script itself, not a string passed through the page's eval.
         let record = (|| {
             let mut entered = self.runtime();
-            let context = entered.main_context();
+            let context = realm;
             v8::scope_with_context!(scope, entered.v8_isolate(), context);
             v8::tc_scope!(let scope, scope);
             let source = v8::String::new(scope, expression).ok_or("CDP source allocation failed")?;
@@ -2827,7 +3065,8 @@ impl InbrowseJsRuntime {
         self.pending_cdp_evaluations.insert(oid.clone(), record);
         let pending = PendingCdpEvaluation {
             object_id: oid,
-            recipe: if return_by_value { None } else { Some(expression.to_string()) },
+            // A frame's objects cannot be rebuilt once its realm is gone.
+            recipe: if return_by_value || frame_id != 0 { None } else { Some(expression.to_string()) },
         };
         if await_promise {
             Ok(CdpEvaluation::Pending(pending))
@@ -2864,10 +3103,13 @@ impl InbrowseJsRuntime {
         await_promise: bool,
         await_timeout_ms: u64,
     ) -> Result<RemoteObjectInfo, String> {
-        let evaluation = self.start_cdp_call(function_declaration, object_id, arguments, return_by_value, await_promise)?;
+        let evaluation = self.start_cdp_call(function_declaration, object_id, arguments, return_by_value, await_promise, 0)?;
         self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.callFunctionOn").await
     }
 
+    /// Starts `Runtime.callFunctionOn`. The function runs in the realm of
+    /// `object_id` when one is given, otherwise in the realm of the frame
+    /// `context_frame_id` (0 is the page).
     #[doc(hidden)]
     pub fn start_cdp_call(
         &mut self,
@@ -2876,21 +3118,33 @@ impl InbrowseJsRuntime {
         arguments: &[serde_json::Value],
         return_by_value: bool,
         await_promise: bool,
+        context_frame_id: u32,
     ) -> Result<CdpEvaluation, String> {
         self.begin_javascript_task();
-        let this_expr = self.resolve_this(object_id);
-        let receiver = self.execute_runtime_script("<cdp-receiver>", this_expr)
-            .map_err(|error| format!("JS error: {error}"))?;
+        let frame_id = object_id.map_or(context_frame_id, object_id_realm);
+        let realm = self.cdp_realm_context(frame_id)?;
+        // Without an object the function runs on its context's global object.
+        let receiver = match object_id {
+            Some(_) => {
+                let this_expr = self.resolve_this(object_id);
+                Some(self.execute_runtime_script("<cdp-receiver>", this_expr)
+                    .map_err(|error| format!("JS error: {error}"))?)
+            }
+            None => None,
+        };
         let arguments = arguments.iter().map(|argument| self.cdp_call_argument(argument))
             .collect::<Result<Vec<_>, _>>()?;
         self.object_counter += 1;
-        let oid = self.make_oid(self.object_counter);
+        let oid = self.make_oid(frame_id);
         let record = (|| {
             let mut entered = self.runtime();
-            let context = entered.main_context();
+            let context = realm;
             v8::scope_with_context!(scope, entered.v8_isolate(), context);
             v8::tc_scope!(let scope, scope);
-            let receiver = v8::Local::new(scope, &receiver);
+            let receiver: v8::Local<v8::Value> = match &receiver {
+                Some(receiver) => v8::Local::new(scope, receiver),
+                None => scope.get_current_context().global(scope).into(),
+            };
             let arguments = arguments.iter().map(|argument| v8::Local::new(scope, argument))
                 .collect::<Vec<_>>();
             let source = v8::String::new(scope, &format!("(\n{function_declaration}\n)"))
@@ -3054,7 +3308,7 @@ impl InbrowseJsRuntime {
     pub fn store_object(&mut self, js_expression: &str) -> Result<String, String> {
         self.begin_javascript_task();
         self.object_counter += 1;
-        let oid = self.make_oid(self.object_counter);
+        let oid = self.make_oid(0);
         let code = format!(
             "globalThis.__inbrowse_objects[{}] = ({});",
             js_string_literal(&oid), js_expression,
@@ -3074,7 +3328,7 @@ impl InbrowseJsRuntime {
     ) -> Result<RemoteObjectInfo, String> {
         self.begin_javascript_task();
         self.object_counter += 1;
-        let oid = self.make_oid(self.object_counter);
+        let oid = self.make_oid(0);
         let code = format!(
             "(function() {{\n\
                 var __result = (\n{expr}\n);\n\
@@ -3179,7 +3433,7 @@ impl InbrowseJsRuntime {
         // the first import edge.
         // The caller sizes the budget: short for enhancement modules on an
         // already-rendered page, full for an unmounted SPA shell (#205).
-        let load = entered_runtime_future(&mut self.js_runtime, |runtime| {
+        let load = entered_runtime_future(&mut self.js_runtime, self.zone.clone(), |runtime| {
             runtime.load_side_es_module(&specifier)
         });
         let module_id = match tokio::time::timeout(budget, load).await {
@@ -3323,7 +3577,7 @@ impl InbrowseJsRuntime {
             .unwrap_or_else(|_| deno_core::ModuleSpecifier::parse("about:blank").unwrap());
         let loaded_start = self.loaded_module_specifiers.borrow().len();
 
-        let load = entered_runtime_future(&mut self.js_runtime, |runtime| {
+        let load = entered_runtime_future(&mut self.js_runtime, self.zone.clone(), |runtime| {
             runtime.load_side_es_module_from_code(
                 &specifier,
                 deno_core::ModuleCodeString::from(code.to_string()),
@@ -3407,6 +3661,15 @@ impl InbrowseJsRuntime {
     }
 
     fn execute_classic_script(&mut self, name: &str, source: &str) -> Result<(), String> {
+        self.run_classic_script(name, source).map_err(ClassicFailure::into_message)
+    }
+
+    /// Compile and run a classic script in the main context. Callers:
+    /// [`Self::execute_classic_script`] (string errors) and
+    /// [`Self::execute_script_with_timeout`], which needs to tell a stopped
+    /// script from one that threw. A termination is cleared here so the
+    /// isolate is usable for the next task, and reported as `Terminated`.
+    fn run_classic_script(&mut self, name: &str, source: &str) -> Result<(), ClassicFailure> {
         self.begin_javascript_task();
         let script_url = name.to_string();
         // Reuse only serialized compilation data, never a context or live value.
@@ -3425,17 +3688,19 @@ impl InbrowseJsRuntime {
         // &'static str. Browser script URLs are runtime data, and V8 uses this
         // origin as import()'s referrer, so compile in the runtime's main
         // context directly instead of substituting the fixed "<script>" name.
-        let result: Result<(), (String, Option<Box<deno_core::error::JsError>>)> = (|| {
+        let result: Result<(), ClassicFailure> = (|| {
             let mut entered = self.runtime();
             let context = entered.main_context();
             let isolate = entered.v8_isolate();
             v8::scope!(let scope, isolate);
             let context = v8::Local::new(scope, context);
             let scope = &mut v8::ContextScope::new(scope, context);
-            let source = deno_core::v8::String::new(scope, source)
-                .ok_or_else(|| ("JS error: source allocation failed".to_string(), None))?;
-            let name = deno_core::v8::String::new(scope, name)
-                .ok_or_else(|| ("JS error: script URL allocation failed".to_string(), None))?;
+            let source = deno_core::v8::String::new(scope, source).ok_or_else(|| {
+                ClassicFailure::Thrown("JS error: source allocation failed".to_string(), None)
+            })?;
+            let name = deno_core::v8::String::new(scope, name).ok_or_else(|| {
+                ClassicFailure::Thrown("JS error: script URL allocation failed".to_string(), None)
+            })?;
             let origin = deno_core::v8::ScriptOrigin::new(
                 scope,
                 name.into(),
@@ -3464,18 +3729,15 @@ impl InbrowseJsRuntime {
             let Some(script) = script else {
                 if tc_scope.is_execution_terminating() {
                     tc_scope.cancel_terminate_execution();
-                    return Err((
-                        "JS error: Uncaught Error: execution terminated".to_string(),
-                        None,
-                    ));
+                    return Err(ClassicFailure::Terminated);
                 }
                 return match tc_scope.exception() {
                     Some(exception) => {
                         let error =
                             deno_core::error::JsError::from_v8_exception(tc_scope, exception);
-                        Err((format!("JS error: {error}"), Some(error)))
+                        Err(ClassicFailure::Thrown(format!("JS error: {error}"), Some(error)))
                     }
-                    None => Err((
+                    None => Err(ClassicFailure::Thrown(
                         "JS error: script compilation failed without an exception".to_string(),
                         None,
                     )),
@@ -3484,18 +3746,15 @@ impl InbrowseJsRuntime {
             if script.run(tc_scope).is_none() {
                 if tc_scope.is_execution_terminating() {
                     tc_scope.cancel_terminate_execution();
-                    return Err((
-                        "JS error: Uncaught Error: execution terminated".to_string(),
-                        None,
-                    ));
+                    return Err(ClassicFailure::Terminated);
                 }
                 return match tc_scope.exception() {
                     Some(exception) => {
                         let error =
                             deno_core::error::JsError::from_v8_exception(tc_scope, exception);
-                        Err((format!("JS error: {error}"), Some(error)))
+                        Err(ClassicFailure::Thrown(format!("JS error: {error}"), Some(error)))
                     }
-                    None => Err((
+                    None => Err(ClassicFailure::Thrown(
                         "JS error: script execution failed without an exception".to_string(),
                         None,
                     )),
@@ -3519,54 +3778,42 @@ impl InbrowseJsRuntime {
             }
             Ok(())
         })();
-        let result = match result {
-            Ok(()) => Ok(()),
-            Err((message, error)) => {
-                if let Some(error) = error.as_ref() {
-                    self.record_uncaught_exception(error, &script_url);
-                }
-                Err(message)
-            }
-        };
-        self.finish_heap_checked(result)
+        if let Err(ClassicFailure::Thrown(_, Some(error))) = &result {
+            self.record_uncaught_exception(error, &script_url);
+        }
+        if self.recover_heap_limit() {
+            return Err(ClassicFailure::Thrown(
+                "JavaScript heap limit exceeded; execution terminated".to_string(),
+                None,
+            ));
+        }
+        result
     }
 
     pub fn execute_script(&mut self, name: &str, source: &str) -> Result<(), String> {
         self.execute_classic_script(name, source)
     }
 
-    pub fn execute_script_guarded(&mut self, name: &str, source: &str) -> Result<(), String> {
-        if source.len() < 10_000 {
-            self.execute_script(name, source)
-        } else {
-            self.execute_script_with_timeout(name, source, std::time::Duration::from_secs(5))
-        }
-    }
-
+    /// Run a classic script under its own time limit, `timeout` (zero means no
+    /// limit of its own). Callers: inbrowse `Page` script execution (parser
+    /// scripts, preloads) through the page's per-script budget. A script that
+    /// throws, runs out of time, or is stopped by an enclosing watchdog (the
+    /// navigation's script phase, an event-loop pump) reports which, so the
+    /// page can record that it did not finish.
     pub fn execute_script_with_timeout(
         &mut self,
         name: &str,
         source: &str,
         timeout: std::time::Duration,
-    ) -> Result<(), String> {
-        if timeout.is_zero() {
-            return self.execute_classic_script(name, source);
-        }
-
-        let watchdog = self.arm_watchdog(timeout);
-        let result = self.execute_classic_script(name, source);
-        self.disarm_watchdog(watchdog);
-
+    ) -> Result<(), ScriptError> {
+        let watchdog = (!timeout.is_zero()).then(|| self.arm_watchdog(timeout));
+        let result = self.run_classic_script(name, source);
+        let fired = watchdog.is_some_and(|watchdog| self.disarm_watchdog(watchdog));
         match result {
             Ok(()) => Ok(()),
-            Err(msg) => {
-                if msg.contains("Uncaught Error: execution terminated") {
-                    tracing::warn!("Script killed after {}s timeout", timeout.as_secs());
-                    Ok(())
-                } else {
-                    Err(msg)
-                }
-            }
+            Err(ClassicFailure::Terminated) if fired => Err(ScriptError::TimedOut(timeout)),
+            Err(ClassicFailure::Terminated) => Err(ScriptError::Interrupted),
+            Err(failure) => Err(ScriptError::Thrown(failure.into_message())),
         }
     }
 
@@ -3578,7 +3825,7 @@ impl InbrowseJsRuntime {
         // (document.fonts.load(...).then(...), framework post-render hooks,
         // and hydration follow-ups all rely on this boundary).
         self.runtime().v8_isolate().perform_microtask_checkpoint();
-        let event_loop = entered_runtime_future(&mut self.js_runtime, |runtime| {
+        let event_loop = entered_runtime_future(&mut self.js_runtime, self.zone.clone(), |runtime| {
             runtime.run_event_loop(deno_core::PollEventLoopOptions::default())
         });
         let result = event_loop
@@ -3694,6 +3941,17 @@ impl InbrowseJsRuntime {
         .ok()
         .and_then(|value| value.as_f64())
         .filter(|delay| *delay >= 0.0)
+    }
+
+    /// The page's pending one-shot timers (`setTimeout`), or `None` when it
+    /// has none. Intervals are not counted.
+    pub fn pending_timeouts(&mut self) -> Option<PendingTimeouts> {
+        let summary = self
+            .evaluate("globalThis.__inbrowse_pendingTimeouts?.() ?? [0, -1]")
+            .ok()?;
+        let count = summary.get(0)?.as_u64()?;
+        let next_ms = summary.get(1)?.as_f64()?;
+        (count > 0 && next_ms >= 0.0).then_some(PendingTimeouts { count, next_ms })
     }
 
     /// Arm a hard wall-clock backstop on synchronous V8 work. A page stuck in a
@@ -3974,6 +4232,21 @@ impl InbrowseJsRuntime {
         budget_ms: u64,
         quiet_ms: u64,
     ) -> Result<(), String> {
+        self.run_event_loop_until_quiescent_with_timers(budget_ms, quiet_ms, 0)
+            .await
+    }
+
+    /// [`Self::run_event_loop_until_quiescent`], also waiting for one-shot
+    /// timers due within `timer_horizon_ms` of the start (within the budget).
+    /// By default only timers up to two quiet windows away count, and only
+    /// during the short activity tail, so a page that renders after a 1.5 s
+    /// `setTimeout` is captured before it.
+    pub async fn run_event_loop_until_quiescent_with_timers(
+        &mut self,
+        budget_ms: u64,
+        quiet_ms: u64,
+        timer_horizon_ms: u64,
+    ) -> Result<(), String> {
         if budget_ms == 0 {
             return Ok(());
         }
@@ -3994,7 +4267,8 @@ impl InbrowseJsRuntime {
             std::time::Duration::from_millis(EXTERNAL_WORK_GRACE_MS).min(budget);
         let external_work_deadline = started + external_work_grace;
         let activity_tail = std::time::Duration::from_millis(OBSERVABLE_ACTIVITY_TAIL_MS);
-        let mut activity_deadline = deadline.min(started + activity_tail);
+        let timer_horizon = started + std::time::Duration::from_millis(timer_horizon_ms).min(budget);
+        let mut activity_deadline = deadline.min((started + activity_tail).max(timer_horizon));
         let token = self.arm_watchdog(
             budget.saturating_add(std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS))
                 + std::time::Duration::from_millis(WATCHDOG_SCHEDULING_MARGIN_MS),
@@ -4014,13 +4288,18 @@ impl InbrowseJsRuntime {
             // are intentionally excluded, and distant one-shots are treated
             // like Chromium after `load`: callers needing an arbitrary fixed
             // delay can request strict settle.
+            // A caller's timer horizon widens that to every one-shot due
+            // before the horizon.
+            let near_window_ms = (quiet.as_secs_f64() * 2_000.0)
+                .max(timer_horizon.saturating_duration_since(now).as_secs_f64() * 1_000.0);
             let near_timeout = self
                 .next_pending_timeout_delay_ms()
-                .is_some_and(|delay| delay <= quiet.as_secs_f64() * 2_000.0);
+                .is_some_and(|delay| delay <= near_window_ms);
             let external_work_pending = now < external_work_deadline
                 && (self.has_pending_network_requests() || self.has_pending_dynamic_scripts());
             if external_work_pending {
-                activity_deadline = deadline.min(external_work_deadline + activity_tail);
+                activity_deadline =
+                    deadline.min((external_work_deadline + activity_tail).max(timer_horizon));
                 generation = next_generation;
                 quiet_since = None;
             } else if now < activity_deadline && near_timeout {
@@ -4127,7 +4406,7 @@ impl InbrowseJsRuntime {
     pub async fn resolve_promises(&mut self) {
         self.begin_javascript_task();
         // Default settle: just pump until idle or 5s.
-        let event_loop = entered_runtime_future(&mut self.js_runtime, |runtime| {
+        let event_loop = entered_runtime_future(&mut self.js_runtime, self.zone.clone(), |runtime| {
             runtime.run_event_loop(deno_core::PollEventLoopOptions::default())
         });
         let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), event_loop).await;
@@ -4258,6 +4537,79 @@ impl InbrowseJsRuntime {
         state.already_started_scripts.borrow_mut().extend(valid);
     }
 
+    /// [`Self::with_dom`] for the document of child frame `frame_id`; 0 is the
+    /// page's own. `None` once the frame is gone, or while its realm is in use
+    /// (a paint of nested frames reaches here from inside a frame's own pass).
+    pub fn with_frame_dom<R>(&self, frame_id: u32, f: impl FnOnce(&DomTree) -> R) -> Option<R> {
+        if frame_id == 0 {
+            return self.with_dom(f);
+        }
+        let state = self.realm_states().borrow().by_frame_id(frame_id)?;
+        let state = state.try_borrow().ok()?;
+        #[cfg(feature = "render")]
+        state.base_url_cache.borrow_mut().take();
+        state.dom.as_ref().map(f)
+    }
+
+    /// The frame id of the document holding child frame `frame_id`'s `<iframe>`
+    /// element, and that element's node id there.
+    pub fn frame_owner(&self, frame_id: u32) -> Option<(u32, u32)> {
+        self.realm_states()
+            .borrow()
+            .frame_owner(frame_id)
+            .map(|(parent, node)| (parent, node.index() as u32))
+    }
+
+    /// The frame whose element last took focus; 0 is the page itself.
+    pub fn focused_frame(&self) -> u32 {
+        self.state.borrow().focused_frame
+    }
+
+    /// The V8 context a CDP command runs in: the page's for frame 0, otherwise
+    /// the realm of child frame `frame_id`.
+    fn cdp_realm_context(&mut self, frame_id: u32) -> Result<v8::Global<v8::Context>, String> {
+        if frame_id == 0 {
+            return Ok(self.runtime().main_context());
+        }
+        self.realm_states()
+            .borrow()
+            .context(frame_id)
+            .ok_or_else(|| "Cannot find context with specified id".to_string())
+    }
+
+    /// The document and node an element object stands for: the frame whose
+    /// realm created the wrapper (0 for the page) and the node id in that
+    /// frame's tree. Read from the object itself, not from its object id,
+    /// because a script in one frame can hand out an element of another.
+    pub fn node_ref(&mut self, object_id: &str) -> Result<(u32, u32), String> {
+        let unresolved = || format!("objectId {object_id} could not be resolved to a node");
+        let expression = self.resolve_remote_object(object_id).ok_or_else(unresolved)?;
+        let value = self
+            .execute_runtime_script("<cdp-node-ref>", expression)
+            .map_err(|error| format!("JS error: {error}"))?;
+        let realms = self.realm_states();
+        let main = self.runtime().main_context();
+        let mut entered = self.runtime();
+        v8::scope_with_context!(scope, entered.v8_isolate(), main.clone());
+        let object = v8::Local::<v8::Object>::try_from(v8::Local::new(scope, &value))
+            .map_err(|_| unresolved())?;
+        let creation = object.get_creation_context(scope).ok_or_else(unresolved)?;
+        let frame_id = if v8::Local::new(scope, &main) == creation {
+            0
+        } else {
+            realms.borrow().frame_id_of(creation).ok_or_else(unresolved)?
+        };
+        let scope = &mut v8::ContextScope::new(scope, creation);
+        v8::tc_scope!(let scope, scope);
+        let key = v8::String::new(scope, "_nid").ok_or_else(unresolved)?;
+        let node = object
+            .get(scope, key.into())
+            .filter(|node| node.is_number())
+            .and_then(|node| node.uint32_value(scope))
+            .ok_or_else(unresolved)?;
+        Ok((frame_id, node))
+    }
+
     pub fn with_dom<R>(&self, f: impl FnOnce(&DomTree) -> R) -> Option<R> {
         let state = self.state.borrow();
         // Native callers can mutate this interior-mutable tree without a JS
@@ -4273,11 +4625,13 @@ impl InbrowseJsRuntime {
         let mut state = self.state.borrow_mut();
         crate::ops::sample_live_document_animations(&mut state);
         if state.animation_timeline.waapi_nodes().is_empty() {
+            let style_pass_started = std::time::Instant::now();
             if let Some(styles) = state.dom.as_ref().and_then(|dom| {
                 inbrowse_render::dom::accessibility_styles_without_layout(
                     dom, state.viewport, state.render_media, &state.stylesheet_cache,
                 )
             }) {
+                state.render_passes.record_style(style_pass_started.elapsed());
                 return styles.into_iter().map(|(id, (display_none, visibility_hidden))| {
                     (id, AccessibilityStyle { display_none, visibility_hidden })
                 }).collect();
@@ -4329,9 +4683,12 @@ impl InbrowseJsRuntime {
             None
         }
     }
-    fn make_oid(&self, _counter: u64) -> String {
+    /// A fresh object id for a value produced in realm `frame_id`. The realm is
+    /// the id's `injectedScriptId` (frame id plus one), which is how
+    /// [`object_id_realm`] finds where a later call on the object must run.
+    fn make_oid(&self, frame_id: u32) -> String {
         let id = NEXT_CDP_OBJECT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        format!("{{\"injectedScriptId\":1,\"id\":{}}}", id)
+        format!("{{\"injectedScriptId\":{},\"id\":{}}}", u64::from(frame_id) + 1, id)
     }
 
     /// Whether `source` compiles as a classic script in the main context.
@@ -4419,7 +4776,7 @@ impl InbrowseJsRuntime {
                     cn = 'Function';
                     desc = v.name ? 'function ' + v.name + '()' : 'function()';
                 }}
-                else if (t === 'object' && v instanceof Error) {{
+                else if (t === 'object' && (v instanceof Error || Object.prototype.toString.call(v) === '[object Error]')) {{
                     st = 'error';
                     cn = (v.constructor && v.constructor.name) || 'Error';
                     desc = (typeof v.stack === 'string' && v.stack) ? v.stack
@@ -4434,6 +4791,16 @@ impl InbrowseJsRuntime {
             }})({var_name})"#,
             var_name = var_name,
         )
+    }
+
+    /// Registers a handle a script stored in the page's object table itself
+    /// (`Runtime.getProperties` stores each property under `<parent>::<key>`),
+    /// so later commands can resolve it like any other remote object.
+    pub fn adopt_object(&mut self, object_id: &str) {
+        self.object_store.insert(
+            object_id.to_string(),
+            format!("globalThis.__inbrowse_objects[{}]", js_string_literal(object_id)),
+        );
     }
 
     fn resolve_remote_object(&mut self, object_id: &str) -> Option<String> {
@@ -11166,11 +11533,15 @@ mod tests {
         let cancelled = rt.arm_watchdog(std::time::Duration::from_secs(30));
         drop(cancelled);
         // An independent backstop keeps a broken slot implementation bounded.
-        rt.execute_script_with_timeout(
-            "overlapping-deadlines",
-            "while (true) {}",
-            std::time::Duration::from_secs(2),
-        ).unwrap();
+        // The enclosing 100 ms deadline stops the script, not its own 2 s one.
+        assert_eq!(
+            rt.execute_script_with_timeout(
+                "overlapping-deadlines",
+                "while (true) {}",
+                std::time::Duration::from_secs(2),
+            ),
+            Err(ScriptError::Interrupted),
+        );
         assert!(rt.disarm_watchdog(deadline));
         assert_eq!(rt.evaluate("1 + 1").unwrap(), serde_json::json!(2));
     }
@@ -17568,6 +17939,7 @@ mod tests {
         let pixmap = {
             let mut state = rt.state.borrow_mut();
             ensure_resolved_scroll(&mut state).expect("resolved canvas scroll");
+            let frames = rt.frame_host(state.document_generation);
             let InbrowseState {
                 dom,
                 prepared_render,
@@ -17577,7 +17949,7 @@ mod tests {
                 ..
             } = &mut *state;
             let (_, scroll) = resolved_scroll.as_ref().expect("scroll snapshot");
-            let canvas_surfaces = RuntimeCanvasSurfaceSource(canvas_surfaces);
+            let canvas_surfaces = RuntimeCanvasSurfaceSource { canvases: canvas_surfaces, frames };
             inbrowse_render::paint_prepared_with_scroll_and_surface_color_and_canvas_surfaces(
                 dom.as_ref().expect("canvas DOM"),
                 prepared_render.as_mut().expect("prepared canvas layout"),
@@ -20273,11 +20645,11 @@ mod tests {
     async fn releasing_remote_objects_keeps_inflight_evaluations_alive() {
         let mut rt = setup_runtime("<html><body></body></html>");
         let first = rt.start_cdp_evaluation(
-            "new Promise(resolve=>{globalThis.finishFirst=resolve})", true, true,
+            "new Promise(resolve=>{globalThis.finishFirst=resolve})", true, true, 0,
         ).unwrap();
         let second = rt.start_cdp_call(
             "()=>new Promise(resolve=>setTimeout(()=>{finishFirst(42);resolve({answer:7})},1))",
-            None, &[], false, true,
+            None, &[], false, true, 0,
         ).unwrap();
         let CdpEvaluation::Pending(first) = first else { panic!("expected pending evaluation"); };
         let CdpEvaluation::Pending(second) = second else { panic!("expected pending evaluation"); };
@@ -23780,6 +24152,7 @@ mod tests {
                 &[],
                 true,
                 true,
+                0,
             )
             .unwrap();
 
@@ -25320,16 +25693,18 @@ mod tests {
              Promise.resolve().then(() => {{ globalThis.__guardedMicrotasks = \
                  (globalThis.__guardedMicrotasks || 0) + 1; }}); {padding}",
         );
+        let budget = std::time::Duration::from_secs(5);
         for _ in 0..3 {
-            rt.execute_script_guarded("guarded-fast-script", &source).unwrap();
+            rt.execute_script_with_timeout("guarded-fast-script", &source, budget).unwrap();
         }
         assert_eq!(rt.evaluate("[__guardedCount, __guardedMicrotasks]").unwrap(),
                    serde_json::json!([3, 3]));
-        let error = rt.execute_script_guarded(
+        let error = rt.execute_script_with_timeout(
             "guarded-throw",
             &format!("throw new Error('guarded-script-error'); {padding}"),
+            budget,
         ).unwrap_err();
-        assert!(error.contains("guarded-script-error"), "{error}");
+        assert!(matches!(&error, ScriptError::Thrown(message) if message.contains("guarded-script-error")), "{error}");
         assert_eq!(rt.evaluate("__guardedCount + 1").unwrap().as_f64(), Some(4.0));
     }
 
@@ -25345,12 +25720,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn timed_out_classic_script_leaves_runtime_reusable() {
         let mut rt = InbrowseJsRuntime::new();
-        rt.execute_script_with_timeout(
-            "https://example.test/hang.js",
-            "while (true) {}",
-            std::time::Duration::from_millis(20),
-        )
-        .unwrap();
+        assert_eq!(
+            rt.execute_script_with_timeout(
+                "https://example.test/hang.js",
+                "while (true) {}",
+                std::time::Duration::from_millis(20),
+            ),
+            Err(ScriptError::TimedOut(std::time::Duration::from_millis(20))),
+        );
         rt.execute_script(
             "https://example.test/after-timeout.js",
             "globalThis.__after_timeout = true;",

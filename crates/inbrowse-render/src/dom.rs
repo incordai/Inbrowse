@@ -6024,6 +6024,9 @@ fn layout_dom_once(
                         style.height,
                         crate::Dimension::Px(_) | crate::Dimension::Percent(_)
                     );
+                    if child_cb_height_definite {
+                        definite_height_nodes.insert(id);
+                    }
                 }
                 let computed_weight = crate::style::computed_font_weight(
                     style.font_weight.as_deref(),

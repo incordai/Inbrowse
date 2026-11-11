@@ -95,6 +95,52 @@ fn aac_only_m4a() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The fixture plays a 0.5 amplitude tone on one channel of a 5.1 AAC-LC stream
+/// at a time, 0.25 s each, in the order L, R, C, LFE, Ls, Rs. In the mono
+/// downmix of ITU-R BS.775 (L = R = 1, C and the surrounds 0.7071, LFE dropped,
+/// divided by 1 + 0.7071 + 0.7071) the tone must come out at the level of its
+/// channel: it shows each element reached its own channel.
+#[test]
+fn aac_five_point_one_downmixes_each_channel_at_its_level() {
+    let (report, dir) = run("aac_5p1_tones.m4a", "five-point-one");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let audio = report.audio.as_ref().expect("audio");
+    assert_eq!((audio.format, audio.sample_rate, audio.channels), ("wav", 16_000, 1));
+    assert!((audio.duration_secs - 1.5).abs() < 0.1, "audio {} s", audio.duration_secs);
+    let wav = std::fs::read(&audio.path).unwrap();
+    assert_eq!(&wav[0..4], b"RIFF");
+    assert_eq!(u16::from_le_bytes(wav[22..24].try_into().unwrap()), 1, "mono");
+    assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+    let samples: Vec<f64> = wav[44..]
+        .chunks_exact(2)
+        .map(|s| f64::from(i16::from_le_bytes([s[0], s[1]])))
+        .collect();
+
+    // RMS over the middle of each 4000-sample segment, clear of the cuts.
+    let rms = |segment: usize| {
+        let window = &samples[segment * 4000 + 1000..segment * 4000 + 3000];
+        (window.iter().map(|s| s * s).sum::<f64>() / window.len() as f64).sqrt()
+    };
+    let norm = 1.0 + 2.0 * std::f64::consts::FRAC_1_SQRT_2;
+    let side = std::f64::consts::FRAC_1_SQRT_2;
+    // Peak of the tone is 0.5 of full scale; the RMS of a sine is its peak / sqrt 2.
+    let level = |weight: f64| 0.5 * 32_767.0 * weight * std::f64::consts::FRAC_1_SQRT_2;
+    let expected = [
+        ("left", level(0.5 / norm)),
+        ("right", level(0.5 / norm)),
+        ("centre", level(side / norm)),
+        ("lfe", 0.0),
+        ("left surround", level(side * 0.5 / norm)),
+        ("right surround", level(side * 0.5 / norm)),
+    ];
+    for (segment, (name, want)) in expected.into_iter().enumerate() {
+        let got = rms(segment);
+        assert!((got - want).abs() <= 0.1 * level(side / norm), "{name}: rms {got:.0}, expected {want:.0}");
+    }
+    assert!(rms(2) > 1000.0, "the centre is not silent");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn webm_opus_audio_and_vpx_video() {
     for (name, codec) in [("vp8_opus.webm", "vp8"), ("vp9_opus.webm", "vp9")] {

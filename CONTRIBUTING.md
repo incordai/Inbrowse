@@ -80,7 +80,7 @@ runs each test in its own process, which is the only supported way.
 
 The authoritative behavioral gate is the **obstacle course** in the companion
 repo [`Inbrowse-benchmark`](https://github.com/incordai/Inbrowse-benchmark)
-(33 capability and speed stages, must stay 33/33):
+(38 capability and speed stages, must stay 38/38):
 
 ```bash
 INBROWSE_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
@@ -138,7 +138,7 @@ For any code change:
 1. `cargo nextest run --release --features render` passes for the crates you touched.
 2. The full render-feature nextest command above passes.
 3. `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo build --release -p inbrowse-cli --bins --features render` compiles clean.
-4. The obstacle course still reports **33/33**.
+4. The obstacle course still reports **38/38**.
 5. **Performance is a hard constraint.** Inbrowse is roughly 12x faster and uses
    about 6x less memory than headless Chrome on framework pages. Keep native
    Rust fast paths and add a JS fallback only for real spec edge cases. If your

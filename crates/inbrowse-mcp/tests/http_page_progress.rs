@@ -54,7 +54,7 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
     });
     let local = LocalSet::new();
     let server = local.spawn_local(inbrowse_mcp::http::run(
-        "127.0.0.1".into(), port, None, None, false,
+        "127.0.0.1".into(), port, None, None, false, None,
     ));
     local.run_until(async {
         for _ in 0..100 {
@@ -112,4 +112,48 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
         server.abort();
     }).await;
     fixture_task.await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn idle_pages_close_and_the_next_call_says_so() {
+    if fresh_process::run_alone("idle_pages_close_and_the_next_call_says_so") {
+        return;
+    }
+    std::env::remove_var("INBROWSE_MCP_TOKEN");
+    std::env::remove_var("INBROWSE_STORAGE_DIR");
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let local = LocalSet::new();
+    let server = local.spawn_local(inbrowse_mcp::http::run(
+        "127.0.0.1".into(), port, None, None, false, Some(Duration::from_millis(500)),
+    ));
+    local.run_until(async {
+        for _ in 0..100 {
+            if TcpStream::connect(("127.0.0.1", port)).await.is_ok() { break; }
+            sleep(Duration::from_millis(10)).await;
+        }
+        rpc(port, "tools/call", json!({"name":"browser_navigate", "arguments":{"url":"data:text/html,<p>First</p>"}})).await;
+        // A page that always has work queued must not keep itself open.
+        rpc(port, "tools/call", json!({"name":"browser_evaluate", "arguments":{
+            "expression":"setInterval(() => {}, 0), 'busy'"
+        }})).await;
+        let open = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}})).await;
+        assert_ne!(open["content"][0]["text"], json!("No tabs open."), "a recent request keeps the page");
+
+        sleep(Duration::from_millis(1_500)).await;
+        let tabs = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}})).await;
+        assert_eq!(tabs["content"][0]["text"], json!("No tabs open."), "idle pages must close");
+
+        let reopened = rpc(port, "tools/call", json!({"name":"browser_navigate", "arguments":{"url":"data:text/html,<p>Second</p>"}})).await;
+        let content = reopened["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "{reopened}");
+        let note = content[1]["text"].as_str().unwrap();
+        assert!(note.contains("after 500 milliseconds with no requests"), "{note}");
+        assert!(note.contains("The last page was data:text/html,"), "{note}");
+        let snapshot = rpc(port, "tools/call", json!({"name":"browser_snapshot", "arguments":{}})).await;
+        assert!(snapshot["content"][0]["text"].as_str().unwrap().contains("Second"), "{snapshot}");
+        assert_eq!(snapshot["content"].as_array().unwrap().len(), 1, "the note is given once");
+        server.abort();
+    }).await;
 }

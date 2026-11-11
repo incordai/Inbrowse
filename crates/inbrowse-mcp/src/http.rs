@@ -271,9 +271,16 @@ fn cors_header(origin: Option<&str>, allowlist: Option<&str>) -> String {
     }
 }
 
-/// MCP Streamable HTTP transport (POST /mcp → JSON response).
-///
-pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Option<String>, stealth: bool) -> Result<()> {
+/// MCP Streamable HTTP transport (POST /mcp → JSON response). Pages open and
+/// close for idleness as on stdio ([`crate::run`]).
+pub async fn run(
+    host: String,
+    port: u16,
+    proxy: Option<String>,
+    user_agent: Option<String>,
+    stealth: bool,
+    idle_close: Option<std::time::Duration>,
+) -> Result<()> {
     let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
     let auth_token = token_from_env()?;
     if !addr.ip().is_loopback() && auth_token.is_none() {
@@ -288,6 +295,7 @@ pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Opt
     }
 
     let mut state = BrowserState::new(proxy, user_agent, stealth);
+    state.idle_close = idle_close;
     let allowed_origins = Arc::new(allowed_origins_env());
     let auth_token = Arc::new(auth_token);
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -295,7 +303,12 @@ pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Opt
     let mut runtime_pump_armed = false;
 
     loop {
+        let idle_deadline = state.idle_deadline();
         tokio::select! {
+            () = tokio::time::sleep_until(idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if idle_deadline.is_some() => {
+                state.close_idle_tabs();
+                runtime_pump_armed = false;
+            }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
                 let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
@@ -522,6 +535,13 @@ async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
         return Some(
             json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
         );
+    }
+    if msg.get("jsonrpc").and_then(Value::as_str) != Some(crate::JSONRPC_VERSION) {
+        return Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": crate::INVALID_REQUEST, "message": "Invalid Request: jsonrpc must be \"2.0\""}
+        }));
     }
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let params = msg.get("params").unwrap_or(&Value::Null);

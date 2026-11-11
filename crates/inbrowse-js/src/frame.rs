@@ -144,8 +144,40 @@ impl FrameRealm {
         // `contentDocument` is the initialized one.
         if same_origin {
             parent.publish_realm_objects(&realm.context, frame_id);
+            realm.link_to_parent(parent);
         }
         Some(realm)
+    }
+
+    /// Gives a same-origin frame's window the real objects for `parent`,
+    /// `top` and `frameElement`, as the initial frames get them. Init installed
+    /// stand-ins that cannot be compared with the parent's own `window`, so
+    /// `frame.contentWindow.parent === window` would be false. Done before any
+    /// of the frame's scripts run.
+    fn link_to_parent(&self, parent: &mut InbrowseJsRuntime) {
+        let (frame_id, parent_frame_id) = (self.frame_id, self.parent_frame_id);
+        let linked = parent.execute_script(
+            "<frame-link>",
+            &format!(
+                "(function() {{\
+                    var objects = globalThis.__inbrowse_frameObjects;\
+                    var entry = objects[{frame_id}];\
+                    var parentWindow = {parent_frame_id} === 0 ? globalThis\
+                        : (objects[{parent_frame_id}] && objects[{parent_frame_id}].window);\
+                    if (!entry || !parentWindow) return;\
+                    var element = parentWindow.__inbrowse_frameElements[{frame_id}];\
+                    var define = function(name, value) {{\
+                        Object.defineProperty(entry.window, name, {{ value: value, configurable: true }});\
+                    }};\
+                    define('parent', parentWindow);\
+                    define('top', globalThis);\
+                    if (element) define('frameElement', element);\
+                }})()"
+            ),
+        );
+        if let Err(error) = linked {
+            tracing::debug!("frame {frame_id} was not linked to its parent: {error}");
+        }
     }
 
     /// Fires the frame document's lifecycle events, in spec order.

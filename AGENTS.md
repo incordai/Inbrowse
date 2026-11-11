@@ -50,7 +50,7 @@ runs each test in its own process, which is the only supported way.
 
 The authoritative behavioral gate is the **obstacle course** in the companion
 repo [`Inbrowse-benchmark`](https://github.com/incordai/Inbrowse-benchmark)
-(33 capability + speed stages, must stay 33/33):
+(38 capability + speed stages, must stay 38/38):
 
 ```bash
 INBROWSE_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
@@ -67,7 +67,7 @@ For any code change:
 1. Run focused release-mode nextest coverage for the crates and repro involved.
 2. Run `cargo nextest run --release --features render --no-fail-fast`.
 3. Run the exact release build shown above.
-4. The obstacle course still reports **33/33**.
+4. The obstacle course still reports **38/38**.
 5. For render changes, run deterministic fixtures and broad top/bottom real-site
    captures using the methodology below.
 6. For stealth changes, re-test with `--stealth` (a non-stealth binary won't

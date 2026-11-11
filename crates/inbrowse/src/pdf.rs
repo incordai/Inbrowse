@@ -398,12 +398,15 @@ impl Page {
             inbrowse_js::CssMediaType::Print.with_reduced_motion(js.prefers_reduced_motion())
                 .with_dark_color_scheme(js.prefers_dark_color_scheme()),
         );
-        let header_footer = options.display_header_footer.then(|| HeaderFooter {
-            header: options.header_template.clone(),
-            footer: options.footer_template.clone(),
-            title: self.title.clone(),
-            url: self.url_string(),
-            date: format_print_date(std::time::SystemTime::now()),
+        let header_footer = options.display_header_footer.then(|| {
+            let now = std::time::SystemTime::now();
+            HeaderFooter {
+                header: options.header_template.clone(),
+                footer: options.footer_template.clone(),
+                title: self.title.clone(),
+                url: self.url_string(),
+                date: format_print_date(now, print_utc_offset_seconds(self, now)),
+            }
         });
         let result = (|| {
             let (content_width, content_height) = js
@@ -1122,12 +1125,26 @@ fn pdf_winansi_string(text: &str) -> String {
     out
 }
 
-/// Chrome's header date format, e.g. `9/26/26, 3:05 PM` (UTC).
-fn format_print_date(now: std::time::SystemTime) -> String {
+/// The zone the print date is written in, as an offset from UTC in seconds at
+/// `now`: the page's effective zone (its `Emulation.setTimezoneOverride`, else
+/// the process zone), so the header agrees with `new Date()` on the same page.
+/// This is the only place the print date takes its zone from. An instant ICU
+/// cannot resolve is written as UTC.
+fn print_utc_offset_seconds(page: &crate::Page, now: std::time::SystemTime) -> i64 {
+    let epoch_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |since| since.as_secs_f64() * 1000.0);
+    page.utc_offset_ms_at(epoch_ms).map_or(0, |ms| ms.div_euclid(1000))
+}
+
+/// Chrome's header date format, e.g. `9/26/26, 3:05 PM`, in the zone that is
+/// `utc_offset_seconds` from UTC.
+fn format_print_date(now: std::time::SystemTime, utc_offset_seconds: i64) -> String {
     let seconds = now
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+        + utc_offset_seconds;
     let days = seconds.div_euclid(86_400);
     let time = seconds.rem_euclid(86_400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
@@ -1792,8 +1809,21 @@ mod tests {
     #[test]
     fn print_date_matches_chrome_format() {
         let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_380_800 + 15 * 3600 + 5 * 60);
-        assert_eq!(format_print_date(when), "9/26/26, 3:05 PM");
-        assert_eq!(format_print_date(std::time::UNIX_EPOCH), "1/1/70, 12:00 AM");
+        assert_eq!(format_print_date(when, 0), "9/26/26, 3:05 PM");
+        assert_eq!(format_print_date(std::time::UNIX_EPOCH, 0), "1/1/70, 12:00 AM");
+    }
+
+    #[test]
+    fn print_date_applies_the_zone_offset_across_day_and_year_boundaries() {
+        // 2026-11-10 02:19 UTC is still the 9th at UTC-6.
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_277_140);
+        assert_eq!(format_print_date(when, 0), "11/10/26, 2:19 AM");
+        assert_eq!(format_print_date(when, -6 * 3600), "11/9/26, 8:19 PM");
+        assert_eq!(format_print_date(when, 5 * 3600 + 30 * 60), "11/10/26, 7:49 AM");
+        let new_year = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_798_761_600 + 30 * 60);
+        assert_eq!(format_print_date(new_year, 0), "1/1/27, 12:30 AM");
+        assert_eq!(format_print_date(new_year, -3600), "12/31/26, 11:30 PM");
+        assert_eq!(format_print_date(std::time::UNIX_EPOCH, -3600), "12/31/69, 11:00 PM");
     }
 
     #[test]

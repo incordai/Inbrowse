@@ -2,10 +2,13 @@
 //! and the CLI `--dump markdown` mode. Lives in inbrowse so both
 //! inbrowse-cdp and inbrowse-cli can call it without depending on each other.
 
-/// JS expression that walks `document.body` and returns a markdown string.
-/// Must be evaluated against a Page that has a fully-bootstrapped JS runtime.
-pub const HTML_TO_MARKDOWN_JS: &str = r#"
-(function() {
+/// The converter as a JS function of one argument, the root element (falsy
+/// for `document.body`). A macro so both public forms at the end of this file
+/// share one copy of the script.
+macro_rules! markdown_function {
+    () => {
+        r#"
+(function(root) {
     // GFM table: header row, `|---|` separator, then one line per row with
     // no blank lines between. Cells collapse to a single line with `|`
     // escaped; colspan repeats empty cells and short rows are padded. The
@@ -78,10 +81,25 @@ pub const HTML_TO_MARKDOWN_JS: &str = r#"
     }
     function toMd(el, depth) {
         if (!el) return '';
-        var out = '';
-        if (el.nodeType === 3) return el.textContent || '';
+        // Source whitespace (indentation, line wraps) collapses to one space;
+        // only block structure below produces line breaks.
+        if (el.nodeType === 3) return (el.textContent || '').replace(/[\t\n\f\r ]+/g, ' ');
         if (el.nodeType !== 1) return '';
         var tag = (el.tagName || '').toLowerCase();
+        if (el.hasAttribute && el.hasAttribute('hidden')) return '';
+        switch (tag) {
+            case 'script': case 'style': case 'noscript': case 'link': case 'meta':
+            case 'template': case 'option': case 'optgroup':
+                return '';
+            case 'pre':
+                return '\n```\n' + (el.textContent || '').replace(/\n$/, '') + '\n```\n\n';
+            case 'select':
+                return selectedOptionText(el);
+            case 'ul': case 'ol':
+                return listToMd(el, depth);
+            case 'table':
+                return tableToMd(el, depth);
+        }
         var children = '';
         var cn = el.childNodes || [];
         for (var i = 0; i < cn.length; i++) children += toMd(cn[i], depth);
@@ -99,36 +117,92 @@ pub const HTML_TO_MARKDOWN_JS: &str = r#"
             case 'strong': case 'b': return '**' + children + '**';
             case 'em': case 'i': return '*' + children + '*';
             case 'code': return '`' + children + '`';
-            case 'pre': return '\n```\n' + children + '\n```\n\n';
             case 'blockquote': return '\n> ' + children.trim().replace(/\n/g, '\n> ') + '\n\n';
             case 'a':
                 var href = el.getAttribute('href') || '';
-                if (href && children.trim()) return '[' + children.trim() + '](' + href + ')';
+                // Block children inside a link (cards, two-line labels) are
+                // joined with a space; link text is one line.
+                var label = children.replace(/\s*\n+\s*/g, ' ').trim();
+                if (href && label) return '[' + label + '](' + href + ')';
                 return children;
             case 'img':
                 var src = el.getAttribute('src') || '';
                 var alt = el.getAttribute('alt') || '';
                 return '![' + alt + '](' + src + ')';
-            case 'ul': case 'ol':
-                return '\n' + children + '\n';
-            case 'li':
-                var parent = el.parentNode;
-                var isOrdered = parent && parent.tagName && parent.tagName.toLowerCase() === 'ol';
-                var bullet = isOrdered ? '1. ' : '- ';
-                return bullet + children.trim() + '\n';
-            case 'table': return tableToMd(el, depth);
             case 'caption': return '';
             case 'thead': case 'tbody': case 'tfoot': case 'tr': case 'th': case 'td': return children;
-            case 'script': case 'style': case 'noscript': case 'link': case 'meta': return '';
-            case 'div': case 'section': case 'article': case 'main': case 'aside': case 'nav': case 'header': case 'footer':
-                return '\n' + children;
+            case 'div': case 'section': case 'article': case 'main': case 'aside': case 'nav': case 'header':
+            case 'footer': case 'li': case 'dl': case 'dt': case 'dd': case 'figure': case 'figcaption':
+            case 'form': case 'fieldset': case 'details': case 'summary': case 'address':
+                return '\n' + children + '\n';
             case 'span': return children;
             default: return children;
         }
     }
-    var body = document.body || document.documentElement;
-    var md = toMd(body, 0);
-    md = md.replace(/\n{3,}/g, '\n\n').trim();
-    return md;
-})()
-"#;
+    // A list item per line: `- ` or the item number, with every further line
+    // of the item (wrapped text, a nested list) indented under its marker so
+    // nesting survives. Ordered lists honour `start` and an item's `value`.
+    function listToMd(list, depth) {
+        var ordered = list.tagName.toLowerCase() === 'ol';
+        var number = parseInt(list.getAttribute('start') || '1', 10);
+        if (!isFinite(number)) number = 1;
+        var lines = [];
+        var kids = list.childNodes || [];
+        for (var i = 0; i < kids.length; i++) {
+            var item = kids[i];
+            if (item.nodeType !== 1 || item.tagName.toLowerCase() !== 'li') continue;
+            if (item.hasAttribute('hidden')) continue;
+            if (ordered && item.hasAttribute('value')) {
+                var value = parseInt(item.getAttribute('value'), 10);
+                if (isFinite(value)) number = value;
+            }
+            var marker = ordered ? (number++) + '. ' : '- ';
+            var content = '';
+            var parts = item.childNodes || [];
+            for (var j = 0; j < parts.length; j++) content += toMd(parts[j], depth + 1);
+            var itemLines = content.replace(/\n{3,}/g, '\n\n').trim().split('\n');
+            var indent = new Array(marker.length + 1).join(' ');
+            lines.push(marker + itemLines[0].trim());
+            for (var k = 1; k < itemLines.length; k++) {
+                lines.push(itemLines[k].trim() ? indent + itemLines[k] : '');
+            }
+        }
+        return '\n' + lines.join('\n') + '\n\n';
+    }
+    // innerText of a <select>: its selected option only (the last with the
+    // `selected` state, else the first enabled one).
+    function selectedOptionText(select) {
+        var options = select.querySelectorAll('option');
+        var chosen = null;
+        for (var i = 0; i < options.length; i++) if (options[i].selected) chosen = options[i];
+        for (var j = 0; !chosen && j < options.length; j++) if (!options[j].disabled) chosen = options[j];
+        return chosen ? (chosen.textContent || '').replace(/[\t\n\f\r ]+/g, ' ').trim() : '';
+    }
+    // Lines outside code fences lose trailing spaces, whitespace-only lines
+    // become empty, and blank runs collapse to one blank line.
+    function tidy(md) {
+        var pieces = md.split(/(\n```\n[\s\S]*?\n```\n)/);
+        for (var i = 0; i < pieces.length; i += 2) {
+            pieces[i] = pieces[i].replace(/[ \t]+$/gm, '').replace(/^[ \t]+$/gm, '');
+        }
+        return pieces.join('').replace(/\n{3,}/g, '\n\n').trim();
+    }
+    var body = root || document.body || document.documentElement;
+    return tidy(toMd(body, 0));
+})"#
+    };
+}
+
+/// JS expression that walks `document.body` and returns a markdown string.
+/// Must be evaluated against a Page that has a fully-bootstrapped JS runtime.
+pub const HTML_TO_MARKDOWN_JS: &str = concat!(markdown_function!(), "(null)\n");
+
+/// [`HTML_TO_MARKDOWN_JS`] for the subtree of the first element matching
+/// `selector` (`fetch --selector`). Evaluates to `null` when nothing matches.
+pub fn html_to_markdown_js_within(selector: &str) -> String {
+    let selector = serde_json::Value::from(selector).to_string();
+    format!(
+        "(function(){{var root=document.querySelector({selector});return root?{}(root):null;}})()",
+        markdown_function!()
+    )
+}

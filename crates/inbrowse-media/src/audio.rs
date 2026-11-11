@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use hang::catalog::{AudioCodec, AudioConfig, AAC};
 use moq_audio::decode::{Config as DecoderConfig, Decoder, Kind as DecoderKind};
+use moq_audio::Layout;
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Async, FixedAsync, Resampler as _, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
@@ -198,6 +199,115 @@ fn header(data_bytes: u32) -> [u8; 44] {
     h
 }
 
+/// Frames at `rate` that a packet starting at `pts_us` has before time 0:
+/// none for a packet at or after it. Used by [`extract_audio`] to drop what an
+/// MP4 edit list (see `mp4.rs`) cuts off the start, usually the AAC encoder's
+/// 1024 priming frames.
+fn frames_before_zero(pts_us: i64, rate: u32) -> usize {
+    if pts_us >= 0 {
+        return 0;
+    }
+    let frames = (i128::from(pts_us).abs() * i128::from(rate) + 500_000) / 1_000_000;
+    usize::try_from(frames).unwrap_or(usize::MAX)
+}
+
+/// Write `us` microseconds of silence at [`OUTPUT_RATE`]. Used by
+/// [`extract_audio`] for a track that starts late.
+fn write_silence(wav: &mut Wav, us: i64) -> std::io::Result<()> {
+    let mut left = usize::try_from(us.max(0) as i128 * i128::from(OUTPUT_RATE) / 1_000_000).unwrap_or(usize::MAX);
+    let zeros = [0.0f32; CHUNK];
+    while left > 0 {
+        let n = left.min(CHUNK);
+        wav.write(&zeros[..n])?;
+        left -= n;
+    }
+    Ok(())
+}
+
+/// Where one channel of a multichannel layout goes in a stereo downmix.
+#[derive(Clone, Copy)]
+enum Feed {
+    /// Into the left output only, at this gain.
+    Left(f32),
+    /// Into the right output only, at this gain.
+    Right(f32),
+    /// Into both outputs, at this gain.
+    Both(f32),
+    /// Not used: the low-frequency effects channel.
+    Dropped,
+}
+
+/// The weight each channel of an interleaved frame of `layout` has in the mono
+/// downmix. Called by [`extract_audio`] once per track.
+///
+/// This is the stereo downmix of ITU-R BS.775 followed by the average of its two
+/// outputs: Lo = L + 0.7071 C + 0.7071 Ls and Ro = R + 0.7071 C + 0.7071 Rs, with
+/// the LFE dropped, and mono = (Lo + Ro) / 2. BS.775 has no rule for the rear
+/// centre or for a front-of-centre pair (AAC's seventh configuration, which
+/// `moq-audio` places in the side slots of 7.1), so they get the surround gain of
+/// 0.7071 too: both outputs for the rear centre, their own side for the pair. The
+/// weights are divided by the sum of the gains feeding one output, so a full-scale
+/// signal on every channel cannot clip: 1 + 0.7071 + 0.7071 for 5.1.
+///
+/// Mono is passed through and stereo is (L + R) / 2, as an average of the channels
+/// gives. A layout without a rule here, `Discrete` among them, is averaged the same way.
+fn downmix_weights(layout: Layout) -> Vec<f32> {
+    const MINUS_3_DB: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    use Feed::{Both, Dropped, Left, Right};
+
+    let feeds = match layout {
+        Layout::Mono => vec![Both(1.0)],
+        Layout::Stereo => vec![Left(1.0), Right(1.0)],
+        Layout::TwoPointOne => vec![Left(1.0), Right(1.0), Dropped],
+        Layout::ThreePointZero => vec![Left(1.0), Right(1.0), Both(MINUS_3_DB)],
+        Layout::Quad => vec![Left(1.0), Right(1.0), Left(MINUS_3_DB), Right(MINUS_3_DB)],
+        Layout::FourPointZero => vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Both(MINUS_3_DB)],
+        Layout::FivePointZero => {
+            vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Left(MINUS_3_DB), Right(MINUS_3_DB)]
+        }
+        Layout::FivePointOne => {
+            vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Dropped, Left(MINUS_3_DB), Right(MINUS_3_DB)]
+        }
+        Layout::SixPointOne => vec![
+            Left(1.0),
+            Right(1.0),
+            Both(MINUS_3_DB),
+            Dropped,
+            Both(MINUS_3_DB),
+            Left(MINUS_3_DB),
+            Right(MINUS_3_DB),
+        ],
+        Layout::SevenPointOne => vec![
+            Left(1.0),
+            Right(1.0),
+            Both(MINUS_3_DB),
+            Dropped,
+            Left(MINUS_3_DB),
+            Right(MINUS_3_DB),
+            Left(MINUS_3_DB),
+            Right(MINUS_3_DB),
+        ],
+        other => vec![Both(1.0); other.channels().max(1) as usize],
+    };
+
+    // Every layout above is symmetric, so one output's total stands for both.
+    let norm: f32 = feeds
+        .iter()
+        .map(|feed| match *feed {
+            Left(gain) | Both(gain) => gain,
+            Right(_) | Dropped => 0.0,
+        })
+        .sum();
+    feeds
+        .iter()
+        .map(|feed| match *feed {
+            Left(gain) | Right(gain) => gain / (2.0 * norm),
+            Both(gain) => gain / norm,
+            Dropped => 0.0,
+        })
+        .collect()
+}
+
 pub(crate) fn extract_audio(
     track: &Track,
     out_dir: &Path,
@@ -208,11 +318,14 @@ pub(crate) fn extract_audio(
     let mut decoder = match open(track) {
         Ok(d) => d,
         Err(e) => {
-            warnings.push(format!("audio: {e}"));
+            warnings.push(format!(
+                "audio: the {} track is skipped and no audio is written: {e}",
+                track.codec_name
+            ));
             return None;
         }
     };
-    let channels = (decoder.layout().channels() as usize).max(1);
+    let weights = downmix_weights(decoder.layout());
     let mut resampler = match Mono::new(decoder.sample_rate()) {
         Ok(r) => r,
         Err(e) => {
@@ -228,6 +341,13 @@ pub(crate) fn extract_audio(
             return None;
         }
     };
+
+    // A track whose edit list starts it after 0 is preceded by silence, so the
+    // WAV's time 0 is the file's, as the frames' times are.
+    if let Err(e) = write_silence(&mut wav, track.start_us.clamp(0, max_duration_us.max(0))) {
+        warnings.push(format!("audio: {e}"));
+        return None;
+    }
 
     let mut errors = 0usize;
     let mut mono = Vec::new();
@@ -253,9 +373,11 @@ pub(crate) fn extract_audio(
         mono.extend(
             decoded
                 .samples
-                .chunks_exact(channels)
-                .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+                .chunks_exact(weights.len())
+                .map(|frame| frame.iter().zip(&weights).map(|(sample, weight)| sample * weight).sum::<f32>()),
         );
+        // Audio an edit list puts before 0 (encoder priming) is not played.
+        mono.drain(..frames_before_zero(sample.pts_us, decoder.sample_rate()).min(mono.len()));
         out.clear();
         if let Err(e) = resampler.push(&mono, &mut out) {
             warnings.push(format!("audio: {e}"));
@@ -292,5 +414,135 @@ pub(crate) fn extract_audio(
             warnings.push(format!("audio: {e}"));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use mp4_atom::{Edts, Elst, ElstEntry};
+
+    use super::*;
+    use crate::demux::Kind;
+    use crate::mp4::{self, tests::rewrite_moov};
+
+    const H264_AAC: &[u8] = include_bytes!("../tests/fixtures/h264_aac.mp4");
+
+    /// The 16 kHz samples `extract_audio` writes for the audio track of `data`.
+    fn decode(data: &Bytes, tag: &str) -> Vec<i16> {
+        let demuxed = mp4::read(data, &mut Vec::new()).unwrap();
+        let track = demuxed.tracks.iter().find(|t| t.kind == Kind::Audio).unwrap();
+        let dir = std::env::temp_dir().join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut warnings = Vec::new();
+        let report = extract_audio(track, &dir, i64::MAX, None, &mut warnings).expect("audio");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let wav = std::fs::read(&report.path).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        wav[44..].chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]])).collect()
+    }
+
+    #[test]
+    fn frames_before_zero_rounds_to_whole_frames() {
+        assert_eq!(frames_before_zero(-21_333, 48_000), 1024);
+        assert_eq!(frames_before_zero(0, 48_000), 0);
+        assert_eq!(frames_before_zero(5, 48_000), 0);
+        // The most negative time does not overflow.
+        assert!(frames_before_zero(i64::MIN, u32::MAX) > 0);
+    }
+
+    /// The fixture's audio edit list skips AAC's 1024 priming frames: 95
+    /// packets of 1024 frames at 48 kHz, less those, at 16 kHz.
+    #[test]
+    fn priming_frames_named_by_the_edit_list_are_not_written() {
+        let samples = decode(&Bytes::from_static(H264_AAC), "priming");
+        let expected = (95 * 1024 - 1024) / 3;
+        assert!(samples.len().abs_diff(expected) <= 8, "{} samples, expected {expected}", samples.len());
+    }
+
+    /// A leading empty edit puts that much silence before the audio so the
+    /// WAV and the frames share a time axis.
+    #[test]
+    fn leading_empty_edit_becomes_silence() {
+        let data = rewrite_moov(H264_AAC, |moov| {
+            let entry = |segment_duration, media_time| ElstEntry { segment_duration, media_time, media_rate: 1.into() };
+            moov.trak[1].edts = Some(Edts { elst: Some(Elst { entries: vec![entry(500, None), entry(2000, Some(1024))] }) });
+        });
+        let samples = decode(&data, "silence");
+        let expected = 8_000 + (95 * 1024 - 1024) / 3;
+        assert!(samples.len().abs_diff(expected) <= 8, "{} samples, expected {expected}", samples.len());
+        assert!(samples[..8_000].iter().all(|&s| s == 0));
+        let peak = samples[8_000..].iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!(peak > 3000, "peak {peak}");
+    }
+
+    /// An AAC track the decoder refuses gives no audio and a warning that says
+    /// so and why: HE-AAC (SBR is not decoded) and a channel layout carried in a
+    /// program config element (channel configuration 0) are refused, though
+    /// the channel count alone no longer is.
+    #[test]
+    fn refused_aac_track_is_reported_as_skipped() {
+        let refused: [(&str, &[u8], &str); 2] = [
+            // HE-AAC (object type 5), 48 kHz, stereo.
+            ("he-aac", &[0x29, 0x90], "AAC-LC"),
+            // AAC-LC, 48 kHz, channel configuration 0, then a program config
+            // element naming a centre and a pair of front channels.
+            ("pce", &[0x11, 0x80, 0x04, 0xC8, 0x00, 0x00, 0x01, 0x10, 0x00], "program config"),
+        ];
+        for (tag, asc, reason) in refused {
+            let mut track = Track::new(Kind::Audio, Codec::Aac { asc: Bytes::from_static(asc) }, "aac");
+            track.sample_rate = Some(48_000);
+            track.channels = Some(3);
+            let dir = std::env::temp_dir().join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut warnings = Vec::new();
+            assert!(extract_audio(&track, &dir, i64::MAX, None, &mut warnings).is_none(), "{tag}");
+            let _ = std::fs::remove_dir_all(dir);
+            assert_eq!(warnings.len(), 1, "{tag}: {warnings:?}");
+            assert!(
+                warnings[0].contains("aac track is skipped") && warnings[0].contains("no audio is written"),
+                "{tag}: {warnings:?}"
+            );
+            assert!(warnings[0].contains(reason), "{tag}: the decoder's reason is kept: {warnings:?}");
+        }
+    }
+
+    /// Mono and stereo mix down exactly as the plain average of the channels.
+    #[test]
+    fn mono_and_stereo_downmix_is_the_average() {
+        assert_eq!(downmix_weights(Layout::Mono), [1.0]);
+        assert_eq!(downmix_weights(Layout::Stereo), [0.5, 0.5]);
+    }
+
+    /// Every layout with a rule sums to 1 over the channels that are not LFE
+    /// when all are at full scale, so a loud mix cannot clip; the LFE has no weight.
+    #[test]
+    fn surround_downmix_cannot_clip_and_drops_the_lfe() {
+        let layouts = [
+            Layout::TwoPointOne,
+            Layout::ThreePointZero,
+            Layout::Quad,
+            Layout::FourPointZero,
+            Layout::FivePointZero,
+            Layout::FivePointOne,
+            Layout::SixPointOne,
+            Layout::SevenPointOne,
+        ];
+        for layout in layouts {
+            let weights = downmix_weights(layout);
+            assert_eq!(weights.len(), layout.channels() as usize, "{layout:?}");
+            assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{layout:?}: {weights:?}");
+        }
+        let five_one = downmix_weights(Layout::FivePointOne);
+        let norm = 1.0 + 2.0 * std::f32::consts::FRAC_1_SQRT_2;
+        // L, R, C, LFE, Ls, Rs.
+        let expected = [0.5 / norm, 0.5 / norm, std::f32::consts::FRAC_1_SQRT_2 / norm, 0.0];
+        for (got, want) in five_one.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-6, "{five_one:?}");
+        }
+        assert_eq!(five_one[3], 0.0);
+        assert!((five_one[4] - five_one[2] / 2.0).abs() < 1e-6, "{five_one:?}");
+        // Without a rule, channels are averaged.
+        assert_eq!(downmix_weights(Layout::Discrete(4)), [0.25; 4]);
     }
 }

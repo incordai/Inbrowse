@@ -83,6 +83,10 @@ pub(crate) struct Track {
     pub sample_rate: Option<u32>,
     pub channels: Option<u32>,
     pub language: Option<String>,
+    /// Microseconds before the track's first presented sample: the delay an
+    /// MP4 edit list gives it (`mp4.rs`), 0 elsewhere. `audio.rs` writes it as
+    /// silence so the WAV shares the file's time axis.
+    pub start_us: i64,
     /// Samples in decode order.
     pub samples: Vec<Sample>,
 }
@@ -98,6 +102,7 @@ impl Track {
             sample_rate: None,
             channels: None,
             language: None,
+            start_us: 0,
             samples: Vec::new(),
         }
     }

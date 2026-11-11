@@ -40,6 +40,15 @@ pub fn ua_style(tag: &str) -> LayoutStyle {
         | "mark" | "abbr" | "cite" | "var" | "dfn" | "kbd" | "samp" | "q" | "time" | "s" | "u"
         | "del" | "ins" | "tt" | "big" | "bdi" | "bdo" | "br" | "wbr" | "data" | "output"
         | "label" | "ruby" | "rt" | "rp" => Display::Inline,
+        // Replaced elements are inline-level in HTML's UA sheet: an image, a
+        // canvas, a video or a frame next to text or to each other shares the
+        // line and sits on the baseline. Replacement already makes each box
+        // atomic; `is_inline_block` stays reserved for an authored
+        // inline-block outer display and native controls. No UA max-width is
+        // imposed: deliberately oversized art keeps its intrinsic ratio.
+        "img" | "svg" | "canvas" | "video" | "audio" | "iframe" | "embed" | "object" => {
+            Display::Inline
+        }
         "tr" => Display::Flex,
         _ => Display::Block,
     };
@@ -335,20 +344,6 @@ pub fn ua_style(tag: &str) -> LayoutStyle {
         if tag == "th" {
             style.font_weight = Some("bold".to_string());
         }
-    } else if tag == "img" {
-        // Images are inline-level replaced elements by default. Replacement
-        // already makes the box atomic; `is_inline_block` is reserved for an
-        // authored inline-block outer display and native controls. Chromium's
-        // UA sheet does not impose a responsive max-width: author/reset CSS
-        // must opt into that. A synthetic `max-width:100%` here distorts
-        // deliberately oversized art whose height and intrinsic ratio
-        // establish its width.
-        style.display = Display::Inline;
-    } else if tag == "svg" {
-        // An outer `<svg>` in HTML is an inline-level replaced element like
-        // `<img>`, so `text-align` places it and it sits on the text baseline.
-        // Its descendants are painted by the SVG renderer, not laid out.
-        style.display = Display::Inline;
     }
     style
 }

@@ -16,6 +16,18 @@ All notable changes to Inbrowse are recorded here. The format follows
   options.
 - SDK `Page::evaluate_awaited(js, timeout)`: the `fetch --eval` reading, with a
   returned promise awaited and one time bound for the run and the wait.
+- `fetch --script-timeout <SECONDS>`, MCP `browser_navigate` `scriptTimeoutMs`
+  and `INBROWSE_SCRIPT_TIMEOUT_MS`: the time one page script may run (default
+  5 s) before it is stopped. Stopped and skipped scripts are reported:
+  `Warning:` lines on `fetch` stderr, a `warnings` field per URL in `scrape`,
+  and warning lines in MCP `browser_navigate` and `browser_tab_new` (#27).
+- `scrape --file <PATH|->`, and a `-` URL reads the list from stdin (#11).
+- `extract` output has an always-present `warnings` array (CLI and MCP
+  `document_extract`) naming content that was skipped or is probably missing
+  (#32).
+- `extract --password` (CLI) and `password` (MCP) open encrypted PDFs; a missing
+  or wrong password is a clear error (#24).
+- `new FormData(form, submitter)` and `select.selectedOptions` (#1, #2).
 
 ### Changed
 
@@ -31,9 +43,125 @@ All notable changes to Inbrowse are recorded here. The format follows
 - CDP DOM and Input commands whose page-side step throws now answer with that
   error instead of success, and `DOM.focus` / `DOM.setFileInputFiles` on a node
   that is not an element is an error.
+- A document's script phase is capped at the navigation timeout as well as
+  30 s, so `fetch --timeout 5` no longer spends 30 s in a looping page script
+  (#27).
+- `--dump text` follows the `innerText` rules: a tab between table cells and a
+  line per row, empty blocks add no blank lines, a `<select>` shows its
+  selected option, `<pre>` keeps its whitespace and `hidden` content is
+  skipped (#14).
+- Markdown output (`--dump markdown`, MCP `browser_markdown`, CDP
+  `LP.getMarkdown`) indents nested lists, numbers ordered lists from `start`,
+  drops whitespace-only lines, joins block content inside a link with a space
+  and keeps `<pre>` code verbatim (#15).
+- `<canvas>`, `<video>`, `<audio>`, `<iframe>`, `<embed>` and `<object>` are
+  inline-level by default like `<img>`, so they share a line (#17).
+- Form submission url-encodes as `application/x-www-form-urlencoded`
+  (`'`, `(`, `)` and `~` are percent-encoded) and includes file inputs.
+- `window.onunhandledrejection` is `null` by default instead of a handler
+  that cancelled every rejection event.
+- `extract`: tables in DOCX, PPTX, ODT and ODP are tab-separated rows with
+  merged cells kept aligned (#20); DOCX headers, footers, footnotes, endnotes
+  and comments and PPTX speaker notes are separate sections (#19, #22).
 
 ### Fixed
 
+- The MCP server no longer keeps its pages open forever. After
+  `--idle-timeout` seconds (default 300, `0` turns it off) with no request it
+  closes every page and keeps cookies and storage; the next call opens a new
+  page and its result says the old one was closed (#33). The stdio transport
+  no longer drops a partly read request when a page task finishes first.
+- README: the memory, size and speed table now holds our own measurements of
+  the release downloads next to headless Chrome on the same machine, with the
+  conditions for each figure, instead of the upstream project's figures (#29).
+- CDP: iframes are real frames. Each child frame gets a default execution
+  context and the page's isolated worlds; `Runtime.evaluate` and
+  `callFunctionOn` run in the frame of the context or object; `DOM.describeNode`
+  on an `<iframe>` returns `frameId` and `contentDocument`, and
+  `DOM.getFrameOwner` is new; DOM, box-model and Input commands reach nodes
+  inside frames. Puppeteer `page.frames()`, `contentFrame()`,
+  `frame.$eval`/`evaluate`/`type` and Playwright `frameLocator` work (#3).
+- Removing or moving an iframe detaches its frame (`Page.frameDetached`,
+  `Runtime.executionContextDestroyed`) in the same command, as in Chrome (#3).
+- A page's `load` event waits for its child frames' scripts and load events,
+  `data:` iframes load their document, and a same-origin frame's
+  `window.parent`, `top` and `frameElement` are the real objects (#3).
+- `Runtime.getProperties` handles can be described and passed to
+  `callFunctionOn` (#3).
+- `DOM.getBoxModel` and `DOM.getContentQuads` return the element's real boxes,
+  or Chrome's "Could not compute box model." error for an element without
+  one, instead of a made-up box. Callers that relied on the made-up box for
+  hidden elements now get the error.
+- Screenshots (`fetch --screenshot`, `Page.captureScreenshot` with clip and
+  full page, `browser_screenshot`) and PDFs (`Page.printToPDF`, `browser_pdf`)
+  paint iframe content. Same-origin, `srcdoc` and `data:` frames, nested ones
+  included, render inside the frame's content box, clipped to it (#4).
+- `Accessibility.getFullAXTree` returns one connected tree rooted at a
+  focusable, titled `RootWebArea` with `frameId`, so Puppeteer and Playwright
+  accessibility snapshots no longer collapse to a single node. Nodes hidden
+  from assistive technology stay in the tree as ignored nodes with Chrome's
+  reasons, and `depth` and `frameId` are honoured. `getRootAXNode`,
+  `getChildAXNodes`, `getPartialAXTree` and `queryAXTree` are implemented, and
+  unknown `Accessibility` methods are errors instead of empty successes (#16).
+- `Performance.getMetrics` returns Chrome's page metrics (`Nodes`,
+  `JSEventListeners`, `LayoutCount`, `ScriptDuration`, `TaskDuration`, heap
+  sizes and the rest) with measured values while `Performance.enable` is on
+  (#28).
+- `Page.printToPDF` header and footer dates use the page's time zone, including
+  an `Emulation.setTimezoneOverride`, instead of UTC (#18).
+- `Emulation.setTimezoneOverride` now changes the page's `Date`,
+  `Date.prototype.toString` and `Intl.DateTimeFormat` zone, keeps it across
+  navigation, restores the default for an empty id and rejects unknown ids
+  with `Invalid timezone ID`. Other pages and CDP connections keep their own
+  zone (#6).
+- Checking a radio button from script (`radio.checked = true`) unchecks the
+  rest of its group, so a form no longer submits two values for one group.
+- `fetch --selector` narrows `--dump html|text|markdown|links` to the first
+  match, as documented, after waiting for it. A selector that never matches or
+  is not valid CSS exits non-zero; `assets`, `cookies` and `original` refuse
+  it (#12).
+- `fetch` says on stderr when its adaptive settle returned before timers due
+  within its ceiling (`note: 2 timers pending (next in 1.0s)`), and
+  `--settle-timers <MS>` waits for one-shot timers due within `MS`. The settle
+  rule is documented in the CLI reference (#13).
+- `scrape --eval` runs on the page after the same adaptive settle as
+  `fetch --eval`, instead of at the load event, and takes `--settle-timers`
+  too (#13).
+- Form submission sends the current `<select>` choice, not the markup default,
+  for `selectedIndex`, `value`, `option.selected` and multiple selects; MCP
+  `browser_fill_form` with a select submits the chosen option. `FormData` and
+  native submission share one entry list (disabled fieldsets and options, the
+  submit button, image-button coordinates, `form=` owners, textarea newlines)
+  (#1).
+- `select.selectedIndex` follows the specification (coercion, out of range or
+  -1 deselects, one selected option in a single select) (#2).
+- Text inputs and textareas have selection state: the caret starts at the end,
+  offsets clamp, `select()` and `setSelectionRange()` fire `select`, and
+  `setRangeText` works on an empty value. Over CDP, Ctrl/Cmd+A and the
+  `selectAll` command select all, a triple click selects the value, a double
+  click selects a word, and typing replaces the selection (#5).
+- Uncaught script errors and unhandled promise rejections appear as `[error]`
+  entries in MCP `browser_console_messages` and as CDP
+  `Runtime.exceptionThrown`, once each (#26).
+- OCR splits a wide image into equal columns with a 160 px overlap floor, so
+  tall lines are not cut at seams (a 9000x8000 image takes 24 requests, not
+  38), and drops misread seam fragments of lines another tile read whole (#9).
+- `media` extracts audio from AAC with more than two channels (5.1 and the
+  other AAC-LC channel configurations) instead of returning `audio: null`,
+  downmixed to mono with ITU-R BS.775 weights (centre and surrounds at 0.7071,
+  LFE dropped) and normalised so it cannot clip; mono and stereo output is
+  unchanged. Coupling-channel, program-config and HE-AAC tracks are still
+  skipped with a warning. The channel limits are lifted in patched copies of
+  `moq-audio` and `symphonia-codec-aac` under `vendor/` (#25).
+- `media` applies MP4 edit lists to video, audio and captions, so times start
+  at the edit start and audio stays aligned; a malformed edit list is ignored
+  with a warning instead of failing the file (#10).
+- `extract` refuses legacy `.doc`, `.ppt` and password-protected Office files
+  by name instead of as a broken spreadsheet (#23), prints spreadsheet dates
+  as ISO 8601 and reports formula cells with no stored result (#21), flags PDF
+  pages with images and no text as possibly scanned and keeps reading after a
+  page that fails (#24), follows PPTX presentation order and keeps ODP
+  page-number and placeholder fields out of the text (#22).
 - `fetch --eval` evaluates like the DevTools console, the same as MCP
   `browser_evaluate` and `scrape`: statements return their last value
   (`"var a = 1; a + 1"` is `2`), `{a: 1}` is an object, and a returned promise
@@ -53,9 +181,9 @@ All notable changes to Inbrowse are recorded here. The format follows
 - `EventTarget` is now its own base class, as in browsers, instead of an alias
   of `Node`. `Node` and the `window` global inherit from it, so
   `window instanceof EventTarget` holds and a method added to
-  `EventTarget.prototype` reaches `window`. YouTube's Shady DOM polyfill relies
-  on that and threw `window.__shady_native_addEventListener is not a function`,
-  so the page's components never rendered.
+  `EventTarget.prototype` reaches `window`. Web-component polyfills rely on
+  that: calling a saved `EventTarget` method on `window` threw "is not a
+  function", so the page's components never rendered.
 
 ## [0.3.0] - 2026-11-03
 

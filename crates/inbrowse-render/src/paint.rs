@@ -828,10 +828,32 @@ impl<'a> CanvasSurface<'a> {
     }
 }
 
-/// Paint-time lookup for dynamic canvas pixels. Implementations may retain a
-/// VM backing store, but the returned slice cannot escape the capture call.
+/// One child document to rasterize into an iframe's content box.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameRasterRequest {
+    /// The `iframe` element in the document being painted.
+    pub node: inbrowse_dom::tree::NodeId,
+    /// Content box size in whole CSS pixels. This is the child's viewport.
+    pub size: (u32, u32),
+    /// The part of the child viewport to rasterize, in viewport pixels at
+    /// scale 1. Only the part that reaches the capture is requested.
+    pub visible: CaptureRegion,
+    /// False when the capture uses the print-economy background policy.
+    pub paint_backgrounds: bool,
+}
+
+/// Paint-time lookup for content whose pixels the renderer does not own:
+/// dynamic canvas bitmaps and child documents hosted by iframes.
 pub trait CanvasSurfaceSource {
+    /// Implementations may retain a VM backing store, but the returned slice
+    /// cannot escape the capture call.
     fn surface(&self, node: inbrowse_dom::tree::NodeId) -> Option<CanvasSurface<'_>>;
+
+    /// Rasterize the document hosted by an iframe over a transparent surface.
+    /// The pixmap is `request.visible` in size. `None` leaves the frame empty.
+    fn frame_raster(&self, _request: FrameRasterRequest) -> Option<Pixmap> {
+        None
+    }
 }
 
 struct EmptyCanvasSurfaceSource;
@@ -3603,6 +3625,7 @@ fn paint_prepared_region_with_scroll_with_print_economy(
     resources: &mut RenderResourceCache,
     scroll: &ResolvedScrollState,
     region: CaptureRegion,
+    surface_color: [u8; 4],
     canvas_surfaces: &dyn CanvasSurfaceSource,
 ) -> Result<Pixmap, CaptureError> {
     paint_prepared_region_with_scroll_policy(
@@ -3612,7 +3635,7 @@ fn paint_prepared_region_with_scroll_with_print_economy(
         scroll,
         region,
         true,
-        [255, 255, 255, 255],
+        surface_color,
         canvas_surfaces,
     )
 }
@@ -3784,7 +3807,7 @@ fn native_raster_scale_supported(tree: &DomTree, laid: &crate::DomLayout) -> boo
             node.as_element().is_some_and(|name| {
                 matches!(
                     name.local.as_ref(),
-                    "img" | "picture" | "svg" | "canvas" | "video"
+                    "img" | "picture" | "svg" | "canvas" | "video" | "iframe"
                 )
             })
         })
@@ -5100,6 +5123,35 @@ fn paint_laid_dom_scrolled(
                     &mut pixmap,
                     radius.inset(content_insets),
                     element_clip_mask,
+                );
+            }
+        }
+
+        if box_on_surface && name.local.as_ref() == "iframe" {
+            // The hosted document paints inside the content box, never under
+            // the frame's own border or padding.
+            let content_insets = crate::Sides {
+                top: style.border.top + style.padding.top,
+                right: style.border.right + style.padding.right,
+                bottom: style.border.bottom + style.padding.bottom,
+                left: style.border.left + style.padding.left,
+            };
+            let content_rect = crate::Rect {
+                x: rect.x + content_insets.left,
+                y: rect.y + content_insets.top,
+                width: (rect.width - content_insets.left - content_insets.right).max(0.0),
+                height: (rect.height - content_insets.top - content_insets.bottom).max(0.0),
+            };
+            if let Some(content_visible) = content_rect.intersect(&visible_rect) {
+                paint_frame_content(
+                    nid,
+                    &content_rect,
+                    &content_visible,
+                    radius.inset(content_insets),
+                    element_clip_mask,
+                    !print_economy,
+                    &mut pixmap,
+                    canvas_surfaces,
                 );
             }
         }
@@ -7349,6 +7401,32 @@ pub fn screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surface
     paint_backgrounds: bool,
     canvas_surfaces: &dyn CanvasSurfaceSource,
 ) -> Result<Vec<u8>, CaptureError> {
+    paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces(
+        tree,
+        prepared,
+        resources,
+        scroll,
+        region,
+        paint_backgrounds,
+        [255, 255, 255, 255],
+        canvas_surfaces,
+    )?
+    .encode_png()
+    .map_err(|_| CaptureError::EncodeFailed)
+}
+
+/// Raster form of [`screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces`]
+/// over a caller-chosen surface color.
+pub fn paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces(
+    tree: &DomTree,
+    prepared: &mut PreparedRender,
+    resources: &mut RenderResourceCache,
+    scroll: &ResolvedScrollState,
+    region: CaptureRegion,
+    paint_backgrounds: bool,
+    surface_color: [u8; 4],
+    canvas_surfaces: &dyn CanvasSurfaceSource,
+) -> Result<Pixmap, CaptureError> {
     if paint_backgrounds {
         return paint_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces(
             tree,
@@ -7356,11 +7434,9 @@ pub fn screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surface
             resources,
             scroll,
             region,
-            [255, 255, 255, 255],
+            surface_color,
             canvas_surfaces,
-        )?
-        .encode_png()
-        .map_err(|_| CaptureError::EncodeFailed);
+        );
     }
 
     let snapshots = prepared
@@ -7375,9 +7451,9 @@ pub fn screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surface
         resources,
         scroll,
         region,
+        surface_color,
         canvas_surfaces,
-    )
-    .and_then(|pixmap| pixmap.encode_png().map_err(|_| CaptureError::EncodeFailed));
+    );
     for (node, snapshot) in snapshots {
         if let Some(style) = prepared.layout.styles.get_mut(&node) {
             snapshot.restore(style);
@@ -10420,6 +10496,122 @@ fn length_to_px(len: &str, viewport_width: f32) -> Option<f32> {
     num(&t)
 }
 
+/// The clip for a replaced surface drawn into `dest`: the inherited mask,
+/// narrowed to the visible content box when the surface overflows it or the
+/// box has rounded corners.
+fn replaced_surface_clip(
+    pixmap: &Pixmap,
+    dest: &crate::Rect,
+    visible_rect: &crate::Rect,
+    clip_radius: crate::ResolvedBorderRadii,
+    extra_clip: Option<&tiny_skia::Mask>,
+) -> Option<tiny_skia::Mask> {
+    let has_radius = !clip_radius.is_zero();
+    let needs_box_clip = has_radius
+        || dest.width > visible_rect.width + 0.5
+        || dest.height > visible_rect.height + 0.5
+        || dest.x < visible_rect.x - 0.5
+        || dest.y < visible_rect.y - 0.5;
+    let mut clip = extra_clip.cloned();
+    if needs_box_clip {
+        let path = if has_radius {
+            rounded_rect_path_radii(
+                visible_rect.x,
+                visible_rect.y,
+                visible_rect.width,
+                visible_rect.height,
+                clip_radius,
+            )
+        } else {
+            Rect::from_xywh(
+                visible_rect.x,
+                visible_rect.y,
+                visible_rect.width,
+                visible_rect.height,
+            )
+            .and_then(|rect| {
+                let mut builder = PathBuilder::new();
+                builder.push_rect(rect);
+                builder.finish()
+            })
+        };
+        match (clip.as_mut(), path) {
+            (Some(mask), Some(path)) => {
+                mask.intersect_path(&path, FillRule::Winding, true, Transform::identity())
+            }
+            (None, _) => {
+                clip = rounded_box_clip_mask_radii(
+                    pixmap.width(),
+                    pixmap.height(),
+                    visible_rect,
+                    clip_radius,
+                );
+            }
+            _ => {}
+        }
+    }
+    clip
+}
+
+/// Composite the document of an iframe into its content box. The content box
+/// snaps to whole pixels so the child raster is copied without resampling.
+/// Only the part that reaches the capture is rasterized.
+fn paint_frame_content(
+    node: inbrowse_dom::tree::NodeId,
+    content_rect: &crate::Rect,
+    visible_rect: &crate::Rect,
+    clip_radius: crate::ResolvedBorderRadii,
+    extra_clip: Option<&tiny_skia::Mask>,
+    paint_backgrounds: bool,
+    pixmap: &mut Pixmap,
+    frames: &dyn CanvasSurfaceSource,
+) -> bool {
+    let origin = (content_rect.x.round(), content_rect.y.round());
+    let size = (content_rect.width.round(), content_rect.height.round());
+    if size.0 < 1.0 || size.1 < 1.0 {
+        return false;
+    }
+    let Some(shown) = visible_rect
+        .intersect(&crate::Rect {
+            x: origin.0,
+            y: origin.1,
+            width: size.0,
+            height: size.1,
+        })
+        .and_then(|shown| shown.intersect(&paint_surface_rect(pixmap, 1.0)))
+    else {
+        return false;
+    };
+    let left = shown.x.floor();
+    let top = shown.y.floor();
+    let right = (shown.x + shown.width).ceil();
+    let bottom = (shown.y + shown.height).ceil();
+    let Some(raster) = frames.frame_raster(FrameRasterRequest {
+        node,
+        size: (size.0 as u32, size.1 as u32),
+        visible: CaptureRegion::new(left - origin.0, top - origin.1, right - left, bottom - top, 1.0),
+        paint_backgrounds,
+    }) else {
+        return false;
+    };
+    let dest = crate::Rect {
+        x: left,
+        y: top,
+        width: raster.width() as f32,
+        height: raster.height() as f32,
+    };
+    let clip = replaced_surface_clip(pixmap, &dest, &shown, clip_radius, extra_clip);
+    pixmap.draw_pixmap(
+        left as i32,
+        top as i32,
+        raster.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        clip.as_ref(),
+    );
+    true
+}
+
 fn paint_canvas_surface(
     surface: CanvasSurface<'_>,
     rect: &crate::Rect,
@@ -10467,50 +10659,7 @@ fn paint_canvas_surface(
         return false;
     }
 
-    let has_radius = !clip_radius.is_zero();
-    let needs_box_clip = has_radius
-        || dest.width > visible_rect.width + 0.5
-        || dest.height > visible_rect.height + 0.5
-        || dest.x < visible_rect.x - 0.5
-        || dest.y < visible_rect.y - 0.5;
-    let mut clip = extra_clip.cloned();
-    if needs_box_clip {
-        let path = if has_radius {
-            rounded_rect_path_radii(
-                visible_rect.x,
-                visible_rect.y,
-                visible_rect.width,
-                visible_rect.height,
-                clip_radius,
-            )
-        } else {
-            Rect::from_xywh(
-                visible_rect.x,
-                visible_rect.y,
-                visible_rect.width,
-                visible_rect.height,
-            )
-            .and_then(|rect| {
-                let mut builder = PathBuilder::new();
-                builder.push_rect(rect);
-                builder.finish()
-            })
-        };
-        match (clip.as_mut(), path) {
-            (Some(mask), Some(path)) => {
-                mask.intersect_path(&path, FillRule::Winding, true, Transform::identity())
-            }
-            (None, _) => {
-                clip = rounded_box_clip_mask_radii(
-                    pixmap.width(),
-                    pixmap.height(),
-                    visible_rect,
-                    clip_radius,
-                );
-            }
-            _ => {}
-        }
-    }
+    let clip = replaced_surface_clip(pixmap, &dest, visible_rect, clip_radius, extra_clip);
 
     let transform = Transform::from_row(
         dest.width / surface.width as f32,

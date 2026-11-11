@@ -89,6 +89,8 @@ pub struct CdpContext {
     pub runtime_enabled_sessions: HashSet<String>,
     /// Page.setLifecycleEventsEnabled subscriptions, independent of Runtime.
     pub(crate) lifecycle_enabled_sessions: HashSet<String>,
+    /// Sessions that called Performance.enable; getMetrics collects only for these.
+    pub(crate) performance_sessions: HashSet<String>,
     // Legacy direct-embedder configuration. Protocol-created worlds live only
     // in `page_isolated_worlds`, so this vector does not grow with page churn.
     pub isolated_worlds: Vec<String>,
@@ -197,6 +199,7 @@ impl CdpContext {
             binding_sessions: HashMap::new(),
             runtime_enabled_sessions: HashSet::new(),
             lifecycle_enabled_sessions: HashSet::new(),
+            performance_sessions: HashSet::new(),
             preload_counter: 0,
             fetch_intercept: FetchInterceptState::new(),
             intercept_tx: None,
@@ -372,6 +375,7 @@ impl CdpContext {
         for session_id in &removed_sessions {
             self.runtime_enabled_sessions.remove(session_id);
             self.lifecycle_enabled_sessions.remove(session_id);
+            self.performance_sessions.remove(session_id);
         }
         if let Some(context_ids) = self.page_contexts.remove(id) {
             for context_id in context_ids {
@@ -445,6 +449,22 @@ impl CdpContext {
                 self.valid_context_ids.remove(&id);
             }
         }
+        // The new document's child frames are new frames: a client drops the
+        // old ones when the main frame navigates, and each needs its own
+        // attach event and default context again.
+        self.announced_frames.remove(page_id);
+        self.allocate_frame_contexts(page_id, frame_id, origin)
+    }
+
+    /// The default context of a new document and the isolated worlds every new
+    /// document of the page gets, as a browser creates them for the scripts
+    /// and worlds a client registered.
+    pub(crate) fn allocate_frame_contexts(
+        &mut self,
+        page_id: &str,
+        frame_id: &str,
+        origin: &str,
+    ) -> Vec<ExecutionContextRecord> {
         let mut contexts = vec![self.allocate_context(page_id, frame_id, origin, "", true)];
         let mut worlds = self.isolated_worlds.clone();
         if let Some(page_worlds) = self.page_isolated_worlds.get(page_id) {
@@ -871,7 +891,8 @@ pub(crate) async fn dispatch_with_deferred(
         // Accepted but no-op. Puppeteer's FrameManager.initialize calls
         // Audits.enable on connect — refusing it breaks puppeteer.connect()
         // before any user code runs.
-        "Log" | "Performance" | "Security" | "CSS" | "ServiceWorker" | "Inspector" | "Debugger"
+        "Performance" => domains::performance::handle(method, &req.params, ctx, &req.session_id).await,
+        "Log" | "Security" | "CSS" | "ServiceWorker" | "Inspector" | "Debugger"
         | "Profiler" | "HeapProfiler" | "Overlay" | "Audits" => Ok(json!({})),
         _ => Err(format!("Unknown domain: {}", domain)),
     };
@@ -977,7 +998,7 @@ pub(crate) fn drain_runtime_events(ctx: &mut CdpContext) {
                             "timestamp": event.timestamp,
                             "exceptionDetails": {
                                 "exceptionId": event.exception_id,
-                                "text": "Uncaught",
+                                "text": if event.in_promise { "Uncaught (in promise)" } else { "Uncaught" },
                                 "lineNumber": event.line_number,
                                 "columnNumber": event.column_number,
                                 "scriptId": "",
@@ -1105,10 +1126,18 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
     for sessions in page_to_sessions.values_mut() {
         sessions.sort();
     }
+    // A frame whose iframe the command just removed is gone now, not at the
+    // next settle: release it so it is retracted below, in this drain.
+    for page in &mut ctx.pages {
+        if page_to_sessions.contains_key(&page.id) {
+            page.release_removed_frames();
+        }
+    }
 
     let mut events: Vec<CdpEvent> = Vec::new();
     let mut announced: HashMap<String, Vec<String>> = HashMap::new();
     let mut detached = Vec::new();
+    let mut attached = Vec::new();
     for page in &ctx.pages {
         let Some(session_ids) = page_to_sessions.get(&page.id) else {
             continue;
@@ -1125,6 +1154,11 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
             if known.is_some_and(|ids| ids.iter().any(|seen| seen == id)) {
                 continue;
             }
+            attached.push((
+                page.id.clone(),
+                id.to_string(),
+                frame["securityOrigin"].as_str().unwrap_or("null").to_string(),
+            ));
             for session_id in session_ids {
                 // Attach before navigate: a client builds its frame from the
                 // attach event and treats a navigation of a frame it has never
@@ -1160,6 +1194,20 @@ pub(crate) fn drain_frame_events(ctx: &mut CdpContext) {
             }
         }
         announced.insert(page.id.clone(), live_ids);
+    }
+    // Every frame has a default execution context and the page's isolated
+    // worlds, announced after the frame itself: a client drops a context whose
+    // frame it has not seen attach.
+    for (page_id, frame_id, origin) in attached {
+        let contexts = ctx.allocate_frame_contexts(&page_id, &frame_id, &origin);
+        for session_id in ctx.runtime_sessions_for_page(&page_id) {
+            for context in &contexts {
+                events.push(crate::domains::runtime::execution_context_created_event(
+                    context,
+                    Some(session_id.clone()),
+                ));
+            }
+        }
     }
     for (page_id, frame_id, page_sessions) in detached {
         let removed = ctx.remove_frame_contexts(&page_id, &frame_id);

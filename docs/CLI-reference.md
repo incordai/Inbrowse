@@ -26,9 +26,11 @@ Load a URL and print its content or an evaluated expression.
 ```
     --dump <FORMAT>          html | text | links | markdown | original | assets | cookies
                              (default html)
-    --selector <CSS>         Narrow output to a CSS selector
+    --selector <CSS>         Wait for a CSS selector, then narrow output to its first match
     --wait <SECONDS>         Fixed post-load delay; omitted uses adaptive settle (5s cap)
     --timeout <SECONDS>      Navigation timeout (default 30)
+    --script-timeout <SECONDS>  Time one page script may run (default 5)
+    --settle-timers <MS>     Also wait for setTimeout timers due within MS (adaptive settle)
     --wait-until <LEVEL>     domcontentloaded | load | networkidle2 | networkidle0
                              (default load)
     --user-agent <UA>        Override the User-Agent
@@ -55,14 +57,43 @@ Load a URL and print its content or an evaluated expression.
 - A thrown error, a rejected promise, a syntax error or a timeout prints the
   JavaScript error on stderr and exits non-zero. Nothing is printed on stdout.
 
+`--selector` waits up to the settle ceiling for the selector to match, then
+narrows `--dump html` (the element's outer HTML), `text`, `markdown` and
+`links` to the first match. A selector that never matches, or is not valid CSS,
+exits non-zero with the reason on stderr. It cannot narrow `assets`, `cookies`
+or `original`, and is refused with those. With `--screenshot` it only waits.
+With `--eval`, the expression runs first and the narrowed page is printed (as
+with `--dump`).
+
 `--screenshot` requires a render-enabled build. It uses a 1280×720 viewport by
 default and may be combined with `--eval`; the expression runs before capture,
 which is useful for scrolling or preparing page state. It is not available in
 `--file` batch mode.
 
+A page script still running after `--script-timeout` (or
+`INBROWSE_SCRIPT_TIMEOUT_MS`) is stopped and the page's other scripts keep
+running. All of a document's scripts together get the shorter of 30 seconds
+(`INBROWSE_SCRIPT_DEADLINE_MS`) and `--timeout`. Each stopped script, and any
+scripts skipped because that phase ran out, is reported on stderr as a
+`Warning:` line, even with `--quiet`, because the page did not finish loading
+as written. `scrape` reports the same lines in a URL's `warnings` field.
+
 When `--wait` is omitted, Inbrowse drives timers and async work until the page
-becomes quiescent, with a five-second ceiling. Supplying `--wait N` instead
-requests a fixed `N`-second delay. `--timeout` separately bounds navigation.
+becomes quiescent, with a five-second ceiling. Quiescent means 150 ms with no
+document change, plus:
+
+- network requests and dynamically added scripts count as work for the first
+  second after load, so an app's first fetch and render are waited for;
+- one-shot timers (`setTimeout`) count only when due within 300 ms, and only
+  during the first 500 ms; intervals never count, since they never finish.
+
+So a page that renders after a longer timer (a 1.5 s `setTimeout`) is read
+before it. When that happens, stderr gets a line such as
+`note: 2 timers pending (next in 1.0s); ...` (left out with `--quiet`).
+`--settle-timers MS` also waits for every one-shot timer due within `MS` of the
+settle start, raising the ceiling to cover `MS` when it is longer than five
+seconds. Supplying `--wait N` instead requests a fixed `N`-second delay, which
+runs every timer due in that time. `--timeout` separately bounds navigation.
 
 `--dump` values:
 
@@ -106,10 +137,12 @@ Default endpoint is `ws://127.0.0.1:9222`.
 Run a JS expression across many URLs in parallel.
 
 ```
--e, --eval <JS>              JS to run on each page
+-e, --eval <JS>              JS to run on each page (same reading as fetch --eval)
+    --file <PATH|->          Also read URLs from a file, or from stdin with -
     --concurrency <N>        Parallel pages (default 10)
     --format <FORMAT>        Output format (default json)
     --timeout <SECONDS>      Per-URL timeout (default 60)
+    --settle-timers <MS>     Also wait for setTimeout timers due within MS
     --proxy <URL>            HTTP or SOCKS5 proxy
     --stealth                Consistent browser fingerprint + tracker blocking (global)
     --allow-private-network  Permit loopback / RFC1918 / link-local
@@ -119,11 +152,21 @@ Run a JS expression across many URLs in parallel.
 
 `--stealth`, `--proxy`, and `--allow-private-network` are global flags: they work before or after any subcommand, so each worker in a `scrape` run inherits stealth too.
 
-Read URLs from stdin with `-`:
+Read URLs from stdin with `-` (one per line; blank lines and lines starting
+with `#` are skipped). Positional URLs and `--file` lists are combined; stdin
+can be named only once:
 
 ```bash
 cat urls.txt | inbrowse scrape - --eval "document.title" --concurrency 20
+inbrowse scrape --file urls.txt https://example.com/extra
 ```
+
+Each page settles after load the way `fetch` without `--wait` does (until
+quiet, five-second ceiling, see `fetch`), so `--eval` reads the same page
+`fetch --eval` would. `--settle-timers` works as on `fetch`.
+
+A URL whose evaluation throws, rejects or times out gets an `error` field with
+the JavaScript error next to its `url` and `title`; the other URLs still run.
 
 Requires `inbrowse-worker` next to `inbrowse` in `PATH`.
 
@@ -138,10 +181,16 @@ Run inbrowse as an MCP server.
     --port <PORT>            HTTP port (default 3000)
     --proxy <URL>            HTTP or SOCKS5 proxy
     --user-agent <UA>        Override the User-Agent
+    --idle-timeout <SECS>    Close pages after this long with no request (default 300, 0 = never)
     --stealth                Consistent browser fingerprint + tracker blocking (global)
     --allow-private-network  Permit loopback / RFC1918 / link-local
 -v, --verbose                Enable info logging
 ```
+
+The first tool call that needs a page opens the browser. After
+`--idle-timeout` seconds with no MCP request the server closes every page;
+cookies and storage are kept, and the next call opens a new page and says the
+old one was closed.
 
 `--host` only applies with `--http`. The default `127.0.0.1` keeps the server loopback-only. A non-loopback bind requires `INBROWSE_MCP_TOKEN` (at least 32 bytes); use `INBROWSE_MCP_ALLOWED_ORIGINS` as well when a browser-based client needs access.
 
@@ -156,11 +205,13 @@ Print the text of one document as JSON. Reads PDF, Word (`.docx`),
 PowerPoint (`.pptx`), OpenDocument text and presentations (`.odt`, `.odp`),
 spreadsheets (`.xlsx`, `.xlsb`, `.xls`, `.ods`), CSV and plain text. The format
 is recognised from the file's bytes, not its name. Legacy `.doc` and `.ppt`
-files are not supported.
+files are not supported and are refused by name (`legacy Word .doc file;
+convert it to .docx`), as are password-protected Office files.
 
 ```
     --hint <NAME|MIME>       Mark plain text as CSV (defaults to the
                              Content-Type or file name)
+    --password <PASSWORD>    Password for an encrypted PDF
     --timeout <SECS>         Download plus extraction (default 60)
 -o, --output <FILE>          Write the JSON to a file
 ```
@@ -171,12 +222,42 @@ inbrowse extract https://example.com/prices.xlsx -o prices.json
 ```
 
 ```json
-{"format":"pdf","text":"…","sections":[{"kind":"page","name":"Page 1","text":"…"}]}
+{"format":"pdf","text":"…","sections":[{"kind":"page","name":"Page 1","text":"…"}],"warnings":[]}
 ```
 
 `sections` has one entry per page (PDF), slide (PPTX, ODP), sheet
-(spreadsheets, cells tab-separated) or a single `body`. `text` joins every
-section with a blank line.
+(spreadsheets) or a single `body`. `text` joins every section with a blank
+line. Tables (Word, PowerPoint, OpenDocument) and sheets come out as rows on
+separate lines with cells separated by tabs; a merged cell is followed by empty
+cells so columns stay aligned, and a table inside a cell is folded into that
+cell. Spreadsheet dates and times are ISO 8601 (`2026-11-09`,
+`2026-11-09T12:00:00`), and elapsed times are `36:00:00`.
+
+Content that hangs off the main text is a separate section after it, so a
+caller can keep or drop it by `kind`:
+
+| `kind` | `name` | Source |
+| --- | --- | --- |
+| `header`, `footer` | `Header`, `Footer` (numbered when several differ) | DOCX headers and footers; identical and empty ones are dropped |
+| `footnotes`, `endnotes`, `comments` | `Footnotes`, `Endnotes`, `Comments` | DOCX |
+| `notes` | `Slide N notes`, right after `Slide N` | PPTX and ODP speaker notes |
+
+PPTX slides follow the order in the presentation, and slide-number, header,
+footer and date placeholders are left out (so are ODP page-number fields).
+Slides ODP has not named are `Slide N`.
+
+`warnings` is always present: strings of the form `code: message` for content
+that was skipped or is probably missing. An empty list means nothing was lost.
+
+| Code | Meaning |
+| --- | --- |
+| `no_text_layer` | A PDF page with images and no text; it may be scanned (the command does not run OCR) |
+| `page_failed` | A PDF page could not be read; the pages after it still are |
+| `no_cached_value` | Formula cells with no stored result, as written by libraries that do not calculate; they print empty |
+| `part_missing` | A part the package lists (header, notes page, slide) is not in the file |
+| `part_skipped` | A part could not be parsed and was left out |
+| `formulas_unreadable` | The formulas of a sheet could not be checked for stored results |
+| `password_ignored` | `--password` was given for a file that is not a PDF |
 
 URLs are downloaded like `fetch --dump original`, so `--proxy`, `--stealth`,
 `--user-agent` and the private-network block apply. Documents are untrusted:

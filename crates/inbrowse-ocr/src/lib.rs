@@ -195,6 +195,15 @@ struct Rect {
     h: u32,
 }
 
+/// A line the engine read in one tile, in whole-image coordinates. `piece`
+/// numbers the tile reads in order; [`merge`] only compares lines of
+/// different pieces.
+struct Found {
+    piece: usize,
+    tile: Rect,
+    line: Line,
+}
+
 impl fmt::Display for Rect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}x{} at {},{}", self.w, self.h, self.x, self.y)
@@ -316,7 +325,7 @@ impl Client {
             OcrError::Rejected(format!("could not prepare the image: {e}"))
         })?);
         let mut queue: VecDeque<Rect> = plan(width, height, &self.limits).into();
-        let mut found: Vec<(usize, Line)> = Vec::new();
+        let mut found: Vec<Found> = Vec::new();
         let mut warnings = Vec::new();
         let mut model = None;
         let mut read = 0usize;
@@ -351,7 +360,7 @@ impl Client {
                     for mut line in r.lines {
                         line.bbox[0] = line.bbox[0].saturating_add(rect.x);
                         line.bbox[1] = line.bbox[1].saturating_add(rect.y);
-                        found.push((piece, line));
+                        found.push(Found { piece, tile: rect, line });
                     }
                     warnings.extend(r.warnings.into_iter().map(|w| format!("region {rect}: {w}")));
                 }
@@ -558,39 +567,85 @@ async fn encode_region(rgb: Arc<RgbImage>, rect: Rect) -> Result<Vec<u8>, String
     .map_err(|e| format!("tile task failed: {e}"))?
 }
 
+/// The least overlap between neighbouring tiles: a line of large text (about
+/// 160 px tall) then lies whole inside one of the two, so a seam never leaves
+/// only fragments of it.
+const MIN_OVERLAP: u32 = 160;
+
+/// How far two neighbouring tiles overlap along a side of `len` px: a tenth of
+/// it, at least [`MIN_OVERLAP`], but never more than a quarter of a small
+/// tile. Used by [`side_for`] for [`plan`] and by [`split`].
 fn overlap(len: u32) -> u32 {
-    (len / 10).max(32).min(len / 2)
+    (len / 10).max(MIN_OVERLAP.min(len / 4))
 }
 
-/// Start offsets of `size`-long windows covering `total`, overlapping.
-fn starts(total: u32, size: u32) -> Vec<u32> {
-    if size >= total {
+/// The side of the equal tiles that cover `total` px with `n` windows, each
+/// neighbouring pair overlapping by [`overlap`] of that side. Called by
+/// [`plan`] for both axes.
+fn side_for(total: u32, n: u32) -> u32 {
+    let mut side = total.div_ceil(n);
+    loop {
+        let need = (total as u64 + (n as u64 - 1) * overlap(side) as u64).div_ceil(n as u64) as u32;
+        if need <= side {
+            return side;
+        }
+        side = need;
+    }
+}
+
+/// Start offsets of `n` windows of `side` px spread evenly over `total`, the
+/// last one ending exactly at `total`. `side` comes from [`side_for`].
+fn offsets(total: u32, n: u32, side: u32) -> Vec<u32> {
+    if n <= 1 {
         return vec![0];
     }
-    let step = (size - overlap(size)).max(1);
-    let mut out = Vec::new();
-    let mut at = 0;
-    while at + size < total {
-        out.push(at);
-        at += step;
-    }
-    out.push(total - size);
-    out
+    (0..n).map(|i| ((total - side) as u64 * i as u64 / (n - 1) as u64) as u32).collect()
 }
 
-/// Tiles covering the image: full-width strips when the width allows, so
-/// text lines are cut across rather than along.
-fn plan(width: u32, height: u32, limits: &Limits) -> Vec<Rect> {
-    let w = width.min(limits.tile_max_width).max(1);
-    let h = ((limits.tile_pixels / w as u64) as u32).max(limits.min_side).min(height).max(1);
-    let w = w.min(width);
-    let mut out = Vec::new();
-    for y in starts(height, h) {
-        for x in starts(width, w) {
-            out.push(Rect { x, y, w, h });
-        }
+/// The fewest windows of at most `max_side` px covering `total`, with their
+/// side; `(1, total)` when it fits whole. Called by [`plan`] for the rows.
+fn windows(total: u32, max_side: u32) -> (u32, u32) {
+    if total <= max_side {
+        return (1, total);
     }
-    out
+    let mut n = total.div_ceil(max_side);
+    loop {
+        let side = side_for(total, n);
+        if side <= max_side {
+            return (n, side);
+        }
+        n += 1;
+    }
+}
+
+/// Tiles covering the image: a grid of equal tiles, each at most
+/// `tile_max_width` wide and `tile_pixels` in area, neighbours overlapping by
+/// [`overlap`]. Of the column counts that fit it takes the grid with the
+/// fewest tiles (every tile is a request and every seam a chance to cut a
+/// line), then the one with the shortest tile sides, which is the most
+/// square. Called by [`Client::tiled`].
+fn plan(width: u32, height: u32, limits: &Limits) -> Vec<Rect> {
+    let (width, height) = (width.max(1), height.max(1));
+    let max_w = limits.tile_max_width.max(1);
+    let mut best: Option<((u32, u32), Vec<u32>, Vec<u32>, u32, u32)> = None;
+    let mut cols = width.div_ceil(max_w);
+    loop {
+        let w = side_for(width, cols);
+        if w <= max_w {
+            let rows_max = (limits.tile_pixels / w as u64).min(u32::MAX as u64) as u32;
+            let (rows, h) = windows(height, rows_max.max(limits.min_side).max(1));
+            let key = (cols * rows, w + h);
+            if best.as_ref().is_none_or(|b| key < b.0) {
+                best = Some((key, offsets(width, cols, w), offsets(height, rows, h), w, h));
+            }
+        }
+        if cols >= width || (w <= limits.min_side && w <= max_w) {
+            break;
+        }
+        cols += 1;
+    }
+    let Some((_, xs, ys, w, h)) = best else { return Vec::new() };
+    ys.iter().flat_map(|&y| xs.iter().map(move |&x| Rect { x, y, w, h })).collect()
 }
 
 /// Halve the longer side, overlapping; `None` below `min_side`.
@@ -644,23 +699,53 @@ fn same_line(a: &Line, b: &Line) -> bool {
     short == long || (short.chars().count() >= 3 && long.contains(short.as_str()))
 }
 
-/// Drop seam duplicates (only between different tiles; longer, then more
-/// confident readings win) and put the rest in reading order.
-fn merge(mut found: Vec<(usize, Line)>) -> Vec<Line> {
+/// How close to the edge of its tile a line's box must come to count as
+/// cut by it: engines pad boxes by a pixel or two.
+const EDGE_SLACK: u32 = 4;
+
+/// Whether `line`, found in `tile`, reaches one of the tile's edges, where
+/// the tile may have cut it.
+fn touches_edge(line: &Line, tile: &Rect) -> bool {
+    let [x, y, w, h] = line.bbox;
+    x <= tile.x.saturating_add(EDGE_SLACK)
+        || y <= tile.y.saturating_add(EDGE_SLACK)
+        || x.saturating_add(w) >= (tile.x + tile.w).saturating_sub(EDGE_SLACK)
+        || y.saturating_add(h) >= (tile.y + tile.h).saturating_sub(EDGE_SLACK)
+}
+
+/// A fragment of a line that another tile read whole: `line` reaches the edge
+/// of its own tile and its box lies almost entirely inside the larger box of
+/// a line from a different tile, whatever either text says (a cut line is
+/// often misread, so the texts do not match). Called by [`merge`].
+fn is_seam_fragment(found: &Found, others: &[&Found]) -> bool {
+    touches_edge(&found.line, &found.tile)
+        && others.iter().any(|o| {
+            o.piece != found.piece
+                && area(&o.line.bbox) > area(&found.line.bbox)
+                && intersection(&o.line.bbox, &found.line.bbox) as f64 >= 0.8 * area(&found.line.bbox) as f64
+        })
+}
+
+/// Drop seam duplicates and fragments (only between different tiles; longer,
+/// then more confident readings win) and put the rest in reading order.
+/// Called by [`Client::tiled`].
+fn merge(mut found: Vec<Found>) -> Vec<Line> {
     found.sort_by(|a, b| {
-        b.1.text
+        b.line
+            .text
             .chars()
             .count()
-            .cmp(&a.1.text.chars().count())
-            .then(b.1.confidence.total_cmp(&a.1.confidence))
+            .cmp(&a.line.text.chars().count())
+            .then(b.line.confidence.total_cmp(&a.line.confidence))
     });
-    let mut kept: Vec<(usize, Line)> = Vec::new();
-    for (piece, line) in found {
-        if !kept.iter().any(|(p, k)| *p != piece && same_line(k, &line)) {
-            kept.push((piece, line));
+    let mut kept: Vec<&Found> = Vec::new();
+    for f in &found {
+        if !kept.iter().any(|k| k.piece != f.piece && same_line(&k.line, &f.line)) {
+            kept.push(f);
         }
     }
-    let mut lines: Vec<Line> = kept.into_iter().map(|(_, l)| l).collect();
+    let survivors: Vec<&Found> = kept.iter().copied().filter(|f| !is_seam_fragment(f, &kept)).collect();
+    let mut lines: Vec<Line> = survivors.into_iter().map(|f| f.line.clone()).collect();
     lines.sort_by_key(|l| (l.bbox[1] as u64 * 2 + l.bbox[3] as u64, l.bbox[0]));
     // Rows: a line whose vertical middle falls inside the row's first line.
     let mut ordered = Vec::with_capacity(lines.len());
@@ -695,9 +780,10 @@ mod tests {
     fn plan_covers_the_image_with_overlap() {
         let limits = Limits { tile_pixels: 6_000, tile_max_width: 100, min_side: 16, ..Limits::default() };
         let tiles = plan(300, 60, &limits);
+        // Four equal columns, evenly spread, the last ending at the edge.
         let xs: Vec<u32> = tiles.iter().map(|t| t.x).collect();
-        assert_eq!(xs, vec![0, 68, 136, 200]);
-        assert!(tiles.iter().all(|t| t.w == 100 && t.h == 60 && t.y == 0));
+        assert_eq!(xs, vec![0, 69, 138, 207]);
+        assert!(tiles.iter().all(|t| t.w == 93 && t.h == 60 && t.y == 0));
         // Every column is inside at least one tile.
         for x in 0..300 {
             assert!(tiles.iter().any(|t| x >= t.x && x < t.x + t.w), "column {x}");
@@ -705,28 +791,160 @@ mod tests {
         assert_eq!(plan(50, 40, &limits), vec![Rect { x: 0, y: 0, w: 50, h: 40 }]);
     }
 
+    /// Asserts `tiles` cover `width` x `height` as a grid whose neighbours
+    /// overlap by at least `floor` on each axis, and returns the grid's
+    /// (columns, rows).
+    fn assert_grid(tiles: &[Rect], width: u32, height: u32, floor: u32) -> (usize, usize) {
+        let mut xs: Vec<u32> = tiles.iter().map(|t| t.x).collect();
+        let mut ys: Vec<u32> = tiles.iter().map(|t| t.y).collect();
+        xs.sort_unstable();
+        xs.dedup();
+        ys.sort_unstable();
+        ys.dedup();
+        assert_eq!(tiles.len(), xs.len() * ys.len(), "not a full grid");
+        let (w, h) = (tiles[0].w, tiles[0].h);
+        assert!(tiles.iter().all(|t| t.w == w && t.h == h), "tiles differ in size");
+        assert_eq!((xs[0], ys[0]), (0, 0));
+        assert_eq!((xs[xs.len() - 1] + w, ys[ys.len() - 1] + h), (width, height));
+        for pair in xs.windows(2) {
+            assert!(pair[0] + w >= pair[1] + floor, "columns {pair:?} overlap less than {floor}");
+        }
+        for pair in ys.windows(2) {
+            assert!(pair[0] + h >= pair[1] + floor, "rows {pair:?} overlap less than {floor}");
+        }
+        (xs.len(), ys.len())
+    }
+
+    /// An image just over the width limit used to get two max-width columns
+    /// 808 px apart (every row read twice) and strips only 48 px overlapped.
+    #[test]
+    fn plan_just_over_the_width_limit_has_equal_columns_and_real_overlaps() {
+        let limits = Limits::default();
+        let tiles = plan(9000, 8000, &limits);
+        assert!(tiles.iter().all(|t| t.w <= limits.tile_max_width));
+        assert!(tiles.iter().all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
+        let (cols, rows) = assert_grid(&tiles, 9000, 8000, MIN_OVERLAP);
+        // No column is redundant: removing any would leave a gap, so no tile
+        // sits mostly inside its neighbour.
+        let w = tiles[0].w;
+        let mut xs: Vec<u32> = tiles.iter().map(|t| t.x).collect();
+        xs.sort_unstable();
+        xs.dedup();
+        for pair in xs.windows(2) {
+            assert!(pair[1] - pair[0] >= w / 2, "columns {pair:?} read the same pixels twice");
+        }
+        // Far fewer requests than the 38 (2 x 19 strips) of before.
+        assert!(cols * rows <= 24, "{cols} x {rows}");
+        // Tall text: every band of `MIN_OVERLAP` rows lies whole inside some tile row.
+        let h = tiles[0].h;
+        let mut ys: Vec<u32> = tiles.iter().map(|t| t.y).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        for y in (0..8000 - MIN_OVERLAP).step_by(37) {
+            assert!(ys.iter().any(|&t| y >= t && y + MIN_OVERLAP <= t + h), "band at {y} is cut");
+        }
+    }
+
+    #[test]
+    fn plan_prefers_the_grid_with_fewer_tiles_and_shorter_seams() {
+        let limits = Limits::default();
+        // Narrow and tall: full-width strips (one column), as a document.
+        let tiles = plan(1200, 30_000, &limits);
+        assert!(tiles.iter().all(|t| t.x == 0 && t.w == 1200));
+        assert_grid(&tiles, 1200, 30_000, MIN_OVERLAP);
+        // Wide and short fits one row of near-square-or-wider tiles.
+        let tiles = plan(30_000, 600, &limits);
+        assert!(tiles.iter().all(|t| t.h == 600 && t.w <= limits.tile_max_width));
+        assert_grid(&tiles, 30_000, 600, MIN_OVERLAP);
+        // The largest image the engine accepts: every limit holds.
+        let tiles = plan(8000, 8000, &limits);
+        assert!(tiles.iter().all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
+        assert_grid(&tiles, 8000, 8000, MIN_OVERLAP);
+    }
+
+    #[test]
+    fn overlap_has_a_floor_that_small_tiles_cannot_exceed() {
+        assert_eq!(overlap(8192), 819);
+        assert_eq!(overlap(1000), MIN_OVERLAP);
+        assert_eq!(overlap(488), 122);
+        assert_eq!(overlap(100), 25);
+        assert_eq!(overlap(3), 0);
+    }
+
     #[test]
     fn split_halves_with_overlap_and_stops_at_the_floor() {
         let [a, b] = split(Rect { x: 10, y: 0, w: 120, h: 40 }, 16).unwrap();
-        assert_eq!((a.x, a.w), (10, 76));
-        assert_eq!((b.x, b.w), (54, 76));
-        // 40 halves to 30 with overlap: allowed at a floor of 30, not 31.
-        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 30).is_some());
-        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 31).is_none());
+        assert_eq!((a.x, a.w), (10, 75));
+        assert_eq!((b.x, b.w), (55, 75));
+        // 40 halves to 25 with overlap: allowed at a floor of 25, not 26.
+        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 25).is_some());
+        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 26).is_none());
+    }
+
+    fn found(piece: usize, tile: Rect, text: &str, bbox: [u32; 4], confidence: f32) -> Found {
+        Found { piece, tile, line: line(text, bbox, confidence) }
     }
 
     #[test]
     fn merge_drops_seam_copies_and_orders_rows() {
+        let tile = Rect { x: 0, y: 0, w: 200, h: 100 };
         let found = vec![
-            (1, line("world", [60, 10, 30, 10], 0.9)),
-            (1, line("Hello wor", [0, 10, 55, 10], 0.8)),
-            (2, line("Hello world", [0, 10, 90, 10], 0.7)),
-            (2, line("second", [5, 40, 40, 10], 0.9)),
+            found(1, tile, "world", [60, 10, 30, 10], 0.9),
+            found(1, tile, "Hello wor", [0, 10, 55, 10], 0.8),
+            found(2, tile, "Hello world", [0, 10, 90, 10], 0.7),
+            found(2, tile, "second", [5, 40, 40, 10], 0.9),
             // Same tile: never merged even when it looks the same.
-            (2, line("second", [6, 41, 40, 10], 0.5)),
+            found(2, tile, "second", [6, 41, 40, 10], 0.5),
         ];
         let lines = merge(found);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, vec!["Hello world", "second", "second"]);
+    }
+
+    /// A tile that starts mid-line reads the line's tail as something else
+    /// ("FE TEXT" for "HUGE IMAGE TEXT"), so the texts share nothing; the box
+    /// gives it away.
+    #[test]
+    fn merge_drops_misread_seam_fragments_by_box() {
+        let left = Rect { x: 0, y: 0, w: 5200, h: 900 };
+        let right = Rect { x: 4000, y: 0, w: 5000, h: 900 };
+        let lines = merge(vec![
+            found(1, left, "HUGE IMAGE TEXT", [3600, 100, 1500, 160], 0.9),
+            // Right tile starts at x = 4000 inside the line: its read of the
+            // line's tail is cut at the tile's left edge.
+            found(2, right, "FE TEXT", [4000, 100, 1100, 160], 0.4),
+        ]);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["HUGE IMAGE TEXT"]);
+
+        // The same across a horizontal seam: the upper tile ends at y = 900,
+        // cutting a tall line, and reads a longer garbage string off the slice.
+        let upper = Rect { x: 4000, y: 0, w: 5000, h: 900 };
+        let lower = Rect { x: 4000, y: 700, w: 5000, h: 900 };
+        let lines = merge(vec![
+            found(1, upper, "an mye ER RL = -_, ee ee CO eee", [4300, 780, 1500, 120], 0.2),
+            found(2, lower, "CORNER TEXT", [4300, 780, 1500, 160], 0.9),
+        ]);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["CORNER TEXT"]);
+    }
+
+    #[test]
+    fn merge_keeps_a_contained_line_that_no_tile_edge_cut() {
+        let left = Rect { x: 0, y: 0, w: 1000, h: 900 };
+        let right = Rect { x: 800, y: 0, w: 1000, h: 900 };
+        // A small caption inside a big line, well inside its own tile: real text.
+        let lines = merge(vec![
+            found(1, left, "BANNER", [850, 300, 100, 200], 0.9),
+            found(2, right, "note", [900, 400, 40, 20], 0.9),
+        ]);
+        assert_eq!(lines.len(), 2);
+        // A box touching its tile's edge but only inside a line of its own
+        // tile (never compared with it): also kept.
+        let lines = merge(vec![
+            found(1, left, "BANNER", [0, 300, 100, 200], 0.9),
+            found(1, left, "ed", [2, 400, 40, 20], 0.9),
+        ]);
+        assert_eq!(lines.len(), 2);
     }
 }

@@ -1928,6 +1928,28 @@ fn text_alignment_does_not_shrink_block_children_or_wrap_inline_block_rows() {
     );
 }
 
+/// Replaced elements are inline-level by default (HTML UA sheet), so an image,
+/// a canvas, a video and a frame written next to each other share one line.
+#[test]
+fn replaced_elements_share_a_line_by_default() {
+    let tree = parse_html(
+        r#"<style>html,body{margin:0}</style>
+        <div id="host"><img id="img" width="40" height="40"><canvas id="cv" width="50" height="50"></canvas><video id="vid" width="30" height="20"></video><iframe id="fr" width="60" height="30"></iframe></div>"#,
+    );
+    let laid = layout_dom(&tree, (800.0, 400.0));
+    let rect = |id| laid.rects[&tree.get_element_by_id(id).unwrap()];
+    let (img, canvas, video, frame) = (rect("img"), rect("cv"), rect("vid"), rect("fr"));
+    assert!(canvas.x >= img.x + img.width - 0.01, "canvas follows the image: {img:?} {canvas:?}");
+    assert!(video.x >= canvas.x + canvas.width - 0.01, "video follows the canvas: {canvas:?} {video:?}");
+    assert!(frame.x >= video.x + video.width - 0.01, "frame follows the video: {video:?} {frame:?}");
+    let line_bottom = img.y + img.height;
+    for (name, r) in [("canvas", canvas), ("video", video), ("frame", frame)] {
+        assert!(r.y < line_bottom + 20.0, "{name} must stay on the first line: {img:?} {r:?}");
+    }
+    let host = rect("host");
+    assert!(host.height < 80.0, "one line box holds all four: {host:?}");
+}
+
 #[test]
 fn non_replaced_inline_ignores_used_width_height_and_min_max_sizes() {
     let tree = parse_html(

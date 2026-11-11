@@ -26,102 +26,182 @@ fn ax_value_integer(i: u32) -> Value {
     json!({"type": "integer", "value": i})
 }
 
-/// Walk the full DOM tree and produce CDP Accessibility AXNode array.
+/// Build a CDP AXNode for each DOM node that is rendered, linked into one tree.
 #[cfg(test)]
 fn build_ax_nodes(dom: &DomTree) -> Vec<Value> {
-    build_ax_nodes_with_styles(dom, &HashMap::new())
+    build_ax_tree(dom, &HashMap::new(), None).nodes(None)
 }
 
-/// Build the visible AX tree using optional computed styles from the renderer.
-pub fn build_ax_nodes_with_styles(
+/// The AX id of a DOM node. Derived from the DOM id so it is stable across
+/// calls and a client can pass it back to `getChildAXNodes`.
+fn ax_node_id(id: NodeId) -> String {
+    (u64::from(id.raw()) + 1).to_string()
+}
+
+fn dom_node_of(ax_id: &str) -> Option<NodeId> {
+    let index = ax_id.parse::<u64>().ok()?.checked_sub(1)?;
+    u32::try_from(index).ok().map(NodeId::new)
+}
+
+/// One AX node with its tree links; `node` is the CDP form, links included.
+struct AxEntry {
+    parent: Option<usize>,
+    children: Vec<usize>,
+    depth: u32,
+    node: Value,
+}
+
+/// The accessibility tree of one document, in document order. Entries are the
+/// DOM tree minus what is not rendered, so every node is reachable from the
+/// root and each link is mirrored (`parentId` and `childIds`).
+pub struct AccessibilityTree {
+    entries: Vec<AxEntry>,
+    by_dom: HashMap<NodeId, usize>,
+}
+
+/// Build the AX tree using optional computed styles from the renderer.
+///
+/// Nodes that are not rendered (`display: none`, the `hidden` attribute, head
+/// and script content) are left out with their subtrees. Nodes that are
+/// rendered but hidden from assistive technology stay in the tree as ignored
+/// nodes with Chrome's reasons, so the links around them hold.
+pub fn build_ax_tree(
     dom: &DomTree,
     styles: &HashMap<NodeId, AccessibilityStyle>,
-) -> Vec<Value> {
-    let mut nodes: Vec<Value> = Vec::new();
-    let mut id_counter: u32 = 0;
-    // Map DOM NodeId → AX string id, populated only for nodes actually in the AX tree
-    let mut dom_to_ax: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-
+    frame_id: Option<&str>,
+) -> AccessibilityTree {
     let document = dom.document();
+    let mut ids: Vec<NodeId> = vec![document];
+    ids.extend(dom.descendants(document));
+    let context = AccessibilityContext::new(dom, &ids, styles);
 
-    // Collect all DOM nodes in tree order (root + descendants)
-    let mut all_dom_ids: Vec<NodeId> = vec![document];
-    all_dom_ids.extend(dom.descendants(document));
-    let context = AccessibilityContext::new(dom, &all_dom_ids, styles);
-
-    // First pass: assign AX IDs only to nodes that will produce an AX node
-    let mut eligible: Vec<NodeId> = Vec::new();
-    for dom_id in &all_dom_ids {
-        // Quick check without full build_ax_node (just role check to avoid borrow issues)
-        if let Some(node) = dom.get_node(*dom_id) {
-            let role = map_role(&node.data);
-            if !role.is_empty() && !context.is_hidden(*dom_id) {
-                id_counter += 1;
-                dom_to_ax.insert(dom_id.raw(), id_counter.to_string());
-                eligible.push(*dom_id);
+    let mut tree = AccessibilityTree { entries: Vec::new(), by_dom: HashMap::new() };
+    for id in ids {
+        let Some(node) = dom.get_node(id) else { continue };
+        let role = map_role(&node.data);
+        if role.is_empty() || context.is_not_rendered(id) {
+            continue;
+        }
+        let parent = if id == document {
+            None
+        } else {
+            match node.parent.and_then(|parent| tree.by_dom.get(&parent)).copied() {
+                Some(parent) => Some(parent),
+                None => continue,
             }
+        };
+        let reasons = context.ignored_reasons(&node, role);
+        let mut ax_node = if reasons.is_empty() {
+            context.describe_visible(dom, &node, role)
+        } else {
+            ignored_node(id, &reasons)
+        };
+        ax_node["nodeId"] = json!(ax_node_id(id));
+        ax_node["ignored"] = json!(!reasons.is_empty());
+        if let Some(parent) = parent {
+            ax_node["parentId"] = tree.entries[parent].node["nodeId"].clone();
+        } else if let Some(frame_id) = frame_id {
+            ax_node["frameId"] = json!(frame_id);
         }
-    }
-
-    // Second pass: build AXNode for eligible nodes
-    for dom_id in &eligible {
-        if let Some(ax) = build_ax_node(dom, *dom_id, &dom_to_ax, &context) {
-            nodes.push(ax);
+        let index = tree.entries.len();
+        let depth = parent.map_or(0, |parent| tree.entries[parent].depth + 1);
+        if let Some(parent) = parent {
+            tree.entries[parent].children.push(index);
         }
+        tree.by_dom.insert(id, index);
+        tree.entries.push(AxEntry { parent, children: Vec::new(), depth, node: ax_node });
     }
-
-    let mut children: HashMap<String, Vec<Value>> = HashMap::new();
-    for node in &nodes {
-        if let Some(parent) = node["parentId"].as_str() {
-            children
-                .entry(parent.to_string())
-                .or_default()
-                .push(node["nodeId"].clone());
+    for index in 0..tree.entries.len() {
+        if tree.entries[index].children.is_empty() {
+            continue;
         }
+        let child_ids: Vec<Value> = tree.entries[index]
+            .children
+            .iter()
+            .map(|child| tree.entries[*child].node["nodeId"].clone())
+            .collect();
+        tree.entries[index].node["childIds"] = json!(child_ids);
     }
-    for node in &mut nodes {
-        if let Some(ids) = children.remove(node["nodeId"].as_str().unwrap()) {
-            node["childIds"] = json!(ids);
-        }
-    }
-    nodes
+    tree
 }
 
-fn build_ax_node(
-    dom: &DomTree,
-    node_id: NodeId,
-    dom_to_ax: &std::collections::HashMap<u32, String>,
-    context: &AccessibilityContext,
-) -> Option<Value> {
-    let ax_id = dom_to_ax.get(&node_id.raw())?.clone();
-    let mut ax_node = context.describe_node(dom, node_id)?;
+/// An ignored node as Chrome reports it: role `none`, no name, and the reasons.
+fn ignored_node(id: NodeId, reasons: &[&str]) -> Value {
+    let reasons: Vec<Value> = reasons
+        .iter()
+        .map(|name| json!({"name": name, "value": {"type": "boolean", "value": true}}))
+        .collect();
+    json!({
+        "backendDOMNodeId": id.raw(),
+        "role": ax_value_role("none"),
+        "ignoredReasons": reasons,
+    })
+}
 
-    // Resolve parentId — walk DOM ancestors until we find one in the AX tree
-    let parent_id: Option<String> = {
-        let mut current = node_id;
-        let mut result = None;
-        loop {
-            let next_parent = dom.with_node(current, |n| n.parent).flatten();
-            match next_parent {
-                Some(pid) => {
-                    if let Some(ax_pid) = dom_to_ax.get(&pid.raw()) {
-                        result = Some(ax_pid.clone());
-                        break;
-                    }
-                    current = pid;
-                }
-                None => break,
+impl AccessibilityTree {
+    /// The root node, the document.
+    pub fn root(&self) -> Option<Value> {
+        self.entries.first().map(|entry| entry.node.clone())
+    }
+
+    /// Nodes in document order down to `depth` levels below the root. A node at
+    /// the limit still lists its children, which are then fetched with
+    /// [`AccessibilityTree::children`].
+    pub fn nodes(&self, depth: Option<u32>) -> Vec<Value> {
+        self.entries
+            .iter()
+            .filter(|entry| depth.is_none_or(|limit| entry.depth <= limit))
+            .map(|entry| entry.node.clone())
+            .collect()
+    }
+
+    /// The children of the node with this AX id, `None` if there is no such node.
+    pub fn children(&self, ax_id: &str) -> Option<Vec<Value>> {
+        let entry = &self.entries[*self.by_dom.get(&dom_node_of(ax_id)?)?];
+        Some(entry.children.iter().map(|child| self.entries[*child].node.clone()).collect())
+    }
+
+    /// The node for a DOM node, then, with `relatives`, its children and each
+    /// ancestor with that ancestor's children. `None` if the DOM node has no AX node.
+    pub fn partial(&self, dom: NodeId, relatives: bool) -> Option<Vec<Value>> {
+        let start = *self.by_dom.get(&dom)?;
+        let mut order = vec![start];
+        if relatives {
+            order.extend(&self.entries[start].children);
+            let mut ancestor = self.entries[start].parent;
+            while let Some(index) = ancestor {
+                order.push(index);
+                let siblings: Vec<usize> = self.entries[index]
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|child| !order.contains(child))
+                    .collect();
+                order.extend(siblings);
+                ancestor = self.entries[index].parent;
             }
         }
-        result
-    };
-
-    ax_node["nodeId"] = json!(ax_id);
-    ax_node["ignored"] = json!(false);
-    if let Some(ref pid) = parent_id {
-        ax_node.as_object_mut().unwrap().insert("parentId".into(), json!(pid));
+        Some(order.into_iter().map(|index| self.entries[index].node.clone()).collect())
     }
-    Some(ax_node)
+
+    /// The subtree of a DOM node (itself included, breadth first) filtered by
+    /// exact accessible name and role. Ignored nodes have a role but no name.
+    /// `None` if the DOM node has no AX node.
+    pub fn query(&self, dom: NodeId, name: Option<&str>, role: Option<&str>) -> Option<Vec<Value>> {
+        let mut queue = std::collections::VecDeque::from([*self.by_dom.get(&dom)?]);
+        let mut found = Vec::new();
+        while let Some(index) = queue.pop_front() {
+            let entry = &self.entries[index];
+            queue.extend(&entry.children);
+            let matches = |wanted: Option<&str>, actual: &Value| {
+                wanted.is_none_or(|wanted| actual.as_str() == Some(wanted))
+            };
+            if matches(name, &entry.node["name"]["value"]) && matches(role, &entry.node["role"]["value"]) {
+                found.push(entry.node.clone());
+            }
+        }
+        Some(found)
+    }
 }
 
 /// Map HTML element tag to ARIA role value.
@@ -243,7 +323,10 @@ fn map_role(data: &NodeData) -> &'static str {
 
 #[derive(Clone, Copy, Default)]
 struct Visibility {
+    /// Not rendered: `display: none`, `hidden`, head and script content.
     subtree_hidden: bool,
+    /// Under an element with `aria-hidden="true"`, itself included.
+    aria_hidden: bool,
     visibility_hidden: bool,
 }
 
@@ -267,12 +350,35 @@ impl AccessibilityContext {
         let node = dom.get_node(id)?;
         let role = map_role(&node.data);
         if role.is_empty() { return None; }
-        let mut result = json!({"backendDOMNodeId":id.raw(),"role":ax_value_role(role)});
-        if let Some(name) = compute_name(dom, &node, self) { result["name"] = ax_value_string(&name); }
-        if let Some(value) = compute_value(dom, &node) { result["value"] = ax_value_string(&value); }
-        let properties = compute_properties(dom, &node);
+        Some(self.describe_visible(dom, &node, role))
+    }
+
+    fn describe_visible(&self, dom: &DomTree, node: &inbrowse_dom::Node, role: &str) -> Value {
+        let mut result = json!({"backendDOMNodeId":node.id.raw(),"role":ax_value_role(role)});
+        if let Some(name) = compute_name(dom, node, self) { result["name"] = ax_value_string(&name); }
+        if let Some(value) = compute_value(dom, node) { result["value"] = ax_value_string(&value); }
+        let properties = compute_properties(dom, node);
         if !properties.is_empty() { result["properties"] = json!(properties); }
-        Some(result)
+        result
+    }
+
+    /// Why Chrome would mark this node ignored; empty when it is exposed.
+    fn ignored_reasons(&self, node: &inbrowse_dom::Node, role: &str) -> Vec<&'static str> {
+        let state = self.visibility.get(&node.id).copied().unwrap_or_default();
+        let mut reasons = Vec::new();
+        if state.aria_hidden {
+            reasons.push(if has_aria_hidden(node) { "ariaHiddenElement" } else { "ariaHiddenSubtree" });
+        }
+        if state.visibility_hidden {
+            reasons.push("notVisible");
+        }
+        if matches!(&node.data, NodeData::Text { contents } if contents.trim().is_empty()) {
+            reasons.push("emptyText");
+        }
+        if role == "presentation" && node.get_attribute("tabindex").is_none() {
+            reasons.push("presentationalRole");
+        }
+        reasons
     }
 
     fn new(dom: &DomTree, ids: &[NodeId], styles: &HashMap<NodeId, AccessibilityStyle>) -> Self {
@@ -292,9 +398,6 @@ impl AccessibilityContext {
                 .unwrap_or_default();
             let style = styles.get(id).copied().unwrap_or_default();
             let hidden = node.get_attribute("hidden").is_some()
-                || node
-                    .get_attribute("aria-hidden")
-                    .is_some_and(|value| value.eq_ignore_ascii_case("true"))
                 || matches!(
                     tag(&node),
                     "head" | "script" | "style" | "template" | "noscript"
@@ -304,6 +407,7 @@ impl AccessibilityContext {
                 *id,
                 Visibility {
                     subtree_hidden: parent.subtree_hidden || hidden || style.display_none,
+                    aria_hidden: parent.aria_hidden || has_aria_hidden(&node),
                     visibility_hidden: style.visibility_hidden.unwrap_or(parent.visibility_hidden),
                 },
             );
@@ -339,11 +443,20 @@ impl AccessibilityContext {
         context
     }
 
+    /// Hidden from the AX tree's exposed nodes by any means.
     pub fn is_hidden(&self, id: NodeId) -> bool {
         self.visibility
             .get(&id)
-            .is_some_and(|state| state.subtree_hidden || state.visibility_hidden)
+            .is_some_and(|state| state.subtree_hidden || state.aria_hidden || state.visibility_hidden)
     }
+
+    fn is_not_rendered(&self, id: NodeId) -> bool {
+        self.visibility.get(&id).is_some_and(|state| state.subtree_hidden)
+    }
+}
+
+fn has_aria_hidden(node: &inbrowse_dom::Node) -> bool {
+    node.get_attribute("aria-hidden").is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
 fn tag(node: &inbrowse_dom::Node) -> &str {
@@ -487,6 +600,11 @@ fn content_name(
 fn compute_name(dom: &DomTree, node: &inbrowse_dom::Node, context: &AccessibilityContext) -> Option<String> {
     if let NodeData::Text { contents } = &node.data {
         return nonempty(contents);
+    }
+    if matches!(node.data, NodeData::Document) {
+        // The document is named by its first `title` element.
+        let title = dom.query_selector("title").ok().flatten()?;
+        return nonempty(&flat_string(&dom.text_content(title)));
     }
     if let Some(labelledby) = node.get_attribute("aria-labelledby") {
         let mut seen = HashSet::new();
@@ -702,6 +820,10 @@ fn compute_properties(dom: &DomTree, node: &inbrowse_dom::Node) -> Vec<Value> {
         }
 
         props
+    } else if matches!(node.data, NodeData::Document) {
+        // The document takes focus when nothing inside it does. Snapshot
+        // clients keep a root only when it is focusable or named.
+        vec![json!({"name": "focusable", "value": ax_value_boolean(true)})]
     } else {
         Vec::new()
     }
@@ -893,18 +1015,24 @@ mod tests {
     }
 
     #[test]
-    fn html_and_aria_hidden_subtrees_are_absent() {
+    fn html_hidden_subtrees_are_absent_and_aria_hidden_ones_are_ignored() {
         let dom = parse_html(
             r#"<div hidden="false"><button id="html">Hidden</button></div>
-            <div aria-hidden="TrUe"><button id="aria" aria-hidden="false">Hidden</button></div>
+            <div id="wrap" aria-hidden="TrUe"><button id="aria" aria-hidden="false">Hidden</button></div>
             <input id="input" type="hidden"><button id="visible" aria-hidden="false">Visible</button>"#,
         );
         let nodes = build_ax_nodes(&dom);
-        for id in ["html", "aria", "input"] {
+        for id in ["html", "input"] {
             let id = dom.get_element_by_id(id).unwrap();
             assert!(!nodes
                 .iter()
                 .any(|node| node["backendDOMNodeId"] == id.raw()));
+        }
+        for (id, reason) in [("wrap", "ariaHiddenElement"), ("aria", "ariaHiddenSubtree")] {
+            let node = ax_node_for(&nodes, dom.get_element_by_id(id).unwrap());
+            assert_eq!(node["ignored"], true, "#{id}");
+            assert_eq!(node["ignoredReasons"][0]["name"], reason, "#{id}");
+            assert!(node.get("name").is_none(), "#{id} has no name");
         }
         assert_name(&dom, "visible", Some("Visible"));
     }

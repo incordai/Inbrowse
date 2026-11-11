@@ -13,6 +13,13 @@ enum WorkerCommand {
         url: String,
         #[serde(default, rename = "waitUntil")]
         wait_until: NavigationWaitUntil,
+        /// Ceiling of the adaptive settle after load, as `fetch` runs it
+        /// (`Page::settle`); 0 reads the page at load.
+        #[serde(default, rename = "settleMs")]
+        settle_ms: u64,
+        /// `--settle-timers`: also wait for one-shot timers due this soon.
+        #[serde(default, rename = "settleTimersMs")]
+        settle_timers_ms: u64,
     },
     #[serde(rename = "evaluate")]
     Evaluate { expression: String },
@@ -135,7 +142,7 @@ async fn main() {
         };
 
         let resp = match cmd {
-            WorkerCommand::Navigate { url, wait_until } => {
+            WorkerCommand::Navigate { url, wait_until, settle_ms, settle_timers_ms } => {
                 match page.navigate_with_wait(&url, wait_until.into()).await {
                     Ok(()) => {
                         // Navigation clears the event list and records the main
@@ -149,10 +156,17 @@ async fn main() {
                                     && (event.url.starts_with("http://") || event.url.starts_with("https://"))
                             })
                             .map(|event| event.status);
+                        // The page `scrape --eval` reads is the settled one
+                        // `fetch --eval` reads, not the page at load.
+                        page.set_settle_timer_horizon(std::time::Duration::from_millis(settle_timers_ms));
+                        page.settle(settle_ms).await;
+                        // Scripts a time limit stopped (Page::take_script_warnings);
+                        // the scrape parent copies them into the URL's record.
                         WorkerResponse::success(serde_json::json!({
                             "title": page.title,
                             "url": page.url_string(),
                             "status": status,
+                            "warnings": page.take_script_warnings(),
                         }))
                     },
                     Err(e) => WorkerResponse::error(e.to_string()),

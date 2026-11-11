@@ -26,15 +26,25 @@ Inbrowse is a headless browser engine written in Rust by Incord AI, built for we
 
 ### Why Inbrowse over headless Chrome?
 
-| Metric       | Inbrowse      | Headless Chrome |
-|--------------|--------------|------------------|
-| Memory       | **30 MB**    | 200+ MB          |
-| Binary size  | **~70 MiB**  | 300+ MB          |
-| Anti-detect  | **Built-in** | None          |
-| Page load    | **85 ms**    | ~500 ms          |
-| Startup      | **Instant**  | ~2s              |
-| Puppeteer    | **Yes**      | Yes              |
-| Playwright   | **Yes**      | Yes              |
+| Metric | Inbrowse | Headless Chrome |
+|--------|----------|-----------------|
+| Memory, small page (example.com) | **30 MB** | 432 MB |
+| Memory, real site (pypi.org project page) | **151 MB** (81 MB without rendering) | 541 MB |
+| Binary size | **85 MB** (64 MB without rendering) | 487 MB install |
+| Load one page, process start to exit | **40 ms** static, **64 ms** React | 1.28 s |
+| Anti-detect | **Built-in** | None |
+| Puppeteer | **Yes** | Yes |
+| Playwright | **Yes** | Yes |
+
+Measured on Windows 11 x86_64 with the v0.3.0 release downloads (the default
+build, which renders, and the `no-render` build), headless Chrome 157 with
+`--dump-dom`, median of 3 to 7 runs. Memory is peak working set; Chrome's is the
+sum over its processes, which counts shared pages more than once. Page loads use
+the local obstacle-course fixtures. Other release archives: Linux x86_64 88 MB
+(68 MB without rendering), macOS Apple Silicon 76 MB. A local `--release`
+build is larger (102 MB on Windows), since release archives use the
+size-optimized `release-dist` profile. Memory grows with the page: a 5,000-row DOM build
+peaks at 45 MB, and a rendered page keeps its layout and images.
 
 ## What's new in Inbrowse
 
@@ -603,6 +613,6 @@ streaming `Page.startScreencast` protocol.
 
 Apache-2.0. Copyright 2026 Incord AI. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Inbrowse is based on [obscura](https://github.com/h4ckf0r0day/obscura) (Apache-2.0), and the speed and memory figures above are its published measurements.
+Inbrowse is based on [obscura](https://github.com/h4ckf0r0day/obscura) (Apache-2.0).
 
 ---

@@ -284,6 +284,14 @@ impl std::fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
+/// What a `Runtime.callFunctionOn` is aimed at: an object, which also picks the
+/// realm the function runs in, or the global object of a frame (0 is the page).
+#[derive(Clone, Copy, Debug)]
+pub enum CdpCallTarget<'a> {
+    Object(&'a str),
+    Frame(u32),
+}
+
 /// Why a started CDP evaluation produced no result while awaiting it.
 #[derive(Debug)]
 enum CdpAwaitError {
@@ -329,6 +337,9 @@ pub struct Page {
     screen_size_override: Option<(f32, f32)>,
     screen_metrics_emulated: bool,
     locale_override: Option<String>,
+    /// CDP time zone override. Applies to this page only and, like the locale,
+    /// is re-applied to each document's runtime.
+    time_zone_override: Option<String>,
     /// Metrics captured when CDP device emulation is first enabled. Chromium
     /// keeps this baseline across subsequent override calls and restores it
     /// only when the override is cleared.
@@ -363,6 +374,18 @@ pub struct Page {
     navigation_timeout: Option<std::time::Duration>,
     /// Optional per-page cap. Pages without a value keep the default.
     navigation_chain_limit: Option<usize>,
+    /// Optional time limit for one page script (parser-inserted scripts and
+    /// preloads). Pages without a value use `INBROWSE_SCRIPT_TIMEOUT_MS` or
+    /// [`DEFAULT_SCRIPT_TIMEOUT_MS`]; see [`Page::script_timeout`].
+    script_timeout: Option<std::time::Duration>,
+    /// How far ahead [`Page::settle`] waits for one-shot timers, from its
+    /// start; zero keeps the default near-term rule. See
+    /// [`Page::set_settle_timer_horizon`].
+    settle_timer_horizon: std::time::Duration,
+    /// Scripts of the current document that did not run to completion because
+    /// a time limit stopped them, as one line each. Cleared when a document
+    /// starts executing scripts; read by [`Page::take_script_warnings`].
+    script_warnings: Vec<String>,
     /// Navigation history for Page.getNavigationHistory / navigateToHistoryEntry.
     /// Entries are URLs in visit order; `history_index` is the current position.
     /// Pushed on every successful navigation; truncated on goBack -> new nav.
@@ -428,10 +451,28 @@ fn default_navigation_timeout() -> std::time::Duration {
 }
 
 fn navigation_timeout_from_env_value(value: Option<&str>) -> std::time::Duration {
-    let milliseconds = value
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_NAVIGATION_TIMEOUT_MS);
-    std::time::Duration::from_millis(milliseconds)
+    millis_from_env_value(value, DEFAULT_NAVIGATION_TIMEOUT_MS)
+}
+
+/// Default time limit for one page script. A script still running after this
+/// is stopped and reported ([`Page::take_script_warnings`]); the rest of the
+/// page's scripts keep running.
+const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 5_000;
+
+/// Default ceiling for a document's whole script-execution phase, lowered to
+/// the page's navigation timeout when that is shorter.
+const DEFAULT_SCRIPT_PHASE_MS: u64 = 30_000;
+
+fn default_script_timeout() -> std::time::Duration {
+    millis_from_env_value(
+        std::env::var("INBROWSE_SCRIPT_TIMEOUT_MS").ok().as_deref(),
+        DEFAULT_SCRIPT_TIMEOUT_MS,
+    )
+}
+
+/// `value` as a millisecond count, or `default` when absent or not a number.
+fn millis_from_env_value(value: Option<&str>, default: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(value.and_then(|value| value.parse().ok()).unwrap_or(default))
 }
 
 fn default_navigation_chain_limit() -> usize {
@@ -1193,6 +1234,7 @@ impl Page {
             screen_size_override: None,
             screen_metrics_emulated: false,
             locale_override: None,
+            time_zone_override: None,
             device_metrics_baseline: None,
             reduced_motion: false,
             dark_color_scheme: false,
@@ -1204,6 +1246,9 @@ impl Page {
             navigation_timing: NavigationTiming::default(),
             navigation_timeout: None,
             navigation_chain_limit: None,
+            script_timeout: None,
+            settle_timer_horizon: std::time::Duration::ZERO,
+            script_warnings: Vec::new(),
             history: Vec::new(),
             history_index: 0,
             document_history_start: 0,
@@ -1240,6 +1285,69 @@ impl Page {
     pub fn navigation_timeout(&self) -> std::time::Duration {
         self.navigation_timeout
             .unwrap_or_else(default_navigation_timeout)
+    }
+
+    /// Set the time one page script may run before it is stopped. Takes
+    /// precedence over `INBROWSE_SCRIPT_TIMEOUT_MS`. Callers: CLI
+    /// `fetch --script-timeout`, MCP `browser_navigate` `scriptTimeoutMs`.
+    pub fn set_script_timeout(&mut self, timeout: std::time::Duration) {
+        self.script_timeout = Some(timeout);
+    }
+
+    /// Make [`Self::settle`] also wait for one-shot timers (`setTimeout`) due
+    /// within `horizon` of its start, still bounded by its budget. By default
+    /// it waits only for timers due within two quiet windows, so an app that
+    /// renders after a longer timer is read before it. Callers: CLI `fetch`
+    /// and `scrape` `--settle-timers`.
+    pub fn set_settle_timer_horizon(&mut self, horizon: std::time::Duration) {
+        self.settle_timer_horizon = horizon;
+    }
+
+    /// One-shot timers the page still has pending, for a caller reporting
+    /// what a settle left behind. `None` without a runtime or timers.
+    pub fn pending_timeouts(&mut self) -> Option<inbrowse_js::runtime::PendingTimeouts> {
+        self.js.as_mut()?.pending_timeouts()
+    }
+
+    /// The effective time limit for one page script.
+    pub fn script_timeout(&self) -> std::time::Duration {
+        self.script_timeout.unwrap_or_else(default_script_timeout)
+    }
+
+    /// Lines describing the current document's scripts that a time limit
+    /// stopped before they finished, emptied by the call. Callers report them:
+    /// CLI `fetch` (stderr), the scrape worker (`warnings` in its navigate
+    /// reply) and MCP `browser_navigate` (appended to its result).
+    pub fn take_script_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.script_warnings)
+    }
+
+    /// Time limit for the next page script: [`Self::script_timeout`], or what
+    /// remains of the document's script phase (`phase_deadline`) when that is
+    /// shorter. Never zero, which would mean "no limit of its own".
+    fn next_script_budget(&self, phase_deadline: Option<tokio::time::Instant>) -> std::time::Duration {
+        let remaining = phase_deadline.map_or(std::time::Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(tokio::time::Instant::now())
+        });
+        self.script_timeout()
+            .min(remaining)
+            .max(std::time::Duration::from_millis(1))
+    }
+
+    /// Record that `script` did not finish, when the reason is a time limit.
+    /// A script that throws is a page error, reported through the console and
+    /// `Runtime.exceptionThrown`, not here.
+    fn note_script_failure(&mut self, script: &str, error: &inbrowse_js::runtime::ScriptError) {
+        use inbrowse_js::runtime::ScriptError;
+        match error {
+            ScriptError::Thrown(message) => {
+                tracing::warn!("Script error ({script}): {message}");
+            }
+            ScriptError::TimedOut(_) | ScriptError::Interrupted => {
+                tracing::warn!("Script stopped ({script}): {error}");
+                self.script_warnings.push(format!("script {script} was {error}"));
+            }
+        }
     }
 
     /// Takes precedence over `INBROWSE_NAV_CHAIN_LIMIT`. A limit of 0 is
@@ -1553,6 +1661,17 @@ impl Page {
         }
     }
 
+    /// Discards at once the child frames whose `<iframe>` was removed, replaced
+    /// or detached since the last call, without waiting for the page to
+    /// settle. The DOM removal path retires a frame's ownership natively, so
+    /// the check is one lookup per frame and runs no script unless a frame
+    /// has actually lost its owner.
+    pub fn release_removed_frames(&mut self) {
+        if self.frames.iter().any(|frame| self.frame_owner(frame.frame_id()).is_none()) {
+            self.release_detached_frames();
+        }
+    }
+
     /// Discards the realms whose iframe element has left the document.
     ///
     /// A browser discards a child browsing context when its element is
@@ -1755,6 +1874,38 @@ impl Page {
         }
     }
 
+    /// Run this page's `Date` and `Intl` in `zone` (an IANA id), or in the
+    /// process zone with `None` or an empty id. An id ICU does not know is
+    /// rejected and the current zone is kept. Other pages are not affected.
+    pub fn set_time_zone_override(&mut self, zone: Option<String>) -> Result<(), String> {
+        let zone = zone.filter(|zone| !zone.is_empty());
+        if let Some(zone) = &zone {
+            if !inbrowse_js::timezone::is_known_zone(zone) {
+                return Err(format!("Invalid timezone ID: {zone}"));
+            }
+        }
+        self.time_zone_override = zone;
+        if let Some(js) = &mut self.js {
+            js.set_time_zone_override(self.time_zone_override.as_deref());
+        }
+        Ok(())
+    }
+
+    /// The zone this page's local time is in: its override, else the process
+    /// zone. Use it, not the host zone, for any local time shown for this page.
+    pub fn time_zone_id(&self) -> String {
+        match &self.time_zone_override {
+            Some(zone) => zone.clone(),
+            None => inbrowse_js::timezone::process_default().to_string(),
+        }
+    }
+
+    /// This page's offset from UTC in milliseconds at `epoch_ms`, daylight
+    /// saving included; `None` if the instant is out of range.
+    pub fn utc_offset_ms_at(&self, epoch_ms: f64) -> Option<i64> {
+        inbrowse_js::timezone::utc_offset_ms(&self.time_zone_id(), epoch_ms)
+    }
+
     /// Apply CDP device metrics relative to the metrics that were active when
     /// emulation was first enabled. A zero protocol dimension/scale is passed
     /// as `None` and therefore restores that axis from the retained baseline.
@@ -1928,6 +2079,7 @@ impl Page {
         if let Some(locale) = &self.locale_override {
             rt.set_locale(locale);
         }
+        rt.set_time_zone_override(self.time_zone_override.as_deref());
         if let Some((lat, lon)) = env_geolocation() {
             rt.set_geolocation(lat, lon);
         }
@@ -2286,6 +2438,51 @@ impl Page {
         true
     }
 
+    /// Builds the child documents the page has started loading, runs their
+    /// scripts and load events, and waits for the ones still being fetched, so
+    /// that they finish before the page's own load event as HTML requires.
+    /// Bounded by `deadline`.
+    async fn drive_child_frames(&mut self, deadline: tokio::time::Instant) {
+        loop {
+            let progressed = self.advance_frames().await;
+            let busy = !self.pending_frame_work.is_empty() || self.child_frames_loading();
+            if !progressed && !busy {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!("script deadline reached with child frames still loading");
+                return;
+            }
+            if !progressed {
+                if let Some(js) = self.js.as_mut() {
+                    // Parked on a fetch or a queued task: let it run.
+                    let _ = tokio::time::timeout(
+                        tokio::time::Duration::from_millis(25),
+                        js.run_load_delaying_event_loop_tick(),
+                    )
+                    .await;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Whether any iframe of the page or of its frames is still waiting for
+    /// its document.
+    fn child_frames_loading(&mut self) -> bool {
+        const LOADING: &str = "__inbrowse_framesLoading()";
+        let Some(js) = self.js.as_mut() else { return false };
+        let count = |value: Result<serde_json::Value, String>| {
+            value.ok().and_then(|value| value.as_u64()).unwrap_or(0)
+        };
+        if count(js.evaluate(LOADING)) > 0 {
+            return true;
+        }
+        self.frames
+            .iter()
+            .any(|frame| count(frame.evaluate(js, LOADING)) > 0)
+    }
+
     async fn drive_load_delaying_scripts(
         js: &mut InbrowseJsRuntime,
         deadline: tokio::time::Instant,
@@ -2330,11 +2527,16 @@ impl Page {
         // the per-phase watchdog (armed at this + 1s) still bounds a real
         // synchronous hang. Raise it further with INBROWSE_SCRIPT_DEADLINE_MS=<ms>
         // for very heavy SPAs on slow networks (pair it with a matching client
-        // navigation timeout).
+        // navigation timeout). Without the variable the phase is also capped
+        // at this page's navigation timeout, so a caller asking for a 5 s
+        // navigation does not wait 30 s for page scripts.
         let script_deadline_ms: u64 = std::env::var("INBROWSE_SCRIPT_DEADLINE_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(30_000);
+            .unwrap_or_else(|| {
+                DEFAULT_SCRIPT_PHASE_MS.min(duration_millis_u64(self.navigation_timeout()))
+            });
+        self.script_warnings.clear();
         let script_deadline =
             tokio::time::Instant::now() + tokio::time::Duration::from_millis(script_deadline_ms);
 
@@ -2633,11 +2835,11 @@ impl Page {
         // if preload runs after page scripts, every early binding call
         // hits an undefined function and silently no-ops.
         let preload_sources = self.preload_scripts.clone();
-        if let Some(js) = &mut self.js {
-            for source in &preload_sources {
-                if let Err(e) = js.execute_script_guarded("<preload>", source.as_str()) {
-                    tracing::debug!("Preload script error: {}", e);
-                }
+        for source in &preload_sources {
+            let budget = self.next_script_budget(Some(script_deadline));
+            let Some(js) = self.js.as_mut() else { break };
+            if let Err(error) = js.execute_script_with_timeout("<preload>", source, budget) {
+                self.note_script_failure("<preload>", &error);
             }
         }
 
@@ -2724,6 +2926,21 @@ impl Page {
             (budget != 0).then_some(budget)
         };
 
+        // Runs one classic script under the per-script budget with
+        // document.currentScript set, and records a script a time limit stopped.
+        let run_classic = |page: &mut Self, nid: u32, name: &str, label: &str, source: &str| {
+            let budget = page.next_script_budget(Some(script_deadline));
+            let Some(js) = page.js.as_mut() else { return };
+            let _ = js.execute_script(
+                "<current-script>",
+                &format!("globalThis.__currentScriptNid={nid};"),
+            );
+            let result = js.execute_script_with_timeout(name, source, budget);
+            let _ = js.execute_script("<current-script>", "globalThis.__currentScriptNid=0;");
+            if let Err(error) = result {
+                page.note_script_failure(label, &error);
+            }
+        };
         let execute_classic =
             |page: &mut Self,
              script: &ScriptInfo,
@@ -2741,34 +2958,11 @@ impl Page {
                             &resp.body,
                             false,
                         );
-                        if let Some(js) = &mut page.js {
-                            let _ = js.execute_script(
-                                "<current-script>",
-                                &format!("globalThis.__currentScriptNid={};", script.nid),
-                            );
-                            if let Err(error) = js.execute_script_guarded(&execution_url, &code) {
-                                tracing::warn!("Script error ({}): {}", execution_url, error);
-                            }
-                            let _ = js.execute_script(
-                                "<current-script>",
-                                "globalThis.__currentScriptNid=0;",
-                            );
-                        }
+                        run_classic(page, script.nid, &execution_url, &execution_url, &code);
                     }
                 } else if !script.inline.is_empty() {
-                    if let Some(js) = &mut page.js {
-                        let _ = js.execute_script(
-                            "<current-script>",
-                            &format!("globalThis.__currentScriptNid={};", script.nid),
-                        );
-                        if let Err(error) =
-                            js.execute_script_guarded(&script.base_url, &script.inline)
-                        {
-                            tracing::warn!("Inline script error: {}", error);
-                        }
-                        let _ = js
-                            .execute_script("<current-script>", "globalThis.__currentScriptNid=0;");
-                    }
+                    let label = format!("inline script in {}", script.base_url);
+                    run_classic(page, script.nid, &script.base_url, &label, &script.inline);
                 }
             };
 
@@ -2779,10 +2973,13 @@ impl Page {
         // evaluation of non-async modules remains post-parse.
         for (index, script) in all_scripts.iter().enumerate() {
             if tokio::time::Instant::now() >= script_deadline {
+                let skipped = all_scripts.len() - index;
                 tracing::warn!(
-                    "execute_scripts: deadline reached, skipping {} remaining scripts",
-                    all_scripts.len() - index,
+                    "execute_scripts: deadline reached, skipping {skipped} remaining scripts",
                 );
+                self.script_warnings.push(format!(
+                    "{skipped} page scripts were not run: the {script_deadline_ms} ms script phase ran out"
+                ));
                 break;
             }
 
@@ -3057,6 +3254,11 @@ impl Page {
                 );
             }
 
+        }
+        // The page's load waits for its frames: their scripts and their own
+        // load events run first.
+        self.drive_child_frames(script_deadline).await;
+        if let Some(js) = &mut self.js {
             // readyState becomes complete before the load event. A script
             // inserted by an onload handler is therefore post-load work and
             // remains pending until an explicit caller settle/wait.
@@ -3075,8 +3277,11 @@ impl Page {
             }
         }
         if let Some(token) = exec_wd {
-            if let Some(js) = self.js.as_mut() {
-                js.disarm_watchdog(token);
+            let fired = self.js.as_mut().is_some_and(|js| js.disarm_watchdog(token));
+            if fired {
+                self.script_warnings.push(format!(
+                    "page scripts were stopped: the {script_deadline_ms} ms script phase ran out"
+                ));
             }
         }
         tracing::debug!(
@@ -3172,7 +3377,11 @@ impl Page {
                     // observable document/network/script activity instead. The
                     // absolute caller budget and V8 watchdog still bound both
                     // asynchronous work and synchronous microtask storms.
-                    let _ = js.run_event_loop_until_quiescent(remaining, 150).await;
+                    let horizon_ms = duration_millis_u64(self.settle_timer_horizon)
+                        .saturating_sub(settle_started.elapsed().as_millis() as u64);
+                    let _ = js
+                        .run_event_loop_until_quiescent_with_timers(remaining, 150, horizon_ms)
+                        .await;
                 }
             }
             #[cfg(feature = "render")]
@@ -3488,6 +3697,7 @@ impl Page {
         self.referrer = referrer.to_string();
         self.url = Some(url.clone());
         self.network_events.clear();
+        self.script_warnings.clear();
 
         if self.context.obey_robots {
             if url.scheme() == "http" || url.scheme() == "https" {
@@ -3532,11 +3742,11 @@ impl Page {
             // puppeteer's `browser.newPage()` lands on about:blank and
             // a follow-up `exposeFunction` is unusable otherwise.
             let preload_sources = self.preload_scripts.clone();
-            if let Some(js) = &mut self.js {
-                for source in &preload_sources {
-                    if let Err(e) = js.execute_script_guarded("<preload>", source.as_str()) {
-                        tracing::debug!("Preload script error on about:blank: {}", e);
-                    }
+            for source in &preload_sources {
+                let budget = self.next_script_budget(None);
+                let Some(js) = self.js.as_mut() else { break };
+                if let Err(error) = js.execute_script_with_timeout("<preload>", source, budget) {
+                    self.note_script_failure("<preload>", &error);
                 }
             }
             return Ok(());
@@ -4492,7 +4702,7 @@ impl Page {
         let js = self.js.as_mut().ok_or(EvalError::NoRuntime)?;
         let source = js.console_source(expression);
         let watchdog = js.arm_watchdog(timeout);
-        let result = match js.start_cdp_evaluation(&source, true, true) {
+        let result = match js.start_cdp_evaluation(&source, true, true, 0) {
             Ok(evaluation) => self
                 .await_cdp_evaluation_typed(evaluation, true, duration_millis_u64(timeout).max(1))
                 .await,
@@ -4538,8 +4748,23 @@ impl Page {
         await_promise: bool,
         await_timeout_ms: u64,
     ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, String> {
+        self.evaluate_in_frame_for_cdp(0, expression, return_by_value, await_promise, await_timeout_ms)
+            .await
+    }
+
+    /// [`Self::evaluate_for_cdp_with_timeout`] in the realm of child frame
+    /// `frame_id`; 0 is the page itself.
+    pub async fn evaluate_in_frame_for_cdp(
+        &mut self,
+        frame_id: u32,
+        expression: &str,
+        return_by_value: bool,
+        await_promise: bool,
+        await_timeout_ms: u64,
+    ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, String> {
         if let Some(js) = &mut self.js {
-            let evaluation = js.start_cdp_evaluation(expression, return_by_value, await_promise)?;
+            let evaluation =
+                js.start_cdp_evaluation(expression, return_by_value, await_promise, frame_id)?;
             self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.evaluate").await
         } else {
             // Before the first navigation there is no runtime; a client probing
@@ -4572,6 +4797,36 @@ impl Page {
         await_promise: bool,
         await_timeout_ms: u64,
     ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, String> {
+        let target = match object_id {
+            Some(object_id) => CdpCallTarget::Object(object_id),
+            None => CdpCallTarget::Frame(0),
+        };
+        self.call_function_on_target_for_cdp(
+            target,
+            function_declaration,
+            args,
+            return_by_value,
+            await_promise,
+            await_timeout_ms,
+        )
+        .await
+    }
+
+    /// [`Self::call_function_on_for_cdp_with_timeout`] aimed at an object or
+    /// at a frame's global object.
+    pub async fn call_function_on_target_for_cdp(
+        &mut self,
+        target: CdpCallTarget<'_>,
+        function_declaration: &str,
+        args: &[serde_json::Value],
+        return_by_value: bool,
+        await_promise: bool,
+        await_timeout_ms: u64,
+    ) -> Result<inbrowse_js::runtime::RemoteObjectInfo, String> {
+        let (object_id, context_frame_id) = match target {
+            CdpCallTarget::Object(object_id) => (Some(object_id), 0),
+            CdpCallTarget::Frame(frame_id) => (None, frame_id),
+        };
         let js = self.js.as_mut().ok_or("JavaScript runtime unavailable")?;
         let evaluation = js.start_cdp_call(
             function_declaration,
@@ -4579,8 +4834,70 @@ impl Page {
             args,
             return_by_value,
             await_promise,
+            context_frame_id,
         )?;
         self.await_cdp_evaluation(evaluation, return_by_value, await_timeout_ms, "Runtime.callFunctionOn").await
+    }
+
+    /// Evaluates engine-written source in child frame `frame_id`'s realm and
+    /// returns its JSON value; 0 is the page, read as [`Self::evaluate`].
+    /// For a frame the source is an expression.
+    pub fn evaluate_in_frame_realm(
+        &mut self,
+        frame_id: u32,
+        expression: &str,
+    ) -> Result<serde_json::Value, String> {
+        if frame_id == 0 {
+            return self.evaluate(expression);
+        }
+        let realm = self
+            .frames
+            .iter()
+            .find(|frame| frame.frame_id() == frame_id)
+            .ok_or("No frame with given id found")?;
+        let js = self.js.as_mut().ok_or("JavaScript runtime unavailable")?;
+        // JSON has no `undefined`; a probe that returns nothing reads as null.
+        realm.evaluate(
+            js,
+            &format!("(function() {{ var value = (\n{expression}\n); return value === undefined ? null : value; }})()"),
+        )
+    }
+
+    /// [`Self::with_dom`] for the document of child frame `frame_id`; 0 is
+    /// the page's.
+    pub fn with_frame_dom<R>(&self, frame_id: u32, f: impl FnOnce(&DomTree) -> R) -> Option<R> {
+        match &self.js {
+            Some(js) => js.with_frame_dom(frame_id, f),
+            None if frame_id == 0 => self.dom.as_ref().map(f),
+            None => None,
+        }
+    }
+
+    /// The frame that holds keyboard focus: the child frame whose element took
+    /// focus last while it is still live, otherwise the page (0).
+    pub fn focused_frame(&self) -> u32 {
+        let frame = self.js.as_ref().map_or(0, |js| js.focused_frame());
+        if self.frames.iter().any(|realm| realm.frame_id() == frame) {
+            frame
+        } else {
+            0
+        }
+    }
+
+    /// The frame id of the document holding child frame `frame_id`'s
+    /// `<iframe>` element and that element's node id there. `None` for the
+    /// page itself and for a frame that has been detached.
+    pub fn frame_owner(&self, frame_id: u32) -> Option<(u32, u32)> {
+        self.js.as_ref()?.frame_owner(frame_id)
+    }
+
+    /// The frame and node id an element object (an `objectId` from a
+    /// Runtime command) belongs to.
+    pub fn node_ref(&mut self, object_id: &str) -> Result<(u32, u32), String> {
+        self.js
+            .as_mut()
+            .ok_or("JavaScript runtime unavailable")?
+            .node_ref(object_id)
     }
 
     /// [`Self::await_cdp_evaluation_typed`] with the error as protocol text,

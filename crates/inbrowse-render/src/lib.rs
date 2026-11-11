@@ -132,7 +132,8 @@ pub use paint::{
     screenshot_prepared_with_scroll_and_surface_color,
     screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces,
     validate_capture_region, CaptureError, CaptureRegion, DynamicFontFace, ElementScrollMetrics,
-    CanvasSurface, CanvasSurfaceSource, ImageRequestProfile, PreparedRender, RenderResourceCache, RenderResourceLoader,
+    paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces,
+    CanvasSurface, CanvasSurfaceSource, FrameRasterRequest, ImageRequestProfile, PreparedRender, RenderResourceCache, RenderResourceLoader,
     ResolvedScrollState, SelectedImage,
     MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PIXELS,
 };

@@ -15,8 +15,21 @@ const DEFAULT_SCREENSHOT_QUALITY: i64 = 80;
 /// child's protocol id is derived from its page's. It stays stable for the
 /// life of the frame, which is what lets a client match an attach event to the
 /// frame it later sees in the tree.
-fn child_frame_id(page_frame_id: &str, frame_id: u32) -> String {
+pub(crate) fn child_frame_id(page_frame_id: &str, frame_id: u32) -> String {
     format!("{page_frame_id}-frame-{frame_id}")
+}
+
+/// The realm number of the CDP frame `frame_id` of `page`: 0 for the page's
+/// own frame, the child's number for a live child frame, `None` for a frame
+/// the page does not have (any more).
+pub(crate) fn frame_number(page: &inbrowse::Page, frame_id: &str) -> Option<u32> {
+    if frame_id == page.frame_id {
+        return Some(0);
+    }
+    page.frames
+        .iter()
+        .map(inbrowse_js::frame::FrameRealm::frame_id)
+        .find(|number| child_frame_id(&page.frame_id, *number) == frame_id)
 }
 
 fn is_localhost(url: &url::Url) -> bool {

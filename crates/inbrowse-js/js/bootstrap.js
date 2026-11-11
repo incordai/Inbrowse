@@ -30,14 +30,14 @@ const __inbrowseCore = globalThis.Deno.core;
     '__inbrowse_dispatchTouch', '__inbrowse_dispatchDrag',
     '__inbrowse_frameId', '__inbrowse_parentFrameId', '__inbrowse_frameWindows',
     '__inbrowse_frameObjects', '__inbrowse_frameElements', '__inbrowse_deliverMessage',
-    '__inbrowse_liveFrameIds', '__inbrowse_forgetFrame',
+    '__inbrowse_liveFrameIds', '__inbrowse_forgetFrame', '__inbrowse_framesLoading',
     '__inbrowse_registerLinkedStylesheet', '__inbrowse_activateLabel',
     '__inbrowse_isDisabled', '__inbrowse_labeledControl', '__inbrowse_interactiveHost',
     '__inbrowse_inputChecked', '__inbrowse_setInputChecked',
     '__inbrowse_inputIndeterminate', '__inbrowse_setInputIndeterminate',
     '__markParserScripts', '__inbrowse_hasPendingDynamicScripts',
     '__inbrowse_hasPendingLoadDelayingScripts', '__inbrowse_hasPendingParserBlockingScripts',
-    '__inbrowse_nextPendingTimeoutDelay',
+    '__inbrowse_nextPendingTimeoutDelay', '__inbrowse_pendingTimeouts',
     '__inbrowse_hw', '__inbrowse_mem',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
@@ -133,7 +133,7 @@ Object.defineProperty(globalThis, "__inbrowse_binding_called", {
 globalThis.__inbrowse_errors = [];
 
 globalThis.addEventListener = globalThis.addEventListener || function(){};
-globalThis.onunhandledrejection = function(e) { if (e?.preventDefault) e.preventDefault(); };
+globalThis.onunhandledrejection = null;
 
 globalThis.onerror = function(msg, src, line, col, error) {
   globalThis.__inbrowse_errors.push({msg: String(msg), src: String(src||""), line, error: String(error||"")});
@@ -931,6 +931,9 @@ const _eventRegistry = globalThis._eventRegistry;
 const _formValues = globalThis._formValues;
 const _formChecked = globalThis._formChecked;
 const _formIndeterminate = globalThis._formIndeterminate;
+// Selection of each text control whose caret or selection has been moved; see
+// "Text selection in text controls" further down.
+const _textSelections = new WeakMap();
 const _domParse = (cmd, a1, a2) => { try { return JSON.parse(_dom(cmd, a1, a2)); } catch { return null; } };
 const _formStateLoaded = new Set();
 function _loadFormState(nid) {
@@ -955,6 +958,25 @@ function _setInputChecked(el, value) {
   const checked = !!value;
   _formChecked[el._nid] = checked;
   _dom("set_form_checked", el._nid, String(checked));
+}
+// The other radio buttons in `el`'s radio button group (HTML): same tree, same
+// form owner, same non-empty name. Checking one radio unchecks these, whether
+// by click or by the `checked` setter.
+function _radioGroupOthers(el) {
+  const name = el.getAttribute('name') || '';
+  if (!name) return [];
+  const root = el.getRootNode ? el.getRootNode() : (el.ownerDocument || globalThis.document);
+  if (!root || !root.querySelectorAll) return [];
+  const form = el.form;
+  const all = root.querySelectorAll('input');
+  const others = [];
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
+    if (r === el || ((r.getAttribute('type') || '').toLowerCase()) !== 'radio') continue;
+    if ((r.getAttribute('name') || '') !== name || r.form !== form) continue;
+    others.push(r);
+  }
+  return others;
 }
 function _inputIndeterminate(el) {
   if (_formIndeterminate[el._nid] === undefined) _loadFormState(el._nid);
@@ -1099,15 +1121,24 @@ const _nativeTimerIds = new Map();
 const _timerStates = new Map();
 const _frameTimerStates = new Map();
 const __inbrowsePendingTimeoutDeadlines = new Map();
+// [pending one-shot timers, ms until the nearest or -1]. Intervals are not
+// counted: they never finish, so no settle could wait them out.
+const _pendingTimeoutSummary = () => {
+  const now = performance.now();
+  let nearest = Infinity;
+  for (const deadline of __inbrowsePendingTimeoutDeadlines.values()) {
+    nearest = Math.min(nearest, Math.max(0, deadline - now));
+  }
+  return [__inbrowsePendingTimeoutDeadlines.size, Number.isFinite(nearest) ? nearest : -1];
+};
 Object.defineProperty(globalThis, '__inbrowse_nextPendingTimeoutDelay', {
-  value: function() {
-    const now = performance.now();
-    let nearest = Infinity;
-    for (const deadline of __inbrowsePendingTimeoutDeadlines.values()) {
-      nearest = Math.min(nearest, Math.max(0, deadline - now));
-    }
-    return Number.isFinite(nearest) ? nearest : -1;
-  },
+  value: function() { return _pendingTimeoutSummary()[1]; },
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
+Object.defineProperty(globalThis, '__inbrowse_pendingTimeouts', {
+  value: function() { return _pendingTimeoutSummary(); },
   writable: false,
   enumerable: false,
   configurable: false,
@@ -2091,6 +2122,15 @@ function _shallowCloneNode(node) {
 // framework schedulers work: those targets deliberately have no native node id.
 const _eventTargetListeners = new WeakMap();
 const _eventTargetListenerChanged = new WeakMap();
+// Listeners currently registered on DOM nodes, window and plain EventTargets,
+// kept as a running count so Performance.getMetrics needs no walk.
+let _eventListenerCount = 0;
+Object.defineProperty(globalThis, '__inbrowse_event_listener_count', {
+  value: function() { return _eventListenerCount; },
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 function _eventCapture(options) {
   return typeof options === "boolean" ? options : !!(options && options.capture);
 }
@@ -2122,6 +2162,7 @@ function _eventTargetAdd(target, type, callback, options) {
     abortHandler: null,
   };
   listeners.push(entry);
+  _eventListenerCount++;
   _eventTargetListenerChanged.get(target)?.();
   if (signal && typeof signal.addEventListener === "function") {
     entry.abortHandler = () => _eventTargetRemove(target, type, callback, capture);
@@ -2139,6 +2180,7 @@ function _eventTargetRemove(target, type, callback, options) {
     const entry = listeners[i];
     if (entry.callback !== callback || entry.capture !== capture) continue;
     listeners.splice(i, 1);
+    _eventListenerCount--;
     if (entry.signal && entry.abortHandler && typeof entry.signal.removeEventListener === "function") {
       entry.signal.removeEventListener("abort", entry.abortHandler);
     }
@@ -3741,6 +3783,187 @@ function _isSubmitButton(el) {
   return false;
 }
 
+// The option's `text` IDL value: the text content with ASCII whitespace
+// stripped and collapsed. Callers: option.text, option.label and _optionValue.
+function _optionText(option) {
+  return option.textContent.replace(/[ \t\n\f\r]+/g, ' ').replace(/^ | $/g, '');
+}
+
+// The option's `value` IDL value: the value attribute, else its text.
+// Callers: select.value (getter and setter), option.value and
+// _constructEntryList.
+function _optionValue(option) {
+  const attr = option.getAttribute('value');
+  return attr !== null ? attr : _optionText(option);
+}
+
+// An option is disabled by its own attribute or by a disabled parent
+// <optgroup>. Caller: _constructEntryList, and _selectedOptions' default pick.
+function _isOptionDisabled(option) {
+  if (option.hasAttribute('disabled')) return true;
+  const parent = option.parentNode;
+  return !!parent && parent.localName === 'optgroup' && parent.hasAttribute('disabled');
+}
+
+// The <select> an option belongs to: its parent, or its grandparent through an
+// <optgroup>; null for an orphan option. Caller: _setOptionSelected.
+function _optionSelect(option) {
+  let parent = option.parentNode;
+  if (parent && parent.localName === 'optgroup') parent = parent.parentNode;
+  return parent && parent.localName === 'select' ? parent : null;
+}
+
+// Record one option's selectedness. `option.selected` is the single source of
+// truth for selection state, and the `selected` content attribute is kept in
+// step so the renderer, serializers and CSS (:checked) see the same choice.
+// The attribute is only touched when it disagrees, so redundant writes queue
+// no mutation records. Callers: _setOptionSelected, select.selectedIndex and
+// select.value setters.
+function _writeOptionSelectedness(option, selected) {
+  option._selected = selected;
+  if (option.hasAttribute('selected') === selected) return;
+  if (selected) option.setAttribute('selected', '');
+  else option.removeAttribute('selected');
+}
+
+// The option.selected setter for an <option>. In a select without `multiple`
+// selecting an option deselects the others; any change also asks the select to
+// reset, which re-enables the default first-option choice that an earlier
+// selectedIndex = -1 had suppressed. Caller: Element's `selected` setter.
+function _setOptionSelected(option, selected) {
+  const select = _optionSelect(option);
+  if (select === null) {
+    _writeOptionSelectedness(option, selected);
+    return;
+  }
+  select._noDefaultSelection = false;
+  if (selected && !select.hasAttribute('multiple')) {
+    const opts = select.options;
+    for (let i = 0; i < opts.length; i++) {
+      if (opts[i] !== option) _writeOptionSelectedness(opts[i], false);
+    }
+  }
+  _writeOptionSelectedness(option, selected);
+  if (!selected && !select.hasAttribute('multiple')) {
+    const fallback = _selectedOptions(select);
+    if (fallback.length) _writeOptionSelectedness(fallback[0], true);
+  }
+}
+
+// The options a <select> currently has selected, in tree order. A multiple
+// select reports exactly the options whose selectedness is true. A single
+// select reports at most one: the last of several markup-selected options, or,
+// when none is selected and the display size is 1, the first non-disabled
+// option unless selectedIndex/value explicitly emptied the select.
+// Callers: select.value, select.selectedIndex, select.selectedOptions and
+// _constructEntryList.
+function _selectedOptions(select) {
+  const opts = select.options;
+  const chosen = [];
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i].selected) chosen.push(opts[i]);
+  }
+  if (select.hasAttribute('multiple')) return chosen;
+  if (chosen.length > 1) return [chosen[chosen.length - 1]];
+  if (chosen.length === 1 || select._noDefaultSelection) return chosen;
+  const size = parseInt(select.getAttribute('size'), 10);
+  if (size > 1) return chosen;
+  for (let i = 0; i < opts.length; i++) {
+    if (!_isOptionDisabled(opts[i])) return [opts[i]];
+  }
+  return chosen;
+}
+
+// The form a control belongs to: the form named by its `form` attribute, or
+// else its nearest <form> ancestor; null when neither applies. Callers:
+// requestSubmit, the FormData constructor and _formOwnedControls.
+function _formOwner(control) {
+  const id = control.getAttribute('form');
+  if (id === null) return control.closest('form');
+  const root = control.getRootNode();
+  if (!root || typeof root.querySelectorAll !== 'function') return null;
+  const forms = root.querySelectorAll('form');
+  for (let i = 0; i < forms.length; i++) {
+    if (forms[i].getAttribute('id') === id) return forms[i];
+  }
+  return null;
+}
+
+// The submittable controls whose form owner is `form`, in tree order, including
+// those placed outside it with a form="id" attribute. Caller:
+// _constructEntryList.
+function _formOwnedControls(form) {
+  const root = form.getRootNode();
+  const scope = root && typeof root.querySelectorAll === 'function' ? root : form;
+  const candidates = scope.querySelectorAll('input, select, textarea, button');
+  const owned = [];
+  for (let i = 0; i < candidates.length; i++) {
+    if (_formOwner(candidates[i]) === form) owned.push(candidates[i]);
+  }
+  return owned;
+}
+
+// The HTML "construct the entry list" algorithm: the [name, value] pairs a form
+// submits, for `form` and an optional `submitter` button. It is the single
+// implementation behind both `new FormData(form)` and native submission
+// (_navigateSubmit), so the two cannot disagree. Disabled controls are skipped
+// (including through a disabled <fieldset>); only the submitter among the
+// buttons takes part; unchecked checkboxes and radios send nothing; a select
+// sends one entry per selected, non-disabled option and nothing when none is
+// selected; a textarea sends its value with newlines normalised to LF; an
+// image-button submitter sends its click coordinates (0, 0 without a pointer).
+// Values are strings, or File objects for file inputs. Newlines become CRLF
+// only when an encoder serialises the list (_encodeEntryList).
+function _constructEntryList(form, submitter) {
+  const entries = [];
+  const controls = _formOwnedControls(form);
+  for (let i = 0; i < controls.length; i++) {
+    const el = controls[i];
+    if (el.closest('datalist') || _isActuallyDisabled(el)) continue;
+    const tag = el.localName;
+    const type = tag === 'input' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const isButton = tag === 'button' || type === 'submit' || type === 'image' || type === 'reset' || type === 'button';
+    if (isButton && el !== submitter) continue;
+    if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
+    const name = el.getAttribute('name') || '';
+    if (type === 'image') {
+      const prefix = name === '' ? '' : name + '.';
+      entries.push([prefix + 'x', '0'], [prefix + 'y', '0']);
+      continue;
+    }
+    if (name === '') continue;
+    if (tag === 'select') {
+      const selected = _selectedOptions(el);
+      for (let j = 0; j < selected.length; j++) {
+        if (!_isOptionDisabled(selected[j])) entries.push([name, _optionValue(selected[j])]);
+      }
+    } else if (type === 'file') {
+      const files = el.files;
+      if (files && files.length) {
+        for (let j = 0; j < files.length; j++) entries.push([name, files[j]]);
+      } else {
+        entries.push([name, new File([], '', { type: 'application/octet-stream' })]);
+      }
+    } else if (tag === 'textarea') {
+      entries.push([name, String(el.value).replace(/\r\n?/g, '\n')]);
+    } else {
+      entries.push([name, String(el.value)]);
+    }
+  }
+  return entries;
+}
+
+// application/x-www-form-urlencoded serialisation of an entry list: names and
+// values get CRLF newlines, a File contributes its file name, and each pair is
+// percent-encoded by _formEncode. Callers: _navigateSubmit (GET query and POST
+// body).
+function _encodeEntryList(entries) {
+  const crlf = (s) => s.replace(/\r\n|\r|\n/g, '\r\n');
+  return entries
+    .map(([name, value]) => _formEncode(crlf(name)) + '=' + _formEncode(crlf(typeof value === 'string' ? value : value.name)))
+    .join('&');
+}
+
 // The HTML labelable-elements list (hidden inputs excluded), shared by the
 // Element.labels and HTMLLabelElement.control getters.
 function _isLabelable(el) {
@@ -4740,17 +4963,12 @@ class Element extends Node {
       _oldChecked = _inputChecked(this);
       _oldIndeterminate = _inputIndeterminate(this);
       if (_type === 'radio') {
-        const _name = this.getAttribute('name') || '';
-        if (_name) {
-          _radioStates = [];
-          const _all = (this.ownerDocument || globalThis.document).querySelectorAll('input');
-          for (let i = 0; i < _all.length; i++) {
-            const r = _all[i];
-            if (((r.getAttribute('type') || '').toLowerCase()) !== 'radio') continue;
-            if ((r.getAttribute('name') || '') !== _name || r.form !== this.form) continue;
-            _radioStates.push([r, _inputChecked(r)]);
-            if (r !== this) _setInputChecked(r, false);
-          }
+        // Every group member's state, so a cancelled click restores them all.
+        _radioStates = [[this, _oldChecked]];
+        const _others = _radioGroupOthers(this);
+        for (let i = 0; i < _others.length; i++) {
+          _radioStates.push([_others[i], _inputChecked(_others[i])]);
+          _setInputChecked(_others[i], false);
         }
         _setInputChecked(this, true);
       } else {
@@ -4826,6 +5044,7 @@ class Element extends Node {
     }
     globalThis.__inbrowse_focused = this;
     globalThis.__inbrowse_click_target = this;
+    __inbrowseCore.ops.op_note_focus(_realmFrameId);
     this.dispatchEvent(globalThis.__inbrowse_markTrusted(new FocusEvent('focus', { relatedTarget: previous })));
     this.dispatchEvent(globalThis.__inbrowse_markTrusted(new FocusEvent('focusin', { bubbles: true, composed: true, relatedTarget: previous })));
   }
@@ -4988,23 +5207,14 @@ class Element extends Node {
   get value() {
     const tag = this.localName;
     if (tag === 'select') {
-      // Selected option wins; otherwise first option (HTML default).
-      const opts = this.querySelectorAll('option');
-      for (let i = 0; i < opts.length; i++) {
-        if (opts[i].selected) {
-          return opts[i].getAttribute('value') !== null ? opts[i].getAttribute('value') : opts[i].textContent;
-        }
-      }
-      if (opts.length) return opts[0].getAttribute('value') !== null ? opts[0].getAttribute('value') : opts[0].textContent;
-      return '';
+      // The first selected option's value, or "" when nothing is selected.
+      const selected = _selectedOptions(this);
+      return selected.length ? _optionValue(selected[0]) : '';
     }
     if (_formValues[this._nid] === undefined) _loadFormState(this._nid);
     if (_formValues[this._nid] !== undefined) return _formValues[this._nid];
     if (tag === 'textarea') return this.textContent;
-    if (tag === 'option') {
-      const attr = this.getAttribute('value');
-      return attr !== null ? attr : this.textContent;
-    }
+    if (tag === 'option') return _optionValue(this);
     if (tag === 'input') {
       const itype = (this.getAttribute('type') || '').toLowerCase();
       if (itype === 'checkbox' || itype === 'radio') {
@@ -5042,15 +5252,23 @@ class Element extends Node {
       // itself. Dispatching here fed pages that assign inside a change
       // handler back into that handler in an infinite loop.
       const wanted = String(v);
-      const opts = this.querySelectorAll('option');
+      const opts = this.options;
+      let matched = false;
       for (let i = 0; i < opts.length; i++) {
-        const attrV = opts[i].getAttribute('value');
-        const optVal = attrV !== null ? attrV : opts[i].textContent;
-        opts[i].selected = optVal === wanted;
+        const hit = !matched && _optionValue(opts[i]) === wanted;
+        if (hit) matched = true;
+        _writeOptionSelectedness(opts[i], hit);
       }
+      // A value no option carries leaves nothing selected, like selectedIndex = -1.
+      this._noDefaultSelection = !matched;
       return;
     }
     const value = String(v);
+    // HTML "set the value": a different value moves the caret to the end and
+    // drops any selection; assigning the same value leaves the selection alone.
+    if ((tag === 'input' || tag === 'textarea') && _textSelections.has(this) && value !== this.value) {
+      _textSelections.delete(this);
+    }
     _formValues[this._nid] = value;
     _dom("set_form_value", this._nid, value);
     if (tag === 'textarea') {
@@ -5133,6 +5351,10 @@ class Element extends Node {
     return _inputChecked(this);
   }
   set checked(v) {
+    if (v && ((this.getAttribute('type') || '').toLowerCase()) === 'radio') {
+      const others = _radioGroupOthers(this);
+      for (let i = 0; i < others.length; i++) _setInputChecked(others[i], false);
+    }
     _setInputChecked(this, v);
   }
   // `indeterminate` is IDL-only: it has no content attribute to reflect, so
@@ -5150,16 +5372,12 @@ class Element extends Node {
     return this.hasAttribute("selected");
   }
   set selected(v) {
-    this._selected = !!v;
-    // Keep the native DOM tree in sync so layout/paint observes live form
-    // state after scripts construct or change an option.
-    if (this.localName === 'option') {
-      if (this._selected) this.setAttribute('selected', '');
-      else this.removeAttribute('selected');
-    }
+    if (this.localName === 'option') _setOptionSelected(this, !!v);
+    else this._selected = !!v;
   }
   get text() {
-    if (['option', 'script', 'title', 'a'].includes(this.localName)) {
+    if (this.localName === 'option') return _optionText(this);
+    if (['script', 'title', 'a'].includes(this.localName)) {
       return this.textContent;
     }
     return undefined;
@@ -5182,7 +5400,7 @@ class Element extends Node {
   get label() {
     if (this.localName === 'option') {
       const label = this.getAttribute('label');
-      return label !== null ? label : this.textContent;
+      return label !== null ? label : _optionText(this);
     }
     if (this.localName === 'optgroup') return this.getAttribute('label') || '';
     return undefined;
@@ -5304,6 +5522,7 @@ class Element extends Node {
     this.setAttribute("src", v);
   }
   _resetIframeFrame() {
+    _loadingIframes.delete(this);
     _resetIframeElement(this);
   }
   _loadIframeSrc(url, submission) {
@@ -5318,6 +5537,7 @@ class Element extends Node {
     if (!submission && this._iframeLoadingUrl === fullUrl) return;
     this._resetIframeFrame();
     this._iframeLoadingUrl = fullUrl;
+    _loadingIframes.add(this);
     // Distinguish repeated form POSTs to the same URL from an older response.
     const request = this._iframeRequest = {};
     const el = this;
@@ -5325,11 +5545,18 @@ class Element extends Node {
     const method = submission?.method || 'GET';
     const headers = method === 'POST' ? '{"Content-Type":"application/x-www-form-urlencoded"}' : '{}';
     const body = submission?.body ? new TextEncoder().encode(submission.body) : new Uint8Array(0);
-    __inbrowseCore.ops.op_fetch_url(
-      fullUrl, method, headers, body, pageOrigin,
-      'no-cors', submission ? 'include' : 'same-origin', 'Document'
-    ).then(raw => {
+    // A data: document is carried by its URL, so there is nothing to fetch.
+    const fetched = !submission && /^data:/i.test(fullUrl)
+      ? Promise.resolve().then(() => JSON.stringify({
+        status: 200, url: fullUrl, body: _decodeDataScriptUrl(fullUrl),
+      }))
+      : __inbrowseCore.ops.op_fetch_url(
+        fullUrl, method, headers, body, pageOrigin,
+        'no-cors', submission ? 'include' : 'same-origin', 'Document'
+      );
+    fetched.then(raw => {
       if (el._iframeRequest !== request) return;
+      _loadingIframes.delete(el);
       const response = JSON.parse(raw);
       if (!response.blocked && response.status > 0 && response.status < 400) {
         const html = response.body || '';
@@ -5366,6 +5593,7 @@ class Element extends Node {
       el.dispatchEvent(new Event('load'));
     }).catch(() => {
       if (el._iframeRequest !== request) return;
+      _loadingIframes.delete(el);
       el._iframeLoadedUrl = fullUrl;
       el._iframeDoc = new _IframeDocument('<!DOCTYPE html><html><head></head><body></body></html>', fullUrl, el);
       el._iframeWin = new _IframeWindow(el._iframeDoc, fullUrl);
@@ -5381,11 +5609,13 @@ class Element extends Node {
     this._resetIframeFrame();
     this._iframeLoadingUrl = 'about:srcdoc';
     this._iframeSrcdoc = html;
+    _loadingIframes.add(this);
     // Coalesce attribute writes into one navigation task, after microtasks.
     if (this._iframeSrcdocTaskPending) return;
     this._iframeSrcdocTaskPending = true;
     _browserPostedTaskEnqueue(() => {
       this._iframeSrcdocTaskPending = false;
+      _loadingIframes.delete(this);
       if (!this.isConnected || this._iframeLoadingUrl !== 'about:srcdoc' || !this.hasAttribute('srcdoc')) return;
       if (this._frameId) globalThis.__inbrowse_forgetFrame(this._frameId);
       this._frameId = 0;
@@ -5393,6 +5623,7 @@ class Element extends Node {
       this._iframeLoadedUrl = 'about:srcdoc';
     }, _schedulerPriorityRank['user-visible'] * 2, _browserPostedTaskGeneration(), () => {
       this._iframeSrcdocTaskPending = false;
+      _loadingIframes.delete(this);
     });
   }
   get contentDocument() {
@@ -5508,19 +5739,24 @@ class Element extends Node {
     }
   }
   get selectedIndex() {
-    const opts = this.options;
-    for (let i = 0; i < opts.length; i++) {
-      if (opts[i].selected || opts[i].hasAttribute('selected')) return i;
-    }
-    // Only a single select implicitly selects its first option; a multiple
-    // select with nothing chosen idles at -1 like a real browser.
-    return opts.length && !this.hasAttribute('multiple') ? 0 : -1;
+    if (this.localName !== 'select') return -1;
+    const selected = _selectedOptions(this);
+    return selected.length ? [...this.options].indexOf(selected[0]) : -1;
   }
+  // WebIDL `long`: the value goes through ToInt32, so NaN and infinities are
+  // 0 and 1.9 is 1. An index outside the option list, including -1, leaves
+  // nothing selected, and the select then stays empty rather than falling back
+  // to its first option.
   set selectedIndex(v) {
+    if (this.localName !== 'select') return;
+    const index = v | 0;
     const opts = this.options;
-    for (let i = 0; i < opts.length; i++) {
-      opts[i]._selected = (i === v);
-    }
+    for (let i = 0; i < opts.length; i++) _writeOptionSelectedness(opts[i], i === index);
+    this._noDefaultSelection = index < 0 || index >= opts.length;
+  }
+  get selectedOptions() {
+    if (this.localName !== 'select') return undefined;
+    return HTMLCollection._from(_selectedOptions(this));
   }
   // Per the HTML spec, the submit() METHOD submits the form WITHOUT firing a
   // cancelable `submit` event: a page's submit listener cannot veto it. Only
@@ -5541,7 +5777,7 @@ class Element extends Node {
           "Failed to execute 'requestSubmit' on 'HTMLFormElement': The specified element is not a submit button."
         );
       }
-      if (submitter.form !== this) {
+      if (_formOwner(submitter) !== this) {
         throw new DOMException(
           "Failed to execute 'requestSubmit' on 'HTMLFormElement': The specified element is not owned by this form element.",
           'NotFoundError'
@@ -5553,35 +5789,7 @@ class Element extends Node {
     this._navigateSubmit(submitter);
   }
   _navigateSubmit(submitter) {
-    const pairs = [];
-    const fields = this.querySelectorAll('input, select, textarea');
-    for (let i = 0; i < fields.length; i++) {
-      const f = fields[i];
-      const name = f.getAttribute('name');
-      if (!name) continue;
-      if (f.getAttribute('disabled') !== null) continue;
-      const tag = f.localName;
-      const type = (f.getAttribute('type') || '').toLowerCase();
-      if ((type === 'checkbox' || type === 'radio') && !f.checked) continue;
-      if (type === 'file' || type === 'reset') continue;
-      if (type === 'button') continue;
-      if (type === 'submit' || tag === 'button') {
-        if (submitter && f !== submitter) continue;
-        if (!submitter) continue; // default submit: don't include submit button value
-      }
-
-      let val;
-      if (tag === 'select') {
-        const opt = f.querySelector('option[selected]') || f.querySelector('option');
-        val = opt ? (opt.getAttribute('value') !== null ? opt.getAttribute('value') : opt.textContent) : '';
-      } else if (tag === 'textarea') {
-        val = f.value || f.textContent || '';
-      } else {
-        val = f.value !== undefined ? f.value : (f.getAttribute('value') || '');
-      }
-      const enc = (s) => encodeURIComponent(s).replace(/%20/g, '+').replace(/!/g, '%21');
-      pairs.push(enc(name) + '=' + enc(val));
-    }
+    const encoded = _encodeEntryList(_constructEntryList(this, submitter || null));
 
     const action = this.getAttribute('action') || '';
     const method = (this.getAttribute('method') || 'GET').toUpperCase();
@@ -5589,7 +5797,6 @@ class Element extends Node {
     let targetUrl;
     try { targetUrl = new URL(action, baseUrl).href; } catch(e) { targetUrl = action; }
 
-    const encoded = pairs.join('&');
     if (method !== 'POST') {
       const sep = targetUrl.includes('?') ? '&' : '?';
       targetUrl += encoded ? sep + encoded : '';
@@ -8119,10 +8326,10 @@ Object.defineProperty(globalThis, 'constructor', {
 });
 // The global inherits Window.prototype -> EventTarget.prototype, as in
 // browsers, so `window instanceof EventTarget` holds and a patch made on
-// EventTarget.prototype reaches window. The Shady DOM polyfill (YouTube's
-// webcomponents-sd.js) saves each native method under a `__shady_native_`
-// name there and then calls window.__shady_native_addEventListener; without
-// this chain that call threw and the page's components never rendered. The
+// EventTarget.prototype reaches window. Web-component polyfills save each
+// native method under another name there and then call that name on window;
+// without this chain that call threw and the page's components never
+// rendered. The
 // global keeps its own add/remove/dispatchEvent (defined near the top) so a
 // bare `addEventListener(...)` call with no receiver still targets window.
 Object.setPrototypeOf(globalThis.Window.prototype, EventTarget.prototype);
@@ -11814,6 +12021,252 @@ globalThis.__inbrowse_setFieldValue = function(el, field, value) {
   } catch (_e) {}
   el[field] = value;
 };
+
+// ---- Text selection in text controls ----
+//
+// Every text-entry <input> and <textarea> has a selection: a start and end
+// offset in UTF-16 code units plus a direction. Until something moves it the
+// caret sits at the end of the value, and assigning a different value moves it
+// back there (HTML "set the value"), which is why _textSelections only holds a
+// control's selection once it has been moved. The IDL members below follow HTML:
+// they apply only to <input> types text, search, tel, url and password (and to
+// <textarea>), report null for the other types, and throw InvalidStateError
+// when set. The __inbrowse_* helpers at the end serve the CDP input domain,
+// which types into, deletes from and selects in every text-entry control,
+// including types such as email and number whose IDL members report null.
+const _INPUT_TYPES = new Set([
+  'hidden', 'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month',
+  'week', 'time', 'datetime-local', 'number', 'range', 'color', 'checkbox', 'radio',
+  'file', 'submit', 'image', 'reset', 'button',
+]);
+const _SELECTION_API_TYPES = new Set(['text', 'search', 'tel', 'url', 'password']);
+const _SELECT_METHOD_TYPES = new Set([
+  'text', 'search', 'tel', 'url', 'password', 'email', 'number', 'date', 'month',
+  'week', 'time', 'datetime-local', 'color', 'file',
+]);
+const _NON_TEXT_ENTRY_TYPES = new Set([
+  'hidden', 'checkbox', 'radio', 'file', 'submit', 'image', 'reset', 'button', 'range', 'color',
+]);
+
+// The input type state of an <input>: its type attribute, or "text" when that
+// is missing or not a known type. Callers: the selection predicates below.
+function _controlInputType(el) {
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  return _INPUT_TYPES.has(type) ? type : 'text';
+}
+
+// True for the elements that have a selection at all: <textarea> and <input>.
+function _isTextControl(el) {
+  return !!el && (el.localName === 'textarea' || el.localName === 'input')
+    && el.namespaceURI === 'http://www.w3.org/1999/xhtml';
+}
+
+// True when the selection IDL members (selectionStart, setSelectionRange, ...)
+// apply: a <textarea>, or an <input> of a type in _SELECTION_API_TYPES.
+function _selectionApplies(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || _SELECTION_API_TYPES.has(_controlInputType(el)));
+}
+
+// True when select() applies, which covers a few more input types.
+function _selectMethodApplies(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || _SELECT_METHOD_TYPES.has(_controlInputType(el)));
+}
+
+// True for controls the user can type into: a <textarea> or an <input> whose
+// type takes text. Callers: the __inbrowse_* selection helpers.
+function _isTextEntry(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || !_NON_TEXT_ENTRY_TYPES.has(_controlInputType(el)));
+}
+
+// The current selection of a text control, clamped to its value, with the
+// caret at the end for a control whose selection was never moved.
+function _readSelection(el) {
+  const length = String(el.value).length;
+  const stored = _textSelections.get(el);
+  if (!stored) return { start: length, end: length, dir: 'none' };
+  const end = Math.min(stored.end, length);
+  return { start: Math.min(stored.start, end), end, dir: stored.dir };
+}
+
+// HTML "set the selection range": clamp both offsets to the value, make end
+// not precede start, normalise the direction, and store it. When `notify` is
+// true and the range or direction changed, queue the `select` event a browser
+// fires for script and user selection changes; caret movement caused by typing
+// passes false. Callers: setSelectionRange, the selectionStart, selectionEnd and
+// selectionDirection setters, select(), and __inbrowse_setSelection.
+function _writeSelection(el, start, end, direction, notify) {
+  const length = String(el.value).length;
+  end = Math.min(end, length);
+  start = Math.min(start, end);
+  if (direction !== 'forward' && direction !== 'backward') direction = 'none';
+  const before = _readSelection(el);
+  _textSelections.set(el, { start, end, dir: direction });
+  if (notify && (before.start !== start || before.end !== end || before.dir !== direction)) {
+    setTimeout(() => {
+      el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('select', { bubbles: true })));
+    }, 0);
+  }
+}
+
+// WebIDL `unsigned long`: ToNumber, then modulo 2^32, so NaN is 0 and -1
+// becomes 4294967295 (which the clamp in _writeSelection then limits).
+function _unsignedLong(v) {
+  return Number(v) >>> 0;
+}
+
+// The InvalidStateError a selection member throws on an <input> type it does
+// not apply to. `verb` is "set"/"execute", `what` the member name.
+function _selectionTypeError(el, verb, what) {
+  const subject = verb === 'execute' ? `execute '${what}'` : `${verb} the '${what}' property`;
+  return new DOMException(
+    `Failed to ${subject} on 'HTMLInputElement': The input element's type ('${_controlInputType(el)}') does not support selection.`,
+    'InvalidStateError');
+}
+
+// Define a selection attribute. On a text control it follows HTML; on any other
+// element (all HTML elements share this prototype) it is an ordinary expando.
+function _defineSelectionAttribute(name, get, set) {
+  Object.defineProperty(Element.prototype, name, {
+    get() {
+      if (!_isTextControl(this)) return undefined;
+      return _selectionApplies(this) ? get(_readSelection(this)) : null;
+    },
+    set(v) {
+      if (!_isTextControl(this)) {
+        Object.defineProperty(this, name, { value: v, writable: true, enumerable: true, configurable: true });
+        return;
+      }
+      if (!_selectionApplies(this)) throw _selectionTypeError(this, 'set', name);
+      set(this, _readSelection(this), v);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+}
+_defineSelectionAttribute('selectionStart', (s) => s.start, (el, s, v) => {
+  const start = _unsignedLong(v);
+  _writeSelection(el, start, Math.max(start, s.end), s.dir, true);
+});
+_defineSelectionAttribute('selectionEnd', (s) => s.end, (el, s, v) => {
+  _writeSelection(el, s.start, _unsignedLong(v), s.dir, true);
+});
+_defineSelectionAttribute('selectionDirection', (s) => s.dir, (el, s, v) => {
+  _writeSelection(el, s.start, s.end, String(v), true);
+});
+
+Element.prototype.setSelectionRange = _markNative(function setSelectionRange(start, end, direction) {
+  if (arguments.length < 2) {
+    throw new TypeError(`Failed to execute 'setSelectionRange' on 'HTMLInputElement': 2 arguments required, but only ${arguments.length} present.`);
+  }
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectionApplies(this)) throw _selectionTypeError(this, 'execute', 'setSelectionRange');
+  _writeSelection(this, _unsignedLong(start), _unsignedLong(end), direction === undefined ? 'none' : String(direction), true);
+});
+
+// HTML setRangeText(): replace a range of the value, then place the selection
+// according to selectMode. The selection is captured before the value changes
+// because assigning a value moves the caret to the end.
+Element.prototype.setRangeText = _markNative(function setRangeText(replacement, start, end, selectMode) {
+  if (arguments.length < 1) {
+    throw new TypeError("Failed to execute 'setRangeText' on 'HTMLInputElement': 1 argument required, but only 0 present.");
+  }
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectionApplies(this)) throw _selectionTypeError(this, 'execute', 'setRangeText');
+  const text = String(replacement);
+  const value = String(this.value);
+  const selection = _readSelection(this);
+  if (arguments.length >= 3) {
+    start = _unsignedLong(start);
+    end = _unsignedLong(end);
+    if (start > end) {
+      throw new DOMException("Failed to execute 'setRangeText' on 'HTMLInputElement': The provided start value (" + start + ") is larger than the provided end value (" + end + ").", 'IndexSizeError');
+    }
+  } else {
+    start = selection.start;
+    end = selection.end;
+  }
+  start = Math.min(start, value.length);
+  end = Math.min(end, value.length);
+  const mode = selectMode === undefined ? 'preserve' : String(selectMode);
+  if (mode !== 'select' && mode !== 'start' && mode !== 'end' && mode !== 'preserve') {
+    throw new TypeError("Failed to execute 'setRangeText' on 'HTMLInputElement': The provided value '" + mode + "' is not a valid enum value of type SelectionMode.");
+  }
+  const delta = text.length - (end - start);
+  let newStart = selection.start, newEnd = selection.end;
+  if (mode === 'select') { newStart = start; newEnd = start + text.length; }
+  else if (mode === 'start') { newStart = newEnd = start; }
+  else if (mode === 'end') { newStart = newEnd = start + text.length; }
+  else {
+    if (newStart > end) newStart += delta; else if (newStart > start) newStart = start;
+    if (newEnd > end) newEnd += delta; else if (newEnd > start) newEnd = start;
+  }
+  globalThis.__inbrowse_setFieldValue(this, 'value', value.slice(0, start) + text + value.slice(end));
+  _writeSelection(this, newStart, newEnd, mode === 'preserve' ? selection.dir : 'none', false);
+});
+
+// HTML select(): select the whole value and fire `select`.
+Element.prototype.select = _markNative(function select() {
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectMethodApplies(this)) return;
+  _writeSelection(this, 0, String(this.value).length, 'none', true);
+});
+
+// The [start, end] offsets of a text-entry control's selection, whatever its
+// input type, or null for any other element. Callers: the CDP input domain's
+// text insertion, Backspace, Delete and Enter handling.
+globalThis.__inbrowse_selectionRange = function(el) {
+  if (!_isTextEntry(el)) return null;
+  const selection = _readSelection(el);
+  return [selection.start, selection.end];
+};
+
+// Move a text-entry control's selection without firing `select`, as typing and
+// deleting do. Callers: the CDP input domain after it edits a value.
+globalThis.__inbrowse_setSelection = function(el, start, end) {
+  if (_isTextEntry(el)) _writeSelection(el, start, end, 'none', false);
+};
+
+// Select all (Ctrl/Cmd+A, a triple click): the whole value of a focused
+// text-entry control, otherwise the whole document body. Returns whether
+// anything was selected. Callers: the CDP input domain.
+globalThis.__inbrowse_selectAll = function(el) {
+  if (_isTextEntry(el)) {
+    _writeSelection(el, 0, String(el.value).length, 'none', true);
+    return true;
+  }
+  const selection = globalThis.getSelection();
+  if (!selection || !document.body) return false;
+  selection.selectAllChildren(document.body);
+  return true;
+};
+
+// Select the word around a text-entry control's caret (a double click). The
+// word is the run of letters, digits and underscores containing the caret or
+// ending at it; on whitespace it is the whitespace run, and each other
+// character stands alone. Returns whether the control took the selection.
+// Callers: the CDP input domain.
+globalThis.__inbrowse_selectWord = function(el) {
+  if (!_isTextEntry(el)) return false;
+  const value = String(el.value);
+  if (value.length === 0) return false;
+  const kind = (index) => {
+    if (index > 0 && /[\uDC00-\uDFFF]/.test(value[index]) && /[\uD800-\uDBFF]/.test(value[index - 1])) index--;
+    const ch = String.fromCodePoint(value.codePointAt(index));
+    if (/[\p{L}\p{N}_]/u.test(ch)) return 'word';
+    if (/\s/.test(ch)) return 'space';
+    return 'other' + index;
+  };
+  const caret = _readSelection(el).end;
+  let anchor = Math.min(caret, value.length - 1);
+  if (caret < value.length && kind(caret) === 'word') anchor = caret;
+  else if (caret > 0 && kind(caret - 1) === 'word') anchor = caret - 1;
+  const wanted = kind(anchor);
+  let start = anchor, end = anchor + 1;
+  while (start > 0 && kind(start - 1) === wanted) start--;
+  while (end < value.length && kind(end) === wanted) end++;
+  _writeSelection(el, start, end, 'none', true);
+  return true;
+};
 globalThis.__inbrowse_setHovered = function(el) {
   if (typeof __inbrowseCore.ops.op_set_hovered === 'function') {
     __inbrowseCore.ops.op_set_hovered(el?._nid | 0, 0);
@@ -11983,7 +12436,7 @@ __inbrowseCore.setReportExceptionCallback(error => {
   catch (_) { message = "Uncaught exception"; }
   const event = new _browserErrorEvent("error", { message, error, cancelable: true });
   if (_eventTargetDispatch(globalThis, event)) {
-    __inbrowseCore.ops.op_report_browser_exception(error, globalThis.__inbrowse_frameId || 0);
+    __inbrowseCore.ops.op_report_browser_exception(error, globalThis.__inbrowse_frameId || 0, false);
     _consoleFn("error", [error]);
   }
 });
@@ -12393,9 +12846,14 @@ __inbrowseCore.setUnhandledPromiseRejectionHandler((promise, reason) => {
     reason,
     cancelable: true,
   });
-  globalThis.dispatchEvent(event);
-  // Browsers report an unhandled rejection without terminating the page's
-  // event loop. Returning true tells deno_core that the host delivered it.
+  // A page handler that cancels the event has handled the rejection. Otherwise
+  // it is an uncaught error, which a browser logs to the console and reports
+  // as an exception, without terminating the page's event loop.
+  if (globalThis.dispatchEvent(event)) {
+    __inbrowseCore.ops.op_report_browser_exception(reason, globalThis.__inbrowse_frameId || 0, true);
+    _consoleFn("error", ["Uncaught (in promise)", reason]);
+  }
+  // Returning true tells deno_core that the host delivered the rejection.
   return true;
 });
 
@@ -12695,32 +13153,24 @@ function _isFormBlob(v) {
     (v._bytes !== undefined || (typeof Blob === "function" && v instanceof Blob));
 }
 if (typeof FormData === "undefined") globalThis.FormData = class FormData {
-  constructor(form) {
+  constructor(form, submitter) {
     this._d = [];
-    // `new FormData(form)` reads the form's current successful controls (the
-    // spec's "constructing the entry list"): skip disabled controls, buttons,
-    // and unchecked checkboxes/radios; a checkbox with no value submits "on".
+    // `new FormData(form, submitter)` is the spec's "construct the entry list",
+    // the same _constructEntryList that native form submission uses.
     if (form === undefined || form === null) return;
     const isForm = form.nodeType === 1 && String(form.tagName || "").toUpperCase() === "FORM";
     if (!isForm) {
       throw new TypeError("Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.");
     }
-    if (typeof form.querySelectorAll === "function") {
-      const controls = form.querySelectorAll("input,select,textarea");
-      for (let i = 0; i < controls.length; i++) {
-        const el = controls[i];
-        const name = el.getAttribute ? el.getAttribute("name") : el.name;
-        if (!name || el.disabled) continue;
-        const tag = (el.tagName || "").toLowerCase();
-        const type = (((el.getAttribute && el.getAttribute("type")) || el.type || "")).toLowerCase();
-        if (tag === "input" && (type === "checkbox" || type === "radio")) {
-          if (el.checked) this._d.push([name, el.value != null ? String(el.value) : "on"]);
-          continue;
-        }
-        if (type === "submit" || type === "reset" || type === "button" || type === "image" || type === "file") continue;
-        this._d.push([name, el.value != null ? String(el.value) : ""]);
+    if (submitter !== undefined && submitter !== null) {
+      if (!_isSubmitButton(submitter)) {
+        throw new TypeError("Failed to construct 'FormData': The specified element is not a submit button.");
+      }
+      if (_formOwner(submitter) !== form) {
+        throw new DOMException("Failed to construct 'FormData': The specified element is not owned by this form element.", "NotFoundError");
       }
     }
+    this._d = _constructEntryList(form, submitter || null);
   }
   append(k, v) { this._d.push([String(k), _isFormBlob(v) ? v : String(v)]); }
   set(k, v) { k = String(k); this._d = this._d.filter(([a]) => a !== k); this._d.push([k, _isFormBlob(v) ? v : String(v)]); }
@@ -15855,6 +16305,18 @@ globalThis.__inbrowse_frameObjects = Object.create(null);
 // a shadow root is absent from `document.querySelectorAll('iframe')` (the
 // shape a challenge widget uses), while `isConnected` reports it correctly.
 // Treating it as gone would tear down a frame that is still in the page.
+// Connected iframe elements whose document has not been handed to the host
+// yet. A document's load event waits for its frames, so the host drains this
+// before it fires the page's load.
+const _loadingIframes = new Set();
+globalThis.__inbrowse_framesLoading = function () {
+  let loading = 0;
+  for (const element of _loadingIframes) {
+    if (element.isConnected) loading++;
+    else _loadingIframes.delete(element);
+  }
+  return loading;
+};
 globalThis.__inbrowse_liveFrameIds = function () {
   const live = [];
   for (const id in globalThis.__inbrowse_frameElements) {
@@ -19543,109 +20005,6 @@ if (!Element.prototype.setCustomValidity) {
     }
   };
   _markNative(Element.prototype.setCustomValidity);
-}
-
-// Text selection on Element.prototype
-const _ns_selectionStart = new WeakMap();
-const _ns_selectionEnd = new WeakMap();
-const _ns_selectionDir = new WeakMap();
-
-// Element.prototype.selectionStart - get/set selection start position
-if (!Element.prototype.selectionStart) {
-  Object.defineProperty(Element.prototype, 'selectionStart', {
-    get: function() {
-      return _ns_selectionStart.get(this) ?? null;
-    },
-    set: function(v) {
-      _ns_selectionStart.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.selectionEnd - get/set selection end position
-if (!Element.prototype.selectionEnd) {
-  Object.defineProperty(Element.prototype, 'selectionEnd', {
-    get: function() {
-      return _ns_selectionEnd.get(this) ?? null;
-    },
-    set: function(v) {
-      _ns_selectionEnd.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.selectionDirection - get/set selection direction
-if (!Element.prototype.selectionDirection) {
-  Object.defineProperty(Element.prototype, 'selectionDirection', {
-    get: function() {
-      return _ns_selectionDir.get(this) ?? 'none';
-    },
-    set: function(v) {
-      _ns_selectionDir.set(this, v === 'forward' || v === 'backward' ? v : 'none');
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.setSelectionRange - set text selection range
-if (!Element.prototype.setSelectionRange) {
-  Element.prototype.setSelectionRange = function setSelectionRange(start, end, direction) {
-    start = Math.max(0, parseInt(start, 10) || 0);
-    end = Math.max(0, parseInt(end, 10) || 0);
-    direction = direction === 'forward' || direction === 'backward' ? direction : 'none';
-    _ns_selectionStart.set(this, start);
-    _ns_selectionEnd.set(this, end);
-    _ns_selectionDir.set(this, direction);
-  };
-  _markNative(Element.prototype.setSelectionRange);
-}
-
-// Element.prototype.setRangeText - replace selection with text
-if (!Element.prototype.setRangeText) {
-  Element.prototype.setRangeText = function setRangeText(replacement, start, end, selectMode) {
-    const val = this.value;
-    if (!val) return;
-    const strVal = String(val);
-    start = start === undefined ? (this.selectionStart ?? 0) : Math.max(0, parseInt(start, 10) || 0);
-    end = end === undefined ? (this.selectionEnd ?? 0) : Math.max(0, parseInt(end, 10) || 0);
-    const newValue = strVal.slice(0, start) + String(replacement) + strVal.slice(end);
-    this.value = newValue;
-    selectMode = selectMode || 'preserve';
-    if (selectMode === 'select') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'start') {
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'end') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start + replLen);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    }
-  };
-  _markNative(Element.prototype.setRangeText);
-}
-
-// Element.prototype.select - select all text in the element
-if (!Element.prototype.select) {
-  Element.prototype.select = function select() {
-    const val = this.value;
-    if (val === undefined || val === null) return;
-    const len = String(val).length;
-    _ns_selectionStart.set(this, 0);
-    _ns_selectionEnd.set(this, len);
-    _ns_selectionDir.set(this, 'none');
-  };
-  _markNative(Element.prototype.select);
 }
 
 

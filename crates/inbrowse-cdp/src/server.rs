@@ -2273,7 +2273,7 @@ fn fast_path_response(text: &str) -> Option<String> {
         "Network.enable" | "Network.setCacheDisabled" | "Network.setRequestInterception" |
         "Page.setInterceptFileChooserDialog" |
         "Runtime.runIfWaitingForDebugger" | "Runtime.discardConsoleEntries" |
-        "Performance.enable" | "Log.enable" | "Security.enable" |
+        "Log.enable" | "Security.enable" |
         "Emulation.setTouchEmulationEnabled" |
         "CSS.enable" | "Accessibility.enable" | "ServiceWorker.enable" |
         "Inspector.enable" | "Debugger.enable" | "Profiler.enable" |

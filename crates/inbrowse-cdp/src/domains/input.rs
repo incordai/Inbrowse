@@ -1,6 +1,33 @@
 use serde_json::{json, Value};
 
 use crate::dispatch::CdpContext;
+use crate::domains::frames;
+
+/// A page whose `evaluate` runs in one of its frames: the one an input event
+/// is aimed at. Everything else is the page's own.
+struct InFrame<'a> {
+    page: &'a mut inbrowse::Page,
+    frame: u32,
+}
+
+impl InFrame<'_> {
+    fn evaluate(&mut self, code: &str) -> Result<Value, String> {
+        self.page.evaluate_in_frame_realm(self.frame, code)
+    }
+}
+
+impl std::ops::Deref for InFrame<'_> {
+    type Target = inbrowse::Page;
+    fn deref(&self) -> &inbrowse::Page {
+        self.page
+    }
+}
+
+impl std::ops::DerefMut for InFrame<'_> {
+    fn deref_mut(&mut self) -> &mut inbrowse::Page {
+        self.page
+    }
+}
 
 /// Embed a string as a JS string literal (double-quoted, with backslash,
 /// quotes, and control characters escaped) for interpolation into generated
@@ -11,9 +38,11 @@ fn js_str(s: &str) -> String {
 }
 
 // Insert `text` at the caret, replacing any non-collapsed selection the way a
-// real browser does when you type over selected text (for example after a
-// triple-click select-all). selectionStart is null during ordinary typing, so
-// the legacy append path is kept when no selection is tracked.
+// real browser does when you type over selected text (for example after
+// Ctrl+A or a triple-click). The selection comes from the page's
+// `__inbrowse_selectionRange`, which covers every text-entry control, whatever
+// its input type; a control whose selection was never moved has its caret at
+// the end of the value, so plain typing appends.
 //
 // The text is embedded as a JSON string literal rather than escaped by hand
 // into single quotes. JSON string syntax is a subset of JavaScript's, so this
@@ -30,23 +59,18 @@ fn insert_text_js(text: &str, ime_commit: bool) -> String {
             if (globalThis.__inbrowse_isDisabled(t)) return;\
             if (!{ime_commit} && t.hasAttribute('readonly')) return;\
             var ins = {text};\
-            var commitStart = {ime_commit} ? t.selectionStart : null;\
-            if ({ime_commit} && commitStart == null) commitStart = (t.value || '').length;\
+            var committed = globalThis.__inbrowse_selectionRange(t);\
+            if (!committed) return;\
+            var commitStart = {ime_commit} ? committed[0] : null;\
             var before = globalThis.__inbrowse_markTrusted(new InputEvent('beforeinput', {{bubbles:true,composed:true,cancelable:true,data:ins,inputType:'insertText'}}));\
             if (!t.dispatchEvent(before)) return;\
             if (t.hasAttribute('readonly') || globalThis.__inbrowse_isDisabled(t)) return;\
             var v = t.value || '';\
-            var s = t.selectionStart, e = t.selectionEnd;\
-            if (s == null) {{\
-                globalThis.__inbrowse_setFieldValue(t, 'value', v + ins);\
-            }} else {{\
-                s = Math.max(0, Math.min(s, v.length));\
-                e = (e == null) ? s : Math.max(0, Math.min(e, v.length));\
-                var lo = Math.min(s, e), hi = Math.max(s, e);\
-                globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, lo) + ins + v.slice(hi));\
-                var caret = Math.max(0, Math.min((commitStart == null ? lo : commitStart) + ins.length, t.value.length));\
-                t.setSelectionRange(caret, caret);\
-            }}\
+            var range = globalThis.__inbrowse_selectionRange(t) || [v.length, v.length];\
+            var lo = range[0], hi = range[1];\
+            globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, lo) + ins + v.slice(hi));\
+            var caret = Math.max(0, Math.min((commitStart == null ? lo : commitStart) + ins.length, t.value.length));\
+            globalThis.__inbrowse_setSelection(t, caret, caret);\
             t.dispatchEvent(globalThis.__inbrowse_markTrusted(new InputEvent('input', {{bubbles:true,composed:true,data:ins,inputType:'insertText'}})));\
         }})()",
         text = literal,
@@ -54,15 +78,17 @@ fn insert_text_js(text: &str, ime_commit: bool) -> String {
 }
 
 // Backspace deletes the selected range when there is one, so the common
-// "triple-click to select-all, then Backspace to clear" pattern works. With a
-// collapsed caret it removes the character before the caret, and with no
-// selection tracked it falls back to trimming the last character (legacy).
+// "select all, then Backspace to clear" pattern works. With a collapsed caret
+// it removes the character before the caret; a control whose caret was never
+// moved has it at the end of the value.
 const BACKSPACE_JS: &str = "(function() {\
     var t = document.activeElement;\
     if (!t || (t.localName !== 'input' && t.localName !== 'textarea')) return;\
     if (t.hasAttribute('readonly')) return;\
+    var range = globalThis.__inbrowse_selectionRange(t);\
+    if (!range) return;\
     var v = t.value || '';\
-    var s = t.selectionStart, e = t.selectionEnd;\
+    var s = range[0], e = range[1];\
     function backCount(str, p) {\
         if (p >= 2) {\
             var low = str.charCodeAt(p - 1), high = str.charCodeAt(p - 2);\
@@ -70,39 +96,30 @@ const BACKSPACE_JS: &str = "(function() {\
         }\
         return 1;\
     }\
-    if (s == null) {\
-        var n = backCount(v, v.length);\
-        globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, v.length - n));\
-    } else {\
-        s = Math.max(0, Math.min(s, v.length));\
-        e = (e == null) ? s : Math.max(0, Math.min(e, v.length));\
-        if (s !== e) {\
-            var lo = Math.min(s, e), hi = Math.max(s, e);\
-            globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, lo) + v.slice(hi));\
-            t.setSelectionRange(lo, lo);\
-        } else if (s > 0) {\
-            var d = backCount(v, s);\
-            globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, s - d) + v.slice(s));\
-            t.setSelectionRange(s - d, s - d);\
-        }\
+    if (s !== e) {\
+        globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, s) + v.slice(e));\
+        globalThis.__inbrowse_setSelection(t, s, s);\
+    } else if (s > 0) {\
+        var d = backCount(v, s);\
+        globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, s - d) + v.slice(s));\
+        globalThis.__inbrowse_setSelection(t, s - d, s - d);\
     }\
     t.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('input', {bubbles:true})));\
 })()";
 
+// Delete removes the selected range, or the character after the caret.
 const DELETE_JS: &str = "(function() {\
     var t = document.activeElement;\
     if (!t || (t.localName !== 'input' && t.localName !== 'textarea')) return;\
     if (t.hasAttribute('readonly')) return;\
+    var range = globalThis.__inbrowse_selectionRange(t);\
+    if (!range) return;\
     var v = t.value || '';\
-    var s = t.selectionStart, e = t.selectionEnd;\
-    if (s == null) return;\
-    s = Math.max(0, Math.min(s, v.length));\
-    e = (e == null) ? s : Math.max(0, Math.min(e, v.length));\
-    var lo = Math.min(s, e), hi = Math.max(s, e);\
+    var lo = range[0], hi = range[1];\
     if (lo === hi) hi = Math.min(v.length, hi + 1);\
     if (lo === hi) return;\
     globalThis.__inbrowse_setFieldValue(t, 'value', v.slice(0, lo) + v.slice(hi));\
-    t.setSelectionRange(lo, lo);\
+    globalThis.__inbrowse_setSelection(t, lo, lo);\
     t.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('input', {bubbles:true})));\
 })()";
 
@@ -166,6 +183,9 @@ pub async fn handle(
 
             if event_type == "mouseMoved" {
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
+                    let point = frames::frame_at_point(page, x, y)?;
+                    let (x, y) = (point.x, point.y);
+                    let mut page = InFrame { page, frame: point.frame };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || document.body;\
@@ -194,6 +214,9 @@ pub async fn handle(
                 }
             } else if event_type == "mousePressed" {
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
+                    let point = frames::frame_at_point(page, x, y)?;
+                    let (x, y) = (point.x, point.y);
+                    let mut page = InFrame { page, frame: point.frame };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || globalThis.__inbrowse_click_target || document.activeElement || document.body;\
@@ -247,6 +270,9 @@ pub async fn handle(
                 }
             } else if event_type == "mouseReleased" {
                 let moved_frame = if let Some(page) = ctx.get_session_page_mut(session_id) {
+                    let point = frames::frame_at_point(page, x, y)?;
+                    let (x, y) = (point.x, point.y);
+                    let mut page = InFrame { page, frame: point.frame };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || globalThis.__inbrowse_click_target || document.activeElement || document.body;\
@@ -299,6 +325,12 @@ pub async fn handle(
                                 var doubleClick = globalThis.__inbrowse_markTrusted(new MouseEvent('dblclick', {{bubbles:true,cancelable:true,view:globalThis,clientX:{x},clientY:{y},button:0,buttons:0,detail:2,altKey:{alt_key},ctrlKey:{ctrl_key},metaKey:{meta_key},shiftKey:{shift_key}}}));\
                                 clickTarget.dispatchEvent(doubleClick);\
                             }}\
+                            if (globalThis.__inbrowse_selectionRange(clickTarget) !== null) {{\
+                                if ({click_count} >= 3) globalThis.__inbrowse_selectAll(clickTarget);\
+                                else if ({click_count} === 2) globalThis.__inbrowse_selectWord(clickTarget);\
+                                else {{ var caret = String(clickTarget.value).length; globalThis.__inbrowse_setSelection(clickTarget, caret, caret); }}\
+                                return;\
+                            }}\
                             if (checkable && globalThis.__inbrowse_inputChecked(clickTarget) !== oldChecked) {{\
                                 try {{ clickTarget.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('input', {{bubbles:true}}))); }} catch(e) {{}}\
                                 try {{ clickTarget.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('change', {{bubbles:true}}))); }} catch(e) {{}}\
@@ -327,10 +359,6 @@ pub async fn handle(
                             }} else if (tag === 'INPUT' && (type === 'submit' || type === 'image')) {{\
                                 var form2 = clickTarget.closest ? clickTarget.closest('form') : null;\
                                 if (form2) {{ try {{ if (typeof form2.requestSubmit === 'function') {{ form2.requestSubmit(clickTarget); }} else {{ form2.submit(clickTarget); }} }} catch(e) {{}} }}\
-                            }} else if ({click_count} >= 3 && (tag === 'INPUT' || tag === 'TEXTAREA')) {{\
-                                var len = clickTarget.value ? clickTarget.value.length : 0;\
-                                if (clickTarget.setSelectionRange) clickTarget.setSelectionRange(0, len);\
-                                else {{ clickTarget.selectionStart = 0; clickTarget.selectionEnd = len; }}\
                             }}\
                         }})()",
                         x = x,
@@ -361,6 +389,9 @@ pub async fn handle(
                 let delta_x = params.get("deltaX").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let delta_y = params.get("deltaY").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
+                    let point = frames::frame_at_point(page, x, y)?;
+                    let (x, y) = (point.x, point.y);
+                    let mut page = InFrame { page, frame: point.frame };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || document.body || document.documentElement;\
@@ -415,6 +446,8 @@ pub async fn handle(
         "insertText" => {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
             if let Some(page) = ctx.get_session_page_mut(session_id) {
+                let frame = page.focused_frame();
+                let mut page = InFrame { page, frame };
                 // IME commits snapshot the final caret before beforeinput.
                 // Keyboard insertion instead follows the handler's selection.
                 page.evaluate(&insert_text_js(text, true))?;
@@ -434,6 +467,8 @@ pub async fn handle(
                 .unwrap_or(0);
 
             if let Some(page) = ctx.get_session_page_mut(session_id) {
+                let frame = page.focused_frame();
+                let mut page = InFrame { page, frame };
                 match event_type {
                     "keyDown" | "rawKeyDown" => {
                         let js = format!(
@@ -454,7 +489,26 @@ pub async fn handle(
                             return Ok(json!({}));
                         }
 
-                        if !text.is_empty() && text != "\r" && text != "\n" {
+                        // Select all: the CDP `commands` list names it on macOS,
+                        // and Ctrl/Cmd+A is the shortcut everywhere else. A
+                        // focused text control selects its value, anything else
+                        // selects the document.
+                        let selects_all = params
+                            .get("commands")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|commands| commands.iter().any(|c| c.as_str() == Some("selectAll")))
+                            || ((ctrl_key || meta_key)
+                                && !alt_key
+                                && !shift_key
+                                && (key.eq_ignore_ascii_case("a") || code == "KeyA"));
+                        if selects_all {
+                            page.evaluate("globalThis.__inbrowse_selectAll(document.activeElement)")?;
+                        }
+
+                        // A Ctrl/Cmd shortcut types nothing, even if the client
+                        // sent the key's text alongside it.
+                        let shortcut = (ctrl_key || meta_key) && !alt_key;
+                        if !text.is_empty() && text != "\r" && text != "\n" && !shortcut {
                             page.evaluate(&insert_text_js(text, false))?;
                         }
 
@@ -470,12 +524,10 @@ pub async fn handle(
                                 if (target.localName === 'textarea') {\
                                     if (target.hasAttribute('readonly')) return;\
                                     var value = target.value || '';\
-                                    var start = target.selectionStart, end = target.selectionEnd;\
-                                    start = start == null ? value.length : Math.max(0, Math.min(start, value.length));\
-                                    end = end == null ? start : Math.max(0, Math.min(end, value.length));\
-                                    var lower = Math.min(start, end), upper = Math.max(start, end);\
+                                    var range = globalThis.__inbrowse_selectionRange(target);\
+                                    var lower = range[0], upper = range[1];\
                                     globalThis.__inbrowse_setFieldValue(target, 'value', value.slice(0, lower) + '\\n' + value.slice(upper));\
-                                    target.setSelectionRange(lower + 1, lower + 1);\
+                                    globalThis.__inbrowse_setSelection(target, lower + 1, lower + 1);\
                                     target.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('input', {bubbles:true})));\
                                 } else {\
                                     var form = target.form || (target.closest && target.closest('form'));\

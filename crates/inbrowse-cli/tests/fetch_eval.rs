@@ -96,6 +96,24 @@ fn a_runaway_script_is_stopped_by_the_timeout() {
 }
 
 #[test]
+fn a_runaway_page_script_is_stopped_and_reported_on_stderr() {
+    let started = std::time::Instant::now();
+    let output = cli()
+        .args([
+            "fetch",
+            "data:text/html,<script>while(true){}</script><p>ok</p>",
+            "--quiet", "--script-timeout", "1", "--dump", "text",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(started.elapsed() < std::time::Duration::from_secs(15), "took {:?}", started.elapsed());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ok"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Warning: script") && stderr.contains("1000 ms"), "{stderr}");
+}
+
+#[test]
 fn eval_side_effects_reach_the_dump() {
     let output = cli()
         .args([
