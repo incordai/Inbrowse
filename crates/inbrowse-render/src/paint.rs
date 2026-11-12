@@ -11888,10 +11888,12 @@ fn render_svg(bytes: &[u8], width: u32, height: u32) -> Option<Pixmap> {
 }
 
 /// An SVG image with absolute `width` and `height` but no `viewBox` scales
-/// to the size it is drawn at, as if its viewBox were `0 0 width height`
-/// (Chromium does this for SVG images; a `background-size: cover` SVG
-/// otherwise keeps its artwork at the intrinsic size in a larger canvas).
-/// Any other document is returned unchanged.
+/// to the size it is drawn at, each axis on its own, as if it had
+/// `viewBox="0 0 width height" preserveAspectRatio="none"` (Chromium scales
+/// such SVG images to the drawn size; a `background-size: cover` SVG would
+/// otherwise keep its artwork at the intrinsic size in a larger canvas, and
+/// a uniform fit would letterbox a size that rounds to a slightly different
+/// ratio). Any other document is returned unchanged.
 fn svg_image_with_intrinsic_view_box(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let unchanged = std::borrow::Cow::Borrowed(bytes);
     let Ok(source) = std::str::from_utf8(bytes) else {
@@ -11916,11 +11918,19 @@ fn svg_image_with_intrinsic_view_box(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]>
     let (Some(width), Some(height)) = (absolute("width"), absolute("height")) else {
         return unchanged;
     };
-    let insert_at = start + "<svg".len();
-    let mut output = String::with_capacity(source.len() + 40);
-    output.push_str(&source[..insert_at]);
-    output.push_str(&format!(" viewBox=\"0 0 {width} {height}\""));
-    output.push_str(&source[insert_at..]);
+    // Without a viewBox an author `preserveAspectRatio` has no effect, so it
+    // is replaced rather than duplicated (a repeated attribute is invalid XML).
+    let mut new_root = root.to_string();
+    let mut added = format!(" viewBox=\"0 0 {width} {height}\"");
+    match svg_root_attr_value_range(&new_root, "preserveAspectRatio") {
+        Some((value_start, value_end)) => new_root.replace_range(value_start..value_end, "none"),
+        None => added.push_str(" preserveAspectRatio=\"none\""),
+    }
+    new_root.insert_str("<svg".len(), &added);
+    let mut output = String::with_capacity(source.len() + added.len());
+    output.push_str(&source[..start]);
+    output.push_str(&new_root);
+    output.push_str(&source[tag_end + 1..]);
     std::borrow::Cow::Owned(output.into_bytes())
 }
 
@@ -17411,7 +17421,7 @@ mod tests {
         let with_box = svg_image_with_intrinsic_view_box(svg);
         assert!(std::str::from_utf8(&with_box)
             .unwrap()
-            .starts_with(r#"<svg viewBox="0 0 20 10" "#));
+            .starts_with(r#"<svg viewBox="0 0 20 10" preserveAspectRatio="none" "#));
         // Drawn at twice its size, the left half (the rect) fills x 0..20.
         let pixmap = render_svg(svg, 40, 20).expect("svg raster");
         assert!(
@@ -17419,6 +17429,25 @@ mod tests {
             "the artwork scales with the image"
         );
         assert_eq!(pixmap.pixel(30, 10).unwrap().alpha(), 0);
+        // Each axis scales on its own, so a slightly different ratio is not
+        // letterboxed: the full-size rect covers every edge pixel.
+        let full = br#"<svg xmlns="http://www.w3.org/2000/svg" width="720" height="424"><rect width="720" height="424" fill="blue"/></svg>"#;
+        let pixmap = render_svg(full, 354, 208).expect("svg raster");
+        for (x, y) in [(0, 0), (353, 0), (0, 207), (353, 207), (177, 0), (177, 207)] {
+            assert_eq!(
+                pixmap.pixel(x, y).unwrap().alpha(),
+                255,
+                "edge pixel ({x}, {y})"
+            );
+        }
+        // An ineffective author preserveAspectRatio is replaced, not repeated.
+        let authored = svg_image_with_intrinsic_view_box(
+            br#"<svg width="20" height="10" preserveAspectRatio="xMidYMid slice"/>"#,
+        );
+        assert_eq!(
+            std::str::from_utf8(&authored).unwrap(),
+            r#"<svg viewBox="0 0 20 10" width="20" height="10" preserveAspectRatio="none"/>"#
+        );
         for kept in [
             &br#"<svg viewBox="0 0 5 5" width="20" height="10"/>"#[..],
             &br#"<svg width="50%" height="10"/>"#[..],
