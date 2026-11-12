@@ -11133,14 +11133,16 @@ fn paint_image(
 
     // The raster may not paint past `visible_rect` (the border box already
     // intersected with the ancestor overflow clip): `Cover`/`None` can size
-    // the image past the box, and an ancestor clip can cut into the box
-    // itself. Only the fully-inside case takes the unmasked fast path.
+    // the image past the box, an ancestor clip can cut into the box itself,
+    // and a background tile (paint_background_image) can start inside the box
+    // and end past its right or bottom edge. Only the fully-inside case takes
+    // the unmasked fast path.
     let has_radius = !clip_radius.is_zero();
     let needs_box_clip = has_radius
-        || dest.width > visible_rect.width + 0.5
-        || dest.height > visible_rect.height + 0.5
         || dest.x < visible_rect.x - 0.5
-        || dest.y < visible_rect.y - 0.5;
+        || dest.y < visible_rect.y - 0.5
+        || dest.x + dest.width > visible_rect.x + visible_rect.width + 0.5
+        || dest.y + dest.height > visible_rect.y + visible_rect.height + 0.5;
     let mut clip = extra_clip.cloned();
     if needs_box_clip {
         let path = if has_radius {
@@ -11640,9 +11642,47 @@ fn is_svg(bytes: &[u8]) -> bool {
 
 /// Rasterize SVG bytes to a `width` x `height` pixmap, scaled to fit (matching
 /// how a replaced element like `<img>` sizes its intrinsic content).
+/// Rasterize an SVG used as an image (`<img>`, a CSS background or mask) at
+/// `width` x `height`. Inline `<svg>` goes through
+/// `render_svg_with_font_database` directly and keeps its own viewport rules.
 fn render_svg(bytes: &[u8], width: u32, height: u32) -> Option<Pixmap> {
     let fonts = svg_font_database();
-    render_svg_with_font_database(bytes, width, height, &fonts)
+    let bytes = svg_image_with_intrinsic_view_box(bytes);
+    render_svg_with_font_database(&bytes, width, height, &fonts)
+}
+
+/// An SVG image with absolute `width` and `height` but no `viewBox` scales
+/// to the size it is drawn at, as if its viewBox were `0 0 width height`
+/// (Chromium does this for SVG images; a `background-size: cover` SVG
+/// otherwise keeps its artwork at the intrinsic size in a larger canvas).
+/// Any other document is returned unchanged.
+fn svg_image_with_intrinsic_view_box(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let unchanged = std::borrow::Cow::Borrowed(bytes);
+    let Ok(source) = std::str::from_utf8(bytes) else {
+        return unchanged;
+    };
+    let Some((start, tag_end)) = svg_root_tag(source) else {
+        return unchanged;
+    };
+    let root = &source[start..=tag_end];
+    if svg_root_attr_value_range(root, "viewBox").is_some() {
+        return unchanged;
+    }
+    let absolute = |name: &str| {
+        let (value_start, value_end) = svg_root_attr_value_range(root, name)?;
+        let value = root[value_start..value_end].trim();
+        let number = value.strip_suffix("px").unwrap_or(value).trim();
+        number.parse::<f32>().ok().filter(|length| length.is_finite() && *length > 0.0)
+    };
+    let (Some(width), Some(height)) = (absolute("width"), absolute("height")) else {
+        return unchanged;
+    };
+    let insert_at = start + "<svg".len();
+    let mut output = String::with_capacity(source.len() + 40);
+    output.push_str(&source[..insert_at]);
+    output.push_str(&format!(" viewBox=\"0 0 {width} {height}\""));
+    output.push_str(&source[insert_at..]);
+    std::borrow::Cow::Owned(output.into_bytes())
 }
 
 fn render_svg_with_font_database(
@@ -11808,22 +11848,7 @@ fn has_inline_svg_text(tree: &DomTree) -> bool {
 /// finding the end of the root tag.
 fn svg_with_root_viewport(bytes: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     let source = std::str::from_utf8(bytes).ok()?;
-    let start = source.find("<svg")?;
-    let tail = &source[start..];
-    let mut quote = None;
-    let mut tag_end = None;
-    for (offset, ch) in tail.char_indices() {
-        match (quote, ch) {
-            (Some(open), close) if close == open => quote = None,
-            (None, '"' | '\'') => quote = Some(ch),
-            (None, '>') => {
-                tag_end = Some(start + offset);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let tag_end = tag_end?;
+    let (start, tag_end) = svg_root_tag(source)?;
     let mut root = source[start..=tag_end].to_string();
     for (name, value) in [("width", width), ("height", height)] {
         if let Some((value_start, value_end)) = svg_root_attr_value_range(&root, name) {
@@ -11838,6 +11863,23 @@ fn svg_with_root_viewport(bytes: &[u8], width: u32, height: u32) -> Option<Vec<u
     output.push_str(&root);
     output.push_str(&source[tag_end + 1..]);
     Some(output.into_bytes())
+}
+
+/// Byte offsets of the root `<svg` and of the `>` that ends its start tag,
+/// skipping a `>` inside a quoted attribute value. Shared by
+/// `svg_with_root_viewport` and `svg_image_with_intrinsic_view_box`.
+fn svg_root_tag(source: &str) -> Option<(usize, usize)> {
+    let start = source.find("<svg")?;
+    let mut quote = None;
+    for (offset, ch) in source[start..].char_indices() {
+        match (quote, ch) {
+            (Some(open), close) if close == open => quote = None,
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, '>') => return Some((start, start + offset)),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Value byte range for one attribute in an `<svg ...>` start tag.
@@ -16273,6 +16315,24 @@ mod tests {
             contain_center.blue() > 200 && contain_center.red() < 40,
             "contain must paint the fitted image through the center: {contain_center:?}"
         );
+    }
+
+    #[test]
+    fn an_svg_image_without_a_view_box_scales_to_its_drawn_size() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20px" height="10"><rect width="10" height="10" fill="blue"/></svg>"#;
+        let with_box = svg_image_with_intrinsic_view_box(svg);
+        assert!(std::str::from_utf8(&with_box).unwrap().starts_with(r#"<svg viewBox="0 0 20 10" "#));
+        // Drawn at twice its size, the left half (the rect) fills x 0..20.
+        let pixmap = render_svg(svg, 40, 20).expect("svg raster");
+        assert!(pixmap.pixel(15, 10).unwrap().blue() > 200, "the artwork scales with the image");
+        assert_eq!(pixmap.pixel(30, 10).unwrap().alpha(), 0);
+        for kept in [
+            &br#"<svg viewBox="0 0 5 5" width="20" height="10"/>"#[..],
+            &br#"<svg width="50%" height="10"/>"#[..],
+            &br#"<svg height="10"/>"#[..],
+        ] {
+            assert_eq!(&*svg_image_with_intrinsic_view_box(kept), kept, "left unchanged");
+        }
     }
 
     #[test]

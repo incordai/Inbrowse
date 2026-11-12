@@ -262,6 +262,13 @@ All notable changes to Inbrowse are recorded here. The format follows
 - An IndexedDB transaction with no requests counts as finished once its task
   ends, so using it later throws `InvalidStateError` as in Chrome, whichever
   task runs first.
+- The `background` shorthand sets `background-position`, so
+  `background: url(...) center` and sprite offsets such as `-24px 0` take
+  effect instead of drawing from the top left.
+- A background whose tile grid is shifted by its position is clipped at the
+  box's right and bottom edges instead of painting up to one tile past them.
+- An SVG image with `width` and `height` but no `viewBox` scales to the size
+  it is drawn at, as in Chrome (for example under `background-size: cover`).
 
 ### Security
 

@@ -1206,7 +1206,9 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                 style.background_size = None;
                 style.background_size_expression = background_size_expression(value);
                 style.background_size_fit = parse_background_size_fit(value);
-                style.background_position = crate::BackgroundPosition::default();
+                style.background_position = background_shorthand_position(value)
+                    .map(|position| parse_background_position(&position))
+                    .unwrap_or_default();
                 style.background_repeat = parse_background_repeat(value).unwrap_or_default();
                 style.background_origin = crate::BackgroundOrigin::default();
                 style.background_clip = crate::BackgroundClip::default();
@@ -8654,6 +8656,35 @@ fn parse_background_box_shorthand(
     }
 }
 
+/// The `<bg-position>` of a `background` shorthand's first layer: its
+/// position keywords, lengths and percentages, up to the `/` that starts the
+/// size. URLs and gradients (function tokens), colors, and repeat, box and
+/// attachment keywords are not positions. `None` when the layer names none,
+/// which leaves the initial `0% 0%`.
+fn background_shorthand_position(value: &str) -> Option<String> {
+    let first_layer = split_top_level(value, ',').into_iter().next()?;
+    let mut position = Vec::new();
+    for token in split_ws_paren(first_layer) {
+        if token.contains('(') {
+            continue;
+        }
+        let (part, size_follows) = match token.split_once('/') {
+            Some((before, _)) => (before, true),
+            None => (token, false),
+        };
+        let lower = part.to_ascii_lowercase();
+        if matches!(lower.as_str(), "left" | "right" | "top" | "bottom" | "center")
+            || (!part.is_empty() && px_value(part).is_some())
+        {
+            position.push(lower);
+        }
+        if size_follows {
+            break;
+        }
+    }
+    (!position.is_empty()).then(|| position.join(" "))
+}
+
 fn background_size_expression(value: &str) -> Option<String> {
     let (_, size) = value.rsplit_once('/')?;
     let mut depth = 0i32;
@@ -10682,7 +10713,15 @@ mod tests {
         assert_eq!(s.background_size, None);
         assert_eq!(s.background_size_expression, None);
         assert_eq!(s.background_size_fit, None);
-        assert_eq!(s.background_position, crate::BackgroundPosition::default());
+        // `0` is a one-value position: the other axis is centered (Chromium
+        // computes `background: 0` to `0px 50%`).
+        assert_eq!(
+            s.background_position,
+            crate::BackgroundPosition::new(
+                crate::BackgroundPositionAxis::pixels(0.0),
+                crate::BackgroundPositionAxis::percentage(0.5),
+            )
+        );
         assert_eq!(s.background_origin, crate::BackgroundOrigin::PaddingBox);
         assert_eq!(s.background_clip, crate::BackgroundClip::BorderBox);
         assert!(!s.background_clip_text);
@@ -10702,6 +10741,28 @@ mod tests {
             contextual.background_size_expression.as_deref(),
             Some("calc(100% - 2rem) auto")
         );
+    }
+
+    #[test]
+    fn background_shorthand_sets_the_position() {
+        use crate::{BackgroundPosition, BackgroundPositionAxis};
+        let position = |declaration: &str| compute_style("div", Some(declaration)).background_position;
+        let center = BackgroundPositionAxis::percentage(0.5);
+        assert_eq!(position("background:url(/a.png) center"), BackgroundPosition::new(center, center));
+        assert_eq!(
+            position("background:#fff url(/sprite.png) -24px 0 no-repeat"),
+            BackgroundPosition::new(BackgroundPositionAxis::pixels(-24.0), BackgroundPositionAxis::pixels(0.0)),
+        );
+        assert_eq!(
+            position("background:url(hero.svg) right bottom/cover no-repeat fixed"),
+            BackgroundPosition::new(BackgroundPositionAxis::percentage(1.0), BackgroundPositionAxis::percentage(1.0)),
+        );
+        // A size after the slash is not a position, and no position keeps the initial one.
+        assert_eq!(
+            position("background:url(a.png) 10% / 50px 20px"),
+            BackgroundPosition::new(BackgroundPositionAxis::percentage(0.1), center),
+        );
+        assert_eq!(position("background:red url(a.png) no-repeat"), BackgroundPosition::default());
     }
 
     #[test]

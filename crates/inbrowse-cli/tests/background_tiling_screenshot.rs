@@ -93,3 +93,18 @@ fn linked_background_image_honours_no_repeat_and_repeat_x() {
     assert_eq!(image.get_pixel(4, 12).0, RED, "repeat-x second tile");
     assert_eq!(image.get_pixel(0, 16).0, WHITE, "repeat-x has no second row");
 }
+
+#[test]
+fn a_shifted_tiling_grid_is_clipped_at_the_right_and_bottom_edges() {
+    // Centered 4px tiles in a 10px box start at -1, 3 and 7, so the last
+    // tile of each axis (7..11) crosses the box edge at 10.
+    let base = serve(
+        "<html style='margin:0'><body style='margin:0;background:white'>\
+         <div style='width:10px;height:10px;background:url(/tile.png) center'></div></body></html>",
+    );
+    let image = capture(&format!("{base}/index.html"));
+    assert_eq!(image.get_pixel(3, 0).0, RED, "the grid is shifted by the position");
+    assert_eq!(image.get_pixel(9, 9).0, BLUE, "the last tile is painted inside the box");
+    assert_eq!(image.get_pixel(10, 0).0, WHITE, "nothing past the right edge");
+    assert_eq!(image.get_pixel(0, 10).0, WHITE, "nothing past the bottom edge");
+}
