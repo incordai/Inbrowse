@@ -685,5 +685,9 @@ streaming `Page.startScreencast` protocol.
 Apache-2.0. Copyright 2026 Incord AI. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 Inbrowse is based on [obscura](https://github.com/h4ckf0r0day/obscura) (Apache-2.0).
+Report Inbrowse bugs here even when they also reproduce in obscura; upstream
+fixes are ported by hand. See
+[Relationship to obscura](CONTRIBUTING.md#relationship-to-obscura) for the
+sync policy and how to read issue numbers in older history.
 
 ---

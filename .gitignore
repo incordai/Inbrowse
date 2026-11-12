@@ -1,2 +1,4 @@
 target/
 .DS_Store
+# Local build and test logs.
+*.log

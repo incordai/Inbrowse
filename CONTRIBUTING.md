@@ -30,6 +30,11 @@ A few notes to keep the project maintainable:
 
 ## Building
 
+The quickest start is the dev container in [`.devcontainer/`](.devcontainer),
+for VS Code Dev Containers or GitHub Codespaces (choose an 8-core machine). It
+installs CMake, Clang/libclang, nasm, libvpx and cargo-nextest; otherwise see
+[docs/Build-from-source.md](docs/Build-from-source.md).
+
 Inbrowse supports four release configurations. Keep all four building when you
 change feature gates or shared code:
 
@@ -170,7 +175,7 @@ fix(cdp): honor text selection on Backspace and typing
 Backspace trimmed the last character and typing always appended, ignoring
 any selection. Both now respect a non-collapsed selection.
 
-Fixes #316.
+Fixes #<issue number>.
 ```
 
 - `type` is one of `fix`, `feat`, `docs`, `test`, `perf`, `chore`. The `scope`
@@ -208,6 +213,26 @@ Multi-statement `--eval` that starts with `const` returns `null` (V8 gives
 
 **Security issues:** do not open a public issue. See [SECURITY.md](SECURITY.md)
 for private reporting.
+
+## Relationship to obscura
+
+Inbrowse began as a fork of [obscura](https://github.com/h4ckf0r0day/obscura)
+(Apache-2.0, credited in [NOTICE](NOTICE)). The repository was imported with
+its full history rather than created as a GitHub fork, so there is no "forked
+from" banner and the contributor graph includes obscura's authors.
+
+- **Where to report a bug.** Report bugs in Inbrowse here, even when the same
+  bug also reproduces in obscura. We fix it here; telling obscura about it as
+  well is welcome but optional.
+- **How upstream changes arrive.** The crates, binaries, environment variables
+  and identifiers were renamed (`obscura` to `inbrowse`), so upstream commits
+  do not merge cleanly. Maintainers review obscura periodically and port the
+  fixes that apply, adapted to this tree; each one is listed in
+  [CHANGELOG.md](CHANGELOG.md) with "(from upstream obscura)". There is no
+  automatic sync.
+- **Old issue and PR numbers.** Numbers like `#316` in commits before the
+  rename to Inbrowse (`e854753`) refer to obscura's issues and pull requests,
+  not to this repository's.
 
 ## Scope and direction
 
