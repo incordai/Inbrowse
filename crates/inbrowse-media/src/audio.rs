@@ -15,7 +15,10 @@ use hang::catalog::{AudioCodec, AudioConfig, AAC};
 use moq_audio::decode::{Config as DecoderConfig, Decoder, Kind as DecoderKind};
 use moq_audio::Layout;
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
-use rubato::{Async, FixedAsync, Resampler as _, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Async, FixedAsync, Resampler as _, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
 
 use crate::demux::{Codec, Track};
 use crate::AudioReport;
@@ -37,7 +40,11 @@ fn open(track: &Track) -> Result<Decoder, String> {
             c
         }
         Codec::Opus { head } => {
-            let mut c = AudioConfig::new(AudioCodec::Opus, 48_000, track.channels.unwrap_or(2).clamp(1, 2));
+            let mut c = AudioConfig::new(
+                AudioCodec::Opus,
+                48_000,
+                track.channels.unwrap_or(2).clamp(1, 2),
+            );
             c.description = head.clone();
             c
         }
@@ -85,7 +92,8 @@ impl Mono {
             oversampling_factor: 128,
             window: WindowFunction::BlackmanHarris2,
         };
-        let inner = Async::<f32>::new_sinc(ratio, 1.0, &params, CHUNK, 1, FixedAsync::Input).map_err(|e| e.to_string())?;
+        let inner = Async::<f32>::new_sinc(ratio, 1.0, &params, CHUNK, 1, FixedAsync::Input)
+            .map_err(|e| e.to_string())?;
         let skip = inner.output_delay();
         let output_max = inner.output_frames_max();
         Ok(Self {
@@ -113,13 +121,18 @@ impl Mono {
     }
 
     fn run(&mut self, out: &mut Vec<f32>) -> Result<(), String> {
-        let Some(inner) = self.inner.as_mut() else { return Ok(()) };
+        let Some(inner) = self.inner.as_mut() else {
+            return Ok(());
+        };
         while self.pending.len() >= CHUNK {
             self.input[0].copy_from_slice(&self.pending[..CHUNK]);
-            let input = SequentialSliceOfVecs::new(&self.input, 1, CHUNK).map_err(|e| e.to_string())?;
-            let mut output =
-                SequentialSliceOfVecs::new_mut(&mut self.output, 1, self.output_max).map_err(|e| e.to_string())?;
-            let (_, produced) = inner.process_into_buffer(&input, &mut output, None).map_err(|e| e.to_string())?;
+            let input =
+                SequentialSliceOfVecs::new(&self.input, 1, CHUNK).map_err(|e| e.to_string())?;
+            let mut output = SequentialSliceOfVecs::new_mut(&mut self.output, 1, self.output_max)
+                .map_err(|e| e.to_string())?;
+            let (_, produced) = inner
+                .process_into_buffer(&input, &mut output, None)
+                .map_err(|e| e.to_string())?;
             self.pending.drain(..CHUNK);
             let produced = &self.output[0][..produced];
             let dropped = self.skip.min(produced.len());
@@ -172,7 +185,8 @@ impl Wav {
     }
 
     fn finish(mut self) -> std::io::Result<u64> {
-        let bytes = u32::try_from(self.samples * 2).map_err(|_| std::io::Error::other("WAV larger than 4 GiB"))?;
+        let bytes = u32::try_from(self.samples * 2)
+            .map_err(|_| std::io::Error::other("WAV larger than 4 GiB"))?;
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&header(bytes))?;
         self.file.flush()?;
@@ -214,7 +228,8 @@ fn frames_before_zero(pts_us: i64, rate: u32) -> usize {
 /// Write `us` microseconds of silence at [`OUTPUT_RATE`]. Used by
 /// [`extract_audio`] for a track that starts late.
 fn write_silence(wav: &mut Wav, us: i64) -> std::io::Result<()> {
-    let mut left = usize::try_from(us.max(0) as i128 * i128::from(OUTPUT_RATE) / 1_000_000).unwrap_or(usize::MAX);
+    let mut left = usize::try_from(us.max(0) as i128 * i128::from(OUTPUT_RATE) / 1_000_000)
+        .unwrap_or(usize::MAX);
     let zeros = [0.0f32; CHUNK];
     while left > 0 {
         let n = left.min(CHUNK);
@@ -263,10 +278,23 @@ fn downmix_weights(layout: Layout) -> Vec<f32> {
         Layout::Quad => vec![Left(1.0), Right(1.0), Left(MINUS_3_DB), Right(MINUS_3_DB)],
         Layout::FourPointZero => vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Both(MINUS_3_DB)],
         Layout::FivePointZero => {
-            vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Left(MINUS_3_DB), Right(MINUS_3_DB)]
+            vec![
+                Left(1.0),
+                Right(1.0),
+                Both(MINUS_3_DB),
+                Left(MINUS_3_DB),
+                Right(MINUS_3_DB),
+            ]
         }
         Layout::FivePointOne => {
-            vec![Left(1.0), Right(1.0), Both(MINUS_3_DB), Dropped, Left(MINUS_3_DB), Right(MINUS_3_DB)]
+            vec![
+                Left(1.0),
+                Right(1.0),
+                Both(MINUS_3_DB),
+                Dropped,
+                Left(MINUS_3_DB),
+                Right(MINUS_3_DB),
+            ]
         }
         Layout::SixPointOne => vec![
             Left(1.0),
@@ -370,12 +398,13 @@ pub(crate) fn extract_audio(
             }
         };
         mono.clear();
-        mono.extend(
-            decoded
-                .samples
-                .chunks_exact(weights.len())
-                .map(|frame| frame.iter().zip(&weights).map(|(sample, weight)| sample * weight).sum::<f32>()),
-        );
+        mono.extend(decoded.samples.chunks_exact(weights.len()).map(|frame| {
+            frame
+                .iter()
+                .zip(&weights)
+                .map(|(sample, weight)| sample * weight)
+                .sum::<f32>()
+        }));
         // Audio an edit list puts before 0 (encoder priming) is not played.
         mono.drain(..frames_before_zero(sample.pts_us, decoder.sample_rate()).min(mono.len()));
         out.clear();
@@ -397,7 +426,10 @@ pub(crate) fn extract_audio(
         return None;
     }
     if cut {
-        warnings.push(format!("audio cut at {:.0} s (duration limit)", max_duration_us as f64 / 1e6));
+        warnings.push(format!(
+            "audio cut at {:.0} s (duration limit)",
+            max_duration_us as f64 / 1e6
+        ));
     }
     if errors > 0 {
         warnings.push(format!("{errors} audio packets could not be decoded"));
@@ -431,15 +463,23 @@ mod tests {
     /// The 16 kHz samples `extract_audio` writes for the audio track of `data`.
     fn decode(data: &Bytes, tag: &str) -> Vec<i16> {
         let demuxed = mp4::read(data, &mut Vec::new()).unwrap();
-        let track = demuxed.tracks.iter().find(|t| t.kind == Kind::Audio).unwrap();
-        let dir = std::env::temp_dir().join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
+        let track = demuxed
+            .tracks
+            .iter()
+            .find(|t| t.kind == Kind::Audio)
+            .unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut warnings = Vec::new();
         let report = extract_audio(track, &dir, i64::MAX, None, &mut warnings).expect("audio");
         assert!(warnings.is_empty(), "{warnings:?}");
         let wav = std::fs::read(&report.path).unwrap();
         let _ = std::fs::remove_dir_all(dir);
-        wav[44..].chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]])).collect()
+        wav[44..]
+            .chunks_exact(2)
+            .map(|s| i16::from_le_bytes([s[0], s[1]]))
+            .collect()
     }
 
     #[test]
@@ -457,7 +497,11 @@ mod tests {
     fn priming_frames_named_by_the_edit_list_are_not_written() {
         let samples = decode(&Bytes::from_static(H264_AAC), "priming");
         let expected = (95 * 1024 - 1024) / 3;
-        assert!(samples.len().abs_diff(expected) <= 8, "{} samples, expected {expected}", samples.len());
+        assert!(
+            samples.len().abs_diff(expected) <= 8,
+            "{} samples, expected {expected}",
+            samples.len()
+        );
     }
 
     /// A leading empty edit puts that much silence before the audio so the
@@ -465,14 +509,30 @@ mod tests {
     #[test]
     fn leading_empty_edit_becomes_silence() {
         let data = rewrite_moov(H264_AAC, |moov| {
-            let entry = |segment_duration, media_time| ElstEntry { segment_duration, media_time, media_rate: 1.into() };
-            moov.trak[1].edts = Some(Edts { elst: Some(Elst { entries: vec![entry(500, None), entry(2000, Some(1024))] }) });
+            let entry = |segment_duration, media_time| ElstEntry {
+                segment_duration,
+                media_time,
+                media_rate: 1.into(),
+            };
+            moov.trak[1].edts = Some(Edts {
+                elst: Some(Elst {
+                    entries: vec![entry(500, None), entry(2000, Some(1024))],
+                }),
+            });
         });
         let samples = decode(&data, "silence");
         let expected = 8_000 + (95 * 1024 - 1024) / 3;
-        assert!(samples.len().abs_diff(expected) <= 8, "{} samples, expected {expected}", samples.len());
+        assert!(
+            samples.len().abs_diff(expected) <= 8,
+            "{} samples, expected {expected}",
+            samples.len()
+        );
         assert!(samples[..8_000].iter().all(|&s| s == 0));
-        let peak = samples[8_000..].iter().map(|s| s.unsigned_abs()).max().unwrap();
+        let peak = samples[8_000..]
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap();
         assert!(peak > 3000, "peak {peak}");
     }
 
@@ -487,23 +547,41 @@ mod tests {
             ("he-aac", &[0x29, 0x90], "AAC-LC"),
             // AAC-LC, 48 kHz, channel configuration 0, then a program config
             // element naming a centre and a pair of front channels.
-            ("pce", &[0x11, 0x80, 0x04, 0xC8, 0x00, 0x00, 0x01, 0x10, 0x00], "program config"),
+            (
+                "pce",
+                &[0x11, 0x80, 0x04, 0xC8, 0x00, 0x00, 0x01, 0x10, 0x00],
+                "program config",
+            ),
         ];
         for (tag, asc, reason) in refused {
-            let mut track = Track::new(Kind::Audio, Codec::Aac { asc: Bytes::from_static(asc) }, "aac");
+            let mut track = Track::new(
+                Kind::Audio,
+                Codec::Aac {
+                    asc: Bytes::from_static(asc),
+                },
+                "aac",
+            );
             track.sample_rate = Some(48_000);
             track.channels = Some(3);
-            let dir = std::env::temp_dir().join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
+            let dir = std::env::temp_dir()
+                .join(format!("inbrowse-audio-test-{}-{tag}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let mut warnings = Vec::new();
-            assert!(extract_audio(&track, &dir, i64::MAX, None, &mut warnings).is_none(), "{tag}");
+            assert!(
+                extract_audio(&track, &dir, i64::MAX, None, &mut warnings).is_none(),
+                "{tag}"
+            );
             let _ = std::fs::remove_dir_all(dir);
             assert_eq!(warnings.len(), 1, "{tag}: {warnings:?}");
             assert!(
-                warnings[0].contains("aac track is skipped") && warnings[0].contains("no audio is written"),
+                warnings[0].contains("aac track is skipped")
+                    && warnings[0].contains("no audio is written"),
                 "{tag}: {warnings:?}"
             );
-            assert!(warnings[0].contains(reason), "{tag}: the decoder's reason is kept: {warnings:?}");
+            assert!(
+                warnings[0].contains(reason),
+                "{tag}: the decoder's reason is kept: {warnings:?}"
+            );
         }
     }
 
@@ -531,17 +609,28 @@ mod tests {
         for layout in layouts {
             let weights = downmix_weights(layout);
             assert_eq!(weights.len(), layout.channels() as usize, "{layout:?}");
-            assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{layout:?}: {weights:?}");
+            assert!(
+                (weights.iter().sum::<f32>() - 1.0).abs() < 1e-6,
+                "{layout:?}: {weights:?}"
+            );
         }
         let five_one = downmix_weights(Layout::FivePointOne);
         let norm = 1.0 + 2.0 * std::f32::consts::FRAC_1_SQRT_2;
         // L, R, C, LFE, Ls, Rs.
-        let expected = [0.5 / norm, 0.5 / norm, std::f32::consts::FRAC_1_SQRT_2 / norm, 0.0];
+        let expected = [
+            0.5 / norm,
+            0.5 / norm,
+            std::f32::consts::FRAC_1_SQRT_2 / norm,
+            0.0,
+        ];
         for (got, want) in five_one.iter().zip(expected) {
             assert!((got - want).abs() < 1e-6, "{five_one:?}");
         }
         assert_eq!(five_one[3], 0.0);
-        assert!((five_one[4] - five_one[2] / 2.0).abs() < 1e-6, "{five_one:?}");
+        assert!(
+            (five_one[4] - five_one[2] / 2.0).abs() < 1e-6,
+            "{five_one:?}"
+        );
         // Without a rule, channels are averaged.
         assert_eq!(downmix_weights(Layout::Discrete(4)), [0.25; 4]);
     }

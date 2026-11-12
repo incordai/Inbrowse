@@ -26,22 +26,36 @@ impl DomTree {
                 if depth <= MAX_PARSER_DEPTH {
                     return (parent, Some(depth));
                 }
-                let up = self.with_node(parent, |node| node.parent).flatten().unwrap_or(parent);
+                let up = self
+                    .with_node(parent, |node| node.parent)
+                    .flatten()
+                    .unwrap_or(parent);
                 return (up, Some(depth - 1));
             }
         }
         let inner = self.borrow_inner();
         let mut depth = 0;
         let mut current = parent;
-        while let Some(up) = inner.nodes.get(current.index())
-            .and_then(Option::as_ref).and_then(|node| node.parent)
+        while let Some(up) = inner
+            .nodes
+            .get(current.index())
+            .and_then(Option::as_ref)
+            .and_then(|node| node.parent)
         {
             depth += 1;
             if depth > MAX_PARSER_DEPTH {
-                let insertion_parent = inner.nodes.get(parent.index()).and_then(Option::as_ref)
-                    .and_then(|node| node.parent).unwrap_or(parent);
-                let known_depth = inner.nodes.get(up.index()).and_then(Option::as_ref)
-                    .is_some_and(|node| node.parent.is_none()).then_some(depth - 1);
+                let insertion_parent = inner
+                    .nodes
+                    .get(parent.index())
+                    .and_then(Option::as_ref)
+                    .and_then(|node| node.parent)
+                    .unwrap_or(parent);
+                let known_depth = inner
+                    .nodes
+                    .get(up.index())
+                    .and_then(Option::as_ref)
+                    .is_some_and(|node| node.parent.is_none())
+                    .then_some(depth - 1);
                 return (insertion_parent, known_depth);
             }
             current = up;
@@ -195,7 +209,10 @@ impl TreeSink for DomTree {
         if flags.template {
             let template_doc = self.new_node(NodeData::Document);
             self.with_node_mut(id, |node| {
-                if let NodeData::Element { template_contents, .. } = &mut node.data {
+                if let NodeData::Element {
+                    template_contents, ..
+                } = &mut node.data
+                {
                     *template_contents = Some(template_doc);
                 }
             });
@@ -224,9 +241,12 @@ impl TreeSink for DomTree {
                 // without changing the tree builder's open-elements stack.
                 let (insertion_parent, depth) = self.parser_insertion_parent(*parent);
                 self.append_child(insertion_parent, node_id);
-                let cache = depth.filter(|_| {
-                    self.with_node(node_id, |node| node.parent).flatten() == Some(insertion_parent)
-                }).map(|depth| (insertion_parent, depth, node_id, depth + 1));
+                let cache = depth
+                    .filter(|_| {
+                        self.with_node(node_id, |node| node.parent).flatten()
+                            == Some(insertion_parent)
+                    })
+                    .map(|depth| (insertion_parent, depth, node_id, depth + 1));
                 self.parser_depth_cache.set(cache);
             }
             NodeOrText::AppendText(text) => {
@@ -243,7 +263,9 @@ impl TreeSink for DomTree {
         prev_element: &NodeId,
         child: NodeOrText<NodeId>,
     ) {
-        let has_parent = self.with_node(*element, |n| n.parent.is_some()).unwrap_or(false);
+        let has_parent = self
+            .with_node(*element, |n| n.parent.is_some())
+            .unwrap_or(false);
         if has_parent {
             self.append_before_sibling(element, child);
         } else {
@@ -268,7 +290,10 @@ impl TreeSink for DomTree {
 
     fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<HtmlAttribute>) {
         self.with_node_mut(*target, |node| {
-            if let NodeData::Element { attrs: existing, .. } = &mut node.data {
+            if let NodeData::Element {
+                attrs: existing, ..
+            } = &mut node.data
+            {
                 for attr in attrs {
                     let dominated = existing.iter().any(|a| a.name == attr.name);
                     if !dominated {
@@ -326,7 +351,9 @@ impl TreeSink for DomTree {
 
     fn get_template_contents(&self, target: &NodeId) -> NodeId {
         self.with_node(*target, |n| match &n.data {
-            NodeData::Element { template_contents, .. } => *template_contents,
+            NodeData::Element {
+                template_contents, ..
+            } => *template_contents,
             _ => None,
         })
         .flatten()
@@ -393,9 +420,10 @@ impl TreeSink for DomTree {
 
     fn is_mathml_annotation_xml_integration_point(&self, target: &NodeId) -> bool {
         self.with_node(*target, |n| match &n.data {
-            NodeData::Element { mathml_annotation_xml_integration_point, .. } => {
-                *mathml_annotation_xml_integration_point
-            }
+            NodeData::Element {
+                mathml_annotation_xml_integration_point,
+                ..
+            } => *mathml_annotation_xml_integration_point,
             _ => false,
         })
         .unwrap_or(false)
@@ -421,7 +449,9 @@ pub fn parse_srcdoc(html: &str, scripting_enabled: bool) -> DomTree {
     let mut opts = html5ever::ParseOpts::default();
     opts.tree_builder.iframe_srcdoc = true;
     opts.tree_builder.scripting_enabled = scripting_enabled;
-    html5ever::parse_document(tree, opts).from_utf8().one(html.as_bytes())
+    html5ever::parse_document(tree, opts)
+        .from_utf8()
+        .one(html.as_bytes())
 }
 
 pub fn parse_fragment(html: &str) -> DomTree {
@@ -456,9 +486,12 @@ mod tests {
         let mut stack = vec![(tree.document(), 0)];
         let mut maximum = 0;
         while let Some((id, depth)) = stack.pop() {
-            let is_div = tree.with_node(id, |node| {
-                node.as_element().is_some_and(|name| name.local.as_ref() == "div")
-            }).unwrap_or(false);
+            let is_div = tree
+                .with_node(id, |node| {
+                    node.as_element()
+                        .is_some_and(|name| name.local.as_ref() == "div")
+                })
+                .unwrap_or(false);
             let depth = depth + usize::from(is_div);
             maximum = maximum.max(depth);
             stack.extend(tree.children(id).into_iter().map(|child| (child, depth)));
@@ -508,14 +541,20 @@ mod tests {
         let tree = parse_html("<main id='deep'></main><section id='shallow'></section>");
         let mut deep = tree.get_element_by_id("deep").unwrap();
         for _ in 0..600 {
-            let child = tree.create_element(QualName::new(None, ns!(html), local_name!("div")),
-                vec![], ElementFlags::default());
+            let child = tree.create_element(
+                QualName::new(None, ns!(html), local_name!("div")),
+                vec![],
+                ElementFlags::default(),
+            );
             tree.append_child(deep, child);
             deep = child;
         }
         let shallow = tree.get_element_by_id("shallow").unwrap();
-        let leaf = tree.create_element(QualName::new(None, ns!(html), local_name!("div")),
-            vec![], ElementFlags::default());
+        let leaf = tree.create_element(
+            QualName::new(None, ns!(html), local_name!("div")),
+            vec![],
+            ElementFlags::default(),
+        );
         TreeSink::append(&tree, &shallow, NodeOrText::AppendNode(leaf));
         assert_eq!(tree.parser_insertion_parent(leaf).0, leaf);
         tree.append_child(deep, shallow);
@@ -535,11 +574,16 @@ mod tests {
                 "append" => tree.append_child(document, leaf),
                 "insert" => tree.insert_before(html, leaf),
                 "detach" => tree.detach(leaf),
-                "raw" => { tree.with_node_mut(leaf, |node| node.parent = None); }
+                "raw" => {
+                    tree.with_node_mut(leaf, |node| node.parent = None);
+                }
                 _ => unreachable!(),
             }
             let expected_depth = usize::from(matches!(mutation, "append" | "insert"));
-            assert_eq!(tree.parser_insertion_parent(leaf), (leaf, Some(expected_depth)));
+            assert_eq!(
+                tree.parser_insertion_parent(leaf),
+                (leaf, Some(expected_depth))
+            );
         }
     }
 
@@ -661,16 +705,14 @@ mod tests {
         assert_eq!(element_children(&tree, closed_host), vec![closed_light]);
         assert!(tree.get_element_by_id("open-template").is_none());
         assert!(tree.get_element_by_id("closed-template").is_none());
-        assert!(
-            tree.query_selector_from(open_root, "#open-content")
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            tree.query_selector_from(closed_root, "#closed-content")
-                .unwrap()
-                .is_some()
-        );
+        assert!(tree
+            .query_selector_from(open_root, "#open-content")
+            .unwrap()
+            .is_some());
+        assert!(tree
+            .query_selector_from(closed_root, "#closed-content")
+            .unwrap()
+            .is_some());
         assert!(
             tree.get_element_by_id("open-content").is_none()
                 && tree.get_element_by_id("closed-content").is_none(),
@@ -719,7 +761,10 @@ mod tests {
         let second = tree.get_element_by_id("second").unwrap();
         let root = tree.shadow_root(host).unwrap();
 
-        assert_eq!(tree.shadow_root_info(root).unwrap().mode, ShadowRootMode::Open);
+        assert_eq!(
+            tree.shadow_root_info(root).unwrap().mode,
+            ShadowRootMode::Open
+        );
         assert!(tree.query_selector_from(root, "#first").unwrap().is_some());
         assert_eq!(element_children(&tree, host), vec![duplicate, light]);
         assert_eq!(element_children(&tree, duplicate_contents), vec![second]);
@@ -746,23 +791,24 @@ mod tests {
         let inner_root = tree.shadow_root(inner_host).unwrap();
 
         assert_eq!(tree.containing_shadow_root(inner_host), Some(outer_root));
-        assert_eq!(tree.shadow_root_info(inner_root).unwrap().mode, ShadowRootMode::Closed);
+        assert_eq!(
+            tree.shadow_root_info(inner_root).unwrap().mode,
+            ShadowRootMode::Closed
+        );
         assert!(
             tree.query_selector_from(outer_root, "#inner-shadow")
                 .unwrap()
                 .is_none(),
             "an outer-tree query must not pierce a nested root"
         );
-        assert!(
-            tree.query_selector_from(inner_root, "#inner-shadow")
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            tree.query_selector_from(outer_root, "#inner-light")
-                .unwrap()
-                .is_some()
-        );
+        assert!(tree
+            .query_selector_from(inner_root, "#inner-shadow")
+            .unwrap()
+            .is_some());
+        assert!(tree
+            .query_selector_from(outer_root, "#inner-light")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -836,10 +882,7 @@ mod tests {
 
         assert!(!TreeSink::allow_declarative_shadow_roots(&tree, &host));
         assert!(TreeSink::attach_declarative_shadow(
-            &tree,
-            &host,
-            &template,
-            &attrs,
+            &tree, &host, &template, &attrs,
         ));
         assert_eq!(tree.shadow_root(host), Some(contents));
         assert!(tree.children(host).is_empty());

@@ -57,15 +57,29 @@ async fn local_storage_is_shared_per_origin_and_survives_navigation() {
 
     let mut page = Page::new("ls-page-1".to_string(), ctx.clone());
     page.navigate(&format!("{origin_a}/one")).await.unwrap();
-    page.evaluate("(localStorage.setItem('token', 'abc'), localStorage.b = '2', 1)").unwrap();
+    page.evaluate("(localStorage.setItem('token', 'abc'), localStorage.b = '2', 1)")
+        .unwrap();
 
     // Same tab, same origin, new document.
     page.navigate(&format!("{origin_a}/two")).await.unwrap();
-    assert_eq!(page.evaluate("localStorage.getItem('token')").unwrap(), json!("abc"));
-    assert_eq!(page.evaluate("String(localStorage.length)").unwrap(), json!("2"));
+    assert_eq!(
+        page.evaluate("localStorage.getItem('token')").unwrap(),
+        json!("abc")
+    );
+    assert_eq!(
+        page.evaluate("String(localStorage.length)").unwrap(),
+        json!("2")
+    );
     // A Storage object's keys are its ordered map's keys: insertion order.
-    assert_eq!(page.evaluate("JSON.stringify(Object.keys(localStorage))").unwrap(), json!("[\"token\",\"b\"]"));
-    assert_eq!(page.evaluate("'token' in localStorage").unwrap(), json!(true));
+    assert_eq!(
+        page.evaluate("JSON.stringify(Object.keys(localStorage))")
+            .unwrap(),
+        json!("[\"token\",\"b\"]")
+    );
+    assert_eq!(
+        page.evaluate("'token' in localStorage").unwrap(),
+        json!(true)
+    );
 
     // Another tab of the same origin sees the same area.
     let mut other = Page::new("ls-page-2".to_string(), ctx.clone());
@@ -74,11 +88,21 @@ async fn local_storage_is_shared_per_origin_and_survives_navigation() {
 
     // A different origin does not.
     other.navigate(&format!("{origin_b}/")).await.unwrap();
-    assert_eq!(other.evaluate("localStorage.getItem('token')").unwrap(), json!(null));
-    assert_eq!(other.evaluate("String(localStorage.length)").unwrap(), json!("0"));
+    assert_eq!(
+        other.evaluate("localStorage.getItem('token')").unwrap(),
+        json!(null)
+    );
+    assert_eq!(
+        other.evaluate("String(localStorage.length)").unwrap(),
+        json!("0")
+    );
 
-    page.evaluate("(localStorage.removeItem('b'), delete localStorage.token, 1)").unwrap();
-    assert_eq!(page.evaluate("String(localStorage.length)").unwrap(), json!("0"));
+    page.evaluate("(localStorage.removeItem('b'), delete localStorage.token, 1)")
+        .unwrap();
+    assert_eq!(
+        page.evaluate("String(localStorage.length)").unwrap(),
+        json!("0")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -88,13 +112,20 @@ async fn session_storage_is_per_tab() {
 
     let mut page = Page::new("ss-page-1".to_string(), ctx.clone());
     page.navigate(&format!("{origin}/a")).await.unwrap();
-    page.evaluate("(sessionStorage.setItem('step', '1'), 1)").unwrap();
+    page.evaluate("(sessionStorage.setItem('step', '1'), 1)")
+        .unwrap();
     page.navigate(&format!("{origin}/b")).await.unwrap();
-    assert_eq!(page.evaluate("sessionStorage.getItem('step')").unwrap(), json!("1"));
+    assert_eq!(
+        page.evaluate("sessionStorage.getItem('step')").unwrap(),
+        json!("1")
+    );
 
     let mut other = Page::new("ss-page-2".to_string(), ctx);
     other.navigate(&format!("{origin}/a")).await.unwrap();
-    assert_eq!(other.evaluate("sessionStorage.getItem('step')").unwrap(), json!(null));
+    assert_eq!(
+        other.evaluate("sessionStorage.getItem('step')").unwrap(),
+        json!(null)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -107,14 +138,18 @@ async fn local_storage_persists_with_storage_dir() {
         let ctx = context("ls-persist-1", Some(dir.clone()));
         let mut page = Page::new("ls-persist-page-1".to_string(), ctx.clone());
         page.navigate(&format!("{origin}/")).await.unwrap();
-        page.evaluate("(localStorage.setItem('session', 'kept'), 1)").unwrap();
+        page.evaluate("(localStorage.setItem('session', 'kept'), 1)")
+            .unwrap();
         ctx.save_storage();
     }
 
     let ctx = context("ls-persist-2", Some(dir.clone()));
     let mut page = Page::new("ls-persist-page-2".to_string(), ctx);
     page.navigate(&format!("{origin}/")).await.unwrap();
-    assert_eq!(page.evaluate("localStorage.getItem('session')").unwrap(), json!("kept"));
+    assert_eq!(
+        page.evaluate("localStorage.getItem('session')").unwrap(),
+        json!("kept")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -128,5 +163,8 @@ async fn set_item_over_quota_throws_quota_exceeded_error() {
         "(function() { try { localStorage.setItem('big', 'x'.repeat(6 * 1024 * 1024)); return 'stored'; } catch (e) { return e.name; } })()",
     ).unwrap();
     assert_eq!(result, json!("QuotaExceededError"));
-    assert_eq!(page.evaluate("localStorage.getItem('big')").unwrap(), json!(null));
+    assert_eq!(
+        page.evaluate("localStorage.getItem('big')").unwrap(),
+        json!(null)
+    );
 }

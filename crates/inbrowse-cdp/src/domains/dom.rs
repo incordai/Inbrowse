@@ -20,8 +20,10 @@ impl DomDocument {
         let mut pending = vec![root];
         while let Some(node) = pending.pop() {
             if let Some(id) = node["nodeId"].as_u64() {
-                self.children_sent.insert(id,
-                    node["children"].is_array() || node["childNodeCount"] == 0);
+                self.children_sent.insert(
+                    id,
+                    node["children"].is_array() || node["childNodeCount"] == 0,
+                );
             }
             if let Some(children) = node["children"].as_array() {
                 pending.extend(children);
@@ -61,18 +63,22 @@ impl FrameScope {
         let mut scope = Self::new(page, frame);
         for realm in &page.frames {
             let child = realm.frame_id();
-            let Some((parent, node)) = page.frame_owner(child) else { continue };
+            let Some((parent, node)) = page.frame_owner(child) else {
+                continue;
+            };
             if parent != frame {
                 continue;
             }
             let child_scope = Self::new(page, child);
-            let document = page.with_frame_dom(child, |dom| {
-                node_value(dom, dom.document(), &child_scope).map(|(mut document, _)| {
-                    document["documentURL"] = json!(realm.url());
-                    document["baseURL"] = json!(realm.url());
-                    document
+            let document = page
+                .with_frame_dom(child, |dom| {
+                    node_value(dom, dom.document(), &child_scope).map(|(mut document, _)| {
+                        document["documentURL"] = json!(realm.url());
+                        document["baseURL"] = json!(realm.url());
+                        document
+                    })
                 })
-            }).flatten();
+                .flatten();
             if let (Some(document), Some(id)) = (document, child_scope.own_id) {
                 scope.links.insert(node, FrameLink { id, document });
             }
@@ -81,17 +87,30 @@ impl FrameScope {
     }
 }
 
-fn push_children(dom: &DomTree, scope: &FrameScope, state: &mut DomDocument, node: NodeId,
-    depth: u32, session_id: &Option<String>, events: &mut Vec<CdpEvent>) {
+fn push_children(
+    dom: &DomTree,
+    scope: &FrameScope,
+    state: &mut DomDocument,
+    node: NodeId,
+    depth: u32,
+    session_id: &Option<String>,
+    events: &mut Vec<CdpEvent>,
+) {
     let mut pending = vec![(node, depth.min(MAX_SERIALIZE_DEPTH))];
     while let Some((parent, depth)) = pending.pop() {
         let parent_id = node_id(scope.frame, parent.index() as u32);
-        let Some(sent) = state.children_sent.get(&parent_id).copied() else { continue };
+        let Some(sent) = state.children_sent.get(&parent_id).copied() else {
+            continue;
+        };
         let children = dom.children(parent);
         if !sent {
-            let nodes: Vec<_> = children.iter()
-                .map(|child| serialize_node(dom, *child, depth - 1, 0, scope)).collect();
-            for node in &nodes { state.remember(node); }
+            let nodes: Vec<_> = children
+                .iter()
+                .map(|child| serialize_node(dom, *child, depth - 1, 0, scope))
+                .collect();
+            for node in &nodes {
+                state.remember(node);
+            }
             state.children_sent.insert(parent_id, true);
             events.push(CdpEvent {
                 method: "DOM.setChildNodes".into(),
@@ -104,32 +123,44 @@ fn push_children(dom: &DomTree, scope: &FrameScope, state: &mut DomDocument, nod
     }
 }
 
-fn push_node(ctx: &mut CdpContext, session_id: &Option<String>, frame: u32, node: NodeId)
-    -> Result<u64, String>
-{
-    let Some(mut state) = ctx.dom_documents.remove(session_id) else { return Ok(0) };
+fn push_node(
+    ctx: &mut CdpContext,
+    session_id: &Option<String>,
+    frame: u32,
+    node: NodeId,
+) -> Result<u64, String> {
+    let Some(mut state) = ctx.dom_documents.remove(session_id) else {
+        return Ok(0);
+    };
     let mut events = Vec::new();
-    let result = ctx.get_session_page(session_id).and_then(|page| {
-        let scope = FrameScope::of(page, frame);
-        page.with_frame_dom(frame, |dom| {
-            if dom.get_node(node).is_none() { return Err("No node with given id found".into()); }
-            let id = node_id(frame, node.index() as u32);
-            if !state.children_sent.contains_key(&id) {
-                let path = dom.ancestors(node);
-                if path.last().copied() != Some(dom.document()) {
-                    return Err("Node is outside the requested light-DOM document".into());
+    let result = ctx
+        .get_session_page(session_id)
+        .and_then(|page| {
+            let scope = FrameScope::of(page, frame);
+            page.with_frame_dom(frame, |dom| {
+                if dom.get_node(node).is_none() {
+                    return Err("No node with given id found".into());
                 }
-                for parent in path.into_iter().rev() {
-                    push_children(dom, &scope, &mut state, parent, 1, session_id, &mut events);
-                }
+                let id = node_id(frame, node.index() as u32);
                 if !state.children_sent.contains_key(&id) {
-                    // shortcut: refresh inserted children until live DOM mutation events publish them.
-                    return Err("Node requires DOM mutation events; request the document again".into());
+                    let path = dom.ancestors(node);
+                    if path.last().copied() != Some(dom.document()) {
+                        return Err("Node is outside the requested light-DOM document".into());
+                    }
+                    for parent in path.into_iter().rev() {
+                        push_children(dom, &scope, &mut state, parent, 1, session_id, &mut events);
+                    }
+                    if !state.children_sent.contains_key(&id) {
+                        // shortcut: refresh inserted children until live DOM mutation events publish them.
+                        return Err(
+                            "Node requires DOM mutation events; request the document again".into(),
+                        );
+                    }
                 }
-            }
-            Ok(id)
+                Ok(id)
+            })
         })
-    }).unwrap_or_else(|| Err("No DOM loaded".into()));
+        .unwrap_or_else(|| Err("No DOM loaded".into()));
     ctx.dom_documents.insert(session_id.clone(), state);
     ctx.pending_events.extend(events);
     result
@@ -160,9 +191,13 @@ pub(crate) fn resolve_node_id(page: &mut Page, params: &Value) -> Result<u64, St
 /// `validate_only` it only reports whether the node is a file input; otherwise
 /// it selects the files described by `specs_json`. The helper lives in the
 /// frame's own realm so the check and the selection use that frame's elements.
-fn run_file_input_helper(page: &mut Page, frame: u32, node: u32, specs_json: &str,
-    validate_only: bool) -> Result<bool, String>
-{
+fn run_file_input_helper(
+    page: &mut Page,
+    frame: u32,
+    node: u32,
+    specs_json: &str,
+    validate_only: bool,
+) -> Result<bool, String> {
     let code = format!(
         "(function() {{ var el = globalThis._wrap({node}); \
          return globalThis.__inbrowse_setInputFiles(el, {specs_json}, {validate_only}) === true; }})()"
@@ -237,8 +272,16 @@ fn encode_base64(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -297,27 +340,41 @@ pub async fn handle(
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
             let depth = params.get("depth").and_then(|v| v.as_i64()).unwrap_or(2);
             let scope = FrameScope::of(page, 0);
-            let root = page.with_dom(|dom| serialize_node(dom, dom.document(), depth as u32, 0, &scope))
+            let root = page
+                .with_dom(|dom| serialize_node(dom, dom.document(), depth as u32, 0, &scope))
                 .ok_or("No DOM loaded")?;
-            let mut state = DomDocument { page_id: page.id.clone(), children_sent: HashMap::new() };
+            let mut state = DomDocument {
+                page_id: page.id.clone(),
+                children_sent: HashMap::new(),
+            };
             state.remember(&root);
             ctx.dom_documents.insert(session_id.clone(), state);
             Ok(json!({"root":root}))
         }
         "getAttributes" => {
-            let (frame, node_id) = split_node_id(params["nodeId"].as_u64().ok_or("valid nodeId required")?);
+            let (frame, node_id) =
+                split_node_id(params["nodeId"].as_u64().ok_or("valid nodeId required")?);
             let node_id = NodeId::new(node_id);
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
             let frame = live_frame(page, frame)?;
-            let attributes = page.with_frame_dom(frame, |dom| {
-                let node = dom.get_node(node_id).ok_or("No node with given id found")?;
-                let attrs = node.attrs().ok_or("Node is not an Element")?;
-                Ok::<_, &str>(attrs.iter().flat_map(|attr| [attr.qualified_name(), attr.value.clone()]).collect::<Vec<_>>())
-            }).ok_or("No DOM loaded")?.map_err(str::to_string)?;
+            let attributes = page
+                .with_frame_dom(frame, |dom| {
+                    let node = dom.get_node(node_id).ok_or("No node with given id found")?;
+                    let attrs = node.attrs().ok_or("Node is not an Element")?;
+                    Ok::<_, &str>(
+                        attrs
+                            .iter()
+                            .flat_map(|attr| [attr.qualified_name(), attr.value.clone()])
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .ok_or("No DOM loaded")?
+                .map_err(str::to_string)?;
             Ok(json!({"attributes":attributes}))
         }
         "requestChildNodes" => {
-            let (frame, node) = split_node_id(params["nodeId"].as_u64().ok_or("valid nodeId required")?);
+            let (frame, node) =
+                split_node_id(params["nodeId"].as_u64().ok_or("valid nodeId required")?);
             let node = NodeId::new(node);
             live_frame(ctx.get_session_page(session_id).ok_or("No page")?, frame)?;
             let depth = match params.get("depth") {
@@ -330,20 +387,31 @@ pub async fn handle(
             };
             if params["pierce"].as_bool() == Some(true) {
                 let page = ctx.get_session_page(session_id).ok_or("No page")?;
-                let needs_piercing = page.with_frame_dom(frame, |dom| {
-                    let mut pending = vec![(node, depth.min(MAX_SERIALIZE_DEPTH))];
-                    while let Some((id, remaining)) = pending.pop() {
-                        if dom.shadow_root(id).is_some() || dom.get_node(id).is_some_and(|node|
-                            node.as_element().is_some_and(|name| name.ns.as_ref() == "http://www.w3.org/1999/xhtml"
-                                && matches!(name.local.as_ref(), "iframe" | "frame"))) {
-                            return true;
+                let needs_piercing = page
+                    .with_frame_dom(frame, |dom| {
+                        let mut pending = vec![(node, depth.min(MAX_SERIALIZE_DEPTH))];
+                        while let Some((id, remaining)) = pending.pop() {
+                            if dom.shadow_root(id).is_some()
+                                || dom.get_node(id).is_some_and(|node| {
+                                    node.as_element().is_some_and(|name| {
+                                        name.ns.as_ref() == "http://www.w3.org/1999/xhtml"
+                                            && matches!(name.local.as_ref(), "iframe" | "frame")
+                                    })
+                                })
+                            {
+                                return true;
+                            }
+                            if remaining > 0 {
+                                pending.extend(
+                                    dom.children(id)
+                                        .into_iter()
+                                        .map(|child| (child, remaining - 1)),
+                                );
+                            }
                         }
-                        if remaining > 0 {
-                            pending.extend(dom.children(id).into_iter().map(|child| (child, remaining - 1)));
-                        }
-                    }
-                    false
-                }).unwrap_or(false);
+                        false
+                    })
+                    .unwrap_or(false);
                 if needs_piercing {
                     return Err("Piercing frame and shadow trees is not supported".into());
                 }
@@ -353,7 +421,15 @@ pub async fn handle(
                 if let Some(page) = ctx.get_session_page(session_id) {
                     let scope = FrameScope::of(page, frame);
                     page.with_frame_dom(frame, |dom| {
-                        push_children(dom, &scope, &mut state, node, depth, session_id, &mut events)
+                        push_children(
+                            dom,
+                            &scope,
+                            &mut state,
+                            node,
+                            depth,
+                            session_id,
+                            &mut events,
+                        )
                     });
                 }
                 ctx.dom_documents.insert(session_id.clone(), state);
@@ -364,7 +440,8 @@ pub async fn handle(
         "requestNode" => {
             let oid = params["objectId"].as_str().ok_or("objectId required")?;
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
-            let (frame, node) = page.node_ref(oid)
+            let (frame, node) = page
+                .node_ref(oid)
                 .map_err(|_| "Object id does not reference a Node in this document".to_string())?;
             Ok(json!({"nodeId":push_node(ctx, session_id, frame, NodeId::new(node))?}))
         }
@@ -394,25 +471,53 @@ pub async fn handle(
         }
         "querySelector" => {
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
-            let selector = params.get("selector").and_then(|v| v.as_str()).ok_or("selector required")?;
-            let (frame, root) = split_node_id(params.get("nodeId").and_then(|v| v.as_u64()).unwrap_or(0));
-            let result = page.with_frame_dom(live_frame(page, frame)?, |dom| {
-                let root = if root == 0 { dom.document() } else { NodeId::new(root) };
-                dom.query_selector_from(root, selector).ok().flatten()
-                    .map(|id| node_id(frame, id.index() as u32)).unwrap_or(0)
-            }).unwrap_or(0);
+            let selector = params
+                .get("selector")
+                .and_then(|v| v.as_str())
+                .ok_or("selector required")?;
+            let (frame, root) =
+                split_node_id(params.get("nodeId").and_then(|v| v.as_u64()).unwrap_or(0));
+            let result = page
+                .with_frame_dom(live_frame(page, frame)?, |dom| {
+                    let root = if root == 0 {
+                        dom.document()
+                    } else {
+                        NodeId::new(root)
+                    };
+                    dom.query_selector_from(root, selector)
+                        .ok()
+                        .flatten()
+                        .map(|id| node_id(frame, id.index() as u32))
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
             Ok(json!({ "nodeId": result }))
         }
         "querySelectorAll" => {
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
-            let selector = params.get("selector").and_then(|v| v.as_str()).ok_or("selector required")?;
-            let (frame, root) = split_node_id(params.get("nodeId").and_then(|v| v.as_u64()).unwrap_or(0));
-            let ids = page.with_frame_dom(live_frame(page, frame)?, |dom| {
-                let root = if root == 0 { dom.document() } else { NodeId::new(root) };
-                dom.query_selector_all_from(root, selector).ok()
-                    .map(|ids| ids.iter().map(|id| node_id(frame, id.index() as u32)).collect::<Vec<_>>())
-                    .unwrap_or_default()
-            }).unwrap_or_default();
+            let selector = params
+                .get("selector")
+                .and_then(|v| v.as_str())
+                .ok_or("selector required")?;
+            let (frame, root) =
+                split_node_id(params.get("nodeId").and_then(|v| v.as_u64()).unwrap_or(0));
+            let ids = page
+                .with_frame_dom(live_frame(page, frame)?, |dom| {
+                    let root = if root == 0 {
+                        dom.document()
+                    } else {
+                        NodeId::new(root)
+                    };
+                    dom.query_selector_all_from(root, selector)
+                        .ok()
+                        .map(|ids| {
+                            ids.iter()
+                                .map(|id| node_id(frame, id.index() as u32))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
             Ok(json!({ "nodeIds": ids }))
         }
         "getOuterHTML" => {
@@ -422,24 +527,29 @@ pub async fn handle(
             // every rod page.HTML() fail with "nodeId required".
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             let (frame, node) = resolve_node(page, params)?;
-            let html = page.with_frame_dom(live_frame(page, frame)?, |dom| {
-                dom.outer_html(node)
-            }).unwrap_or_default();
+            let html = page
+                .with_frame_dom(live_frame(page, frame)?, |dom| dom.outer_html(node))
+                .unwrap_or_default();
             Ok(json!({ "outerHTML": html }))
         }
         "describeNode" => {
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             let depth = params.get("depth").and_then(|v| v.as_i64()).unwrap_or(0);
 
-            if ["nodeId", "backendNodeId", "objectId"].iter().all(|key| params.get(key).is_none()) {
+            if ["nodeId", "backendNodeId", "objectId"]
+                .iter()
+                .all(|key| params.get(key).is_none())
+            {
                 return Err("nodeId or objectId required".to_string());
             }
             let (frame, node) = resolve_node(page, params)?;
             let frame = live_frame(page, frame)?;
             let scope = FrameScope::of(page, frame);
-            let node = page.with_frame_dom(frame, |dom| {
-                serialize_node(dom, node, depth as u32, 0, &scope)
-            }).unwrap_or(json!(null));
+            let node = page
+                .with_frame_dom(frame, |dom| {
+                    serialize_node(dom, node, depth as u32, 0, &scope)
+                })
+                .unwrap_or(json!(null));
             Ok(json!({ "node": node }))
         }
         "getFrameOwner" => {
@@ -504,8 +614,14 @@ pub async fn handle(
                  if (el && typeof el.focus === 'function') {{ el.focus(); return true; }} return false; }})()",
                 node
             );
-            if page.evaluate_in_frame_realm(live_frame(page, frame)?, &code)?.as_bool() != Some(true) {
-                return Err(format!("node {node_id} is not an element that can take focus"));
+            if page
+                .evaluate_in_frame_realm(live_frame(page, frame)?, &code)?
+                .as_bool()
+                != Some(true)
+            {
+                return Err(format!(
+                    "node {node_id} is not an element that can take focus"
+                ));
             }
             Ok(json!({}))
         }
@@ -547,17 +663,25 @@ pub async fn handle(
             if !page.context.allow_file_access {
                 return Err("DOM.setFileInputFiles is disabled. Restart with `inbrowse serve --allow-file-access` to enable local file uploads.".to_string());
             }
-            let files = params.get("files").and_then(Value::as_array)
+            let files = params
+                .get("files")
+                .and_then(Value::as_array)
                 .ok_or("DOM.setFileInputFiles requires a files array")?;
-            let paths: Vec<&str> = files.iter().map(|file| file.as_str()
-                .ok_or_else(|| "DOM.setFileInputFiles requires string file paths".to_string()))
+            let paths: Vec<&str> = files
+                .iter()
+                .map(|file| {
+                    file.as_str().ok_or_else(|| {
+                        "DOM.setFileInputFiles requires string file paths".to_string()
+                    })
+                })
                 .collect::<Result<_, _>>()?;
             let node_id = resolve_node_id(page, params)?;
             let (frame, node) = split_node_id(node_id);
             let frame = live_frame(page, frame)?;
             // Validate the target before any path is read: a request aimed at a
             // missing or non-file node must not touch the file system at all.
-            let exists = page.with_frame_dom(frame, |dom| dom.get_node(NodeId::new(node)).is_some())
+            let exists = page
+                .with_frame_dom(frame, |dom| dom.get_node(NodeId::new(node)).is_some())
                 .unwrap_or(false);
             if !exists {
                 return Err("Could not find node with given id".into());
@@ -575,7 +699,9 @@ pub async fn handle(
                     .and_then(|n| n.to_str())
                     .unwrap_or("file")
                     .to_string();
-                specs.push(json!({ "name": name, "type": guess_mime(p), "b64": encode_base64(&bytes) }));
+                specs.push(
+                    json!({ "name": name, "type": guess_mime(p), "b64": encode_base64(&bytes) }),
+                );
             }
 
             let specs_json = serde_json::to_string(&specs).map_err(|error| error.to_string())?;
@@ -590,7 +716,10 @@ pub async fn handle(
             let frame = live_frame(page, frame)?;
             let boxes = element_boxes(page, frame, node)?;
             let quad = |index: usize| -> Vec<Value> {
-                boxes[index * 8..(index + 1) * 8].iter().map(|n| coord_value(*n)).collect()
+                boxes[index * 8..(index + 1) * 8]
+                    .iter()
+                    .map(|n| coord_value(*n))
+                    .collect()
             };
             Ok(json!({
                 "model": {
@@ -660,29 +789,43 @@ fn node_value(dom: &DomTree, id: NodeId, scope: &FrameScope) -> Option<(Value, V
     let children_ids = dom.children(id);
     let child_count = children_ids.len();
     let cdp_id = node_id(scope.frame, id.index() as u32);
-    let mut result = json!({ "nodeId": cdp_id, "backendNodeId": cdp_id, "childNodeCount": child_count });
+    let mut result =
+        json!({ "nodeId": cdp_id, "backendNodeId": cdp_id, "childNodeCount": child_count });
 
     match &node.data {
         NodeData::Document => {
-            result["nodeType"] = json!(9); result["nodeName"] = json!("#document");
-            result["localName"] = json!(""); result["nodeValue"] = json!("");
-            result["documentURL"] = json!(""); result["baseURL"] = json!(""); result["xmlVersion"] = json!("");
+            result["nodeType"] = json!(9);
+            result["nodeName"] = json!("#document");
+            result["localName"] = json!("");
+            result["nodeValue"] = json!("");
+            result["documentURL"] = json!("");
+            result["baseURL"] = json!("");
+            result["xmlVersion"] = json!("");
             if let Some(frame_id) = &scope.own_id {
                 result["frameId"] = json!(frame_id);
             }
         }
-        NodeData::Doctype { name, public_id, system_id } => {
-            result["nodeType"] = json!(10); result["nodeName"] = json!(name);
-            result["localName"] = json!(""); result["nodeValue"] = json!("");
-            result["publicId"] = json!(public_id); result["systemId"] = json!(system_id);
+        NodeData::Doctype {
+            name,
+            public_id,
+            system_id,
+        } => {
+            result["nodeType"] = json!(10);
+            result["nodeName"] = json!(name);
+            result["localName"] = json!("");
+            result["nodeValue"] = json!("");
+            result["publicId"] = json!(public_id);
+            result["systemId"] = json!(system_id);
         }
         NodeData::Element { name, attrs, .. } => {
             result["nodeType"] = json!(1);
             result["nodeName"] = json!(name.local.as_ref().to_ascii_uppercase());
             result["localName"] = json!(name.local.as_ref());
             result["nodeValue"] = json!("");
-            let cdp_attrs: Vec<String> = attrs.iter()
-                .flat_map(|a| [a.qualified_name(), a.value.clone()]).collect();
+            let cdp_attrs: Vec<String> = attrs
+                .iter()
+                .flat_map(|a| [a.qualified_name(), a.value.clone()])
+                .collect();
             result["attributes"] = json!(cdp_attrs);
             if let Some(link) = scope.links.get(&(id.index() as u32)) {
                 result["frameId"] = json!(link.id);
@@ -690,16 +833,22 @@ fn node_value(dom: &DomTree, id: NodeId, scope: &FrameScope) -> Option<(Value, V
             }
         }
         NodeData::Text { contents } => {
-            result["nodeType"] = json!(3); result["nodeName"] = json!("#text");
-            result["localName"] = json!(""); result["nodeValue"] = json!(contents);
+            result["nodeType"] = json!(3);
+            result["nodeName"] = json!("#text");
+            result["localName"] = json!("");
+            result["nodeValue"] = json!(contents);
         }
         NodeData::Comment { contents } => {
-            result["nodeType"] = json!(8); result["nodeName"] = json!("#comment");
-            result["localName"] = json!(""); result["nodeValue"] = json!(contents);
+            result["nodeType"] = json!(8);
+            result["nodeName"] = json!("#comment");
+            result["localName"] = json!("");
+            result["nodeValue"] = json!(contents);
         }
         NodeData::ProcessingInstruction { target, data } => {
-            result["nodeType"] = json!(7); result["nodeName"] = json!(target);
-            result["localName"] = json!(""); result["nodeValue"] = json!(data);
+            result["nodeType"] = json!(7);
+            result["nodeName"] = json!(target);
+            result["localName"] = json!("");
+            result["nodeValue"] = json!(data);
         }
     }
 
@@ -801,25 +950,61 @@ mod tests {
         let page = ctx.create_page();
         let session = Some(format!("{page}-session"));
         ctx.sessions.insert(session.clone().unwrap(), page.clone());
-        crate::domains::page::handle("navigate", &json!({"url":"data:text/html,<p>first</p>"}),
-            &mut ctx, &session).await.unwrap();
-        handle("getDocument", &json!({"depth":-1}), &mut ctx, &session).await.unwrap();
+        crate::domains::page::handle(
+            "navigate",
+            &json!({"url":"data:text/html,<p>first</p>"}),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .unwrap();
+        handle("getDocument", &json!({"depth":-1}), &mut ctx, &session)
+            .await
+            .unwrap();
         ctx.pending_events.clear();
-        crate::domains::page::handle("navigate", &json!({"url":"data:text/html,<p>second</p>"}),
-            &mut ctx, &session).await.unwrap();
-        assert!(ctx.dom_documents.is_empty(), "navigation must release the old node cache");
-        assert!(ctx.pending_events.iter().any(|event| event.method == "DOM.documentUpdated"
-            && event.session_id == session));
-        handle("getDocument", &json!({}), &mut ctx, &session).await.unwrap();
-        crate::domains::target::handle("detachFromTarget", &json!({"sessionId":session}),
-            &mut ctx, &None).await.unwrap();
-        assert!(ctx.dom_documents.is_empty(), "detach must release session-owned nodes");
+        crate::domains::page::handle(
+            "navigate",
+            &json!({"url":"data:text/html,<p>second</p>"}),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .unwrap();
+        assert!(
+            ctx.dom_documents.is_empty(),
+            "navigation must release the old node cache"
+        );
+        assert!(ctx
+            .pending_events
+            .iter()
+            .any(|event| event.method == "DOM.documentUpdated" && event.session_id == session));
+        handle("getDocument", &json!({}), &mut ctx, &session)
+            .await
+            .unwrap();
+        crate::domains::target::handle(
+            "detachFromTarget",
+            &json!({"sessionId":session}),
+            &mut ctx,
+            &None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            ctx.dom_documents.is_empty(),
+            "detach must release session-owned nodes"
+        );
         let closing_session = Some("closing".to_string());
-        ctx.sessions.insert(closing_session.clone().unwrap(), page.clone());
-        handle("getDocument", &json!({}), &mut ctx, &closing_session).await.unwrap();
+        ctx.sessions
+            .insert(closing_session.clone().unwrap(), page.clone());
+        handle("getDocument", &json!({}), &mut ctx, &closing_session)
+            .await
+            .unwrap();
         assert_eq!(ctx.dom_documents.len(), 1);
         ctx.remove_page(&page);
-        assert!(ctx.dom_documents.is_empty(), "close must release the target's node cache");
+        assert!(
+            ctx.dom_documents.is_empty(),
+            "close must release the target's node cache"
+        );
     }
 
     // The escaping this file used to own now lives in `util::object_id_literal`,
@@ -835,7 +1020,8 @@ mod tests {
         let mut ctx = CdpContext::new();
         let page_id = ctx.create_page();
         let session = Some(format!("{page_id}-session"));
-        ctx.sessions.insert(session.clone().unwrap(), page_id.clone());
+        ctx.sessions
+            .insert(session.clone().unwrap(), page_id.clone());
 
         crate::domains::page::handle(
             "navigate",
@@ -864,7 +1050,8 @@ mod tests {
         let mut ctx = CdpContext::new();
         let page_id = ctx.create_page();
         let session = Some(format!("{page_id}-session"));
-        ctx.sessions.insert(session.clone().unwrap(), page_id.clone());
+        ctx.sessions
+            .insert(session.clone().unwrap(), page_id.clone());
 
         crate::domains::page::handle(
             "navigate",
@@ -896,7 +1083,8 @@ mod tests {
         let mut ctx = CdpContext::new();
         let page_id = ctx.create_page();
         let session = Some(format!("{page_id}-session"));
-        ctx.sessions.insert(session.clone().unwrap(), page_id.clone());
+        ctx.sessions
+            .insert(session.clone().unwrap(), page_id.clone());
 
         crate::domains::page::handle(
             "navigate",
@@ -907,9 +1095,14 @@ mod tests {
         .await
         .expect("navigate should succeed");
 
-        let qs = handle("querySelector", &json!({ "selector": "input" }), &mut ctx, &session)
-            .await
-            .expect("querySelector should succeed");
+        let qs = handle(
+            "querySelector",
+            &json!({ "selector": "input" }),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .expect("querySelector should succeed");
         let nid = qs["nodeId"].as_u64().expect("input nodeId");
         assert!(nid > 0, "the input element should be found");
 
@@ -1059,7 +1252,9 @@ mod tests {
             let target_id = ctx
                 .get_session_page_mut(&session)
                 .unwrap()
-                .evaluate("globalThis.__inbrowse_click_target && globalThis.__inbrowse_click_target.id")
+                .evaluate(
+                    "globalThis.__inbrowse_click_target && globalThis.__inbrowse_click_target.id",
+                )
                 .unwrap();
             assert_eq!(target_id, json!("target"));
         }
@@ -1076,9 +1271,25 @@ mod tests {
             "url": "data:text/html,<body style='margin:0;height:1800px'><div style='height:200px'></div><button id=target style='height:40px'>Go</button></body>",
             "waitUntil": "load"
         }), &mut ctx, &session).await.unwrap();
-        let node = handle("querySelector", &json!({"selector":"#target"}), &mut ctx, &session).await.unwrap();
-        handle("scrollIntoViewIfNeeded", &json!({"nodeId":node["nodeId"]}), &mut ctx, &session).await.unwrap();
-        let position = ctx.get_session_page_mut(&session).unwrap()
+        let node = handle(
+            "querySelector",
+            &json!({"selector":"#target"}),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .unwrap();
+        handle(
+            "scrollIntoViewIfNeeded",
+            &json!({"nodeId":node["nodeId"]}),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .unwrap();
+        let position = ctx
+            .get_session_page_mut(&session)
+            .unwrap()
             .evaluate("[scrollY, document.getElementById('target').getBoundingClientRect().top]")
             .unwrap();
         assert_eq!(position, json!([0, 200]));
@@ -1091,14 +1302,9 @@ mod tests {
         let session = Some(format!("{page_id}-session"));
         ctx.sessions.insert(session.clone().unwrap(), page_id);
 
-        let error = handle(
-            "scrollIntoViewIfNeeded",
-            &json!({}),
-            &mut ctx,
-            &session,
-        )
-        .await
-        .expect_err("missing node identifier should fail");
+        let error = handle("scrollIntoViewIfNeeded", &json!({}), &mut ctx, &session)
+            .await
+            .expect_err("missing node identifier should fail");
 
         assert_eq!(error, "nodeId, backendNodeId, or objectId required");
 
@@ -1136,13 +1342,19 @@ mod tests {
         let mut parent = dom.document();
         let depth = 50_000usize;
         for _ in 0..depth {
-            let n = dom.new_node(NodeData::Text { contents: String::new() });
+            let n = dom.new_node(NodeData::Text {
+                contents: String::new(),
+            });
             dom.append_child(parent, n);
             parent = n;
         }
 
         // Mirror getDocument {"depth": -1}: as_i64() == -1, then `depth as u32`.
-        let scope = FrameScope { frame: 0, own_id: None, links: HashMap::new() };
+        let scope = FrameScope {
+            frame: 0,
+            own_id: None,
+            links: HashMap::new(),
+        };
         let node = serialize_node(&dom, dom.document(), (-1i64) as u32, 0, &scope);
 
         // serde_json's own serialization recurses over the Value nesting; this
@@ -1160,7 +1372,10 @@ mod tests {
             cur = first;
             levels += 1;
         }
-        assert!(levels >= 100, "should serialize a deep prefix, got {levels}");
+        assert!(
+            levels >= 100,
+            "should serialize a deep prefix, got {levels}"
+        );
         assert!(
             levels < depth,
             "nesting must be bounded below the tree's true depth, got {levels}"
@@ -1188,9 +1403,14 @@ mod tests {
         .await
         .expect("navigate should succeed");
 
-        let qs = handle("querySelector", &json!({ "selector": "input" }), &mut ctx, &session)
-            .await
-            .expect("querySelector should succeed");
+        let qs = handle(
+            "querySelector",
+            &json!({ "selector": "input" }),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .expect("querySelector should succeed");
         let nid = qs["nodeId"].as_u64().expect("input nodeId");
 
         // A real, readable file. Without the gate the handler slurps it and
@@ -1220,10 +1440,20 @@ mod tests {
         assert_eq!(serde_json::to_string(&coord_value(256.0)).unwrap(), "256");
         assert_eq!(serde_json::to_string(&coord_value(0.0)).unwrap(), "0");
         // fractional coordinates stay floats
-        assert_eq!(serde_json::to_string(&coord_value(206.0390625)).unwrap(), "206.0390625");
+        assert_eq!(
+            serde_json::to_string(&coord_value(206.0390625)).unwrap(),
+            "206.0390625"
+        );
         // a full quad mixes both, exactly as DOM.getBoxModel returns it
         let quad: Vec<Value> = [
-            256.0, 206.0390625, 347.25, 206.0390625, 347.25, 225.0390625, 256.0, 225.0390625,
+            256.0,
+            206.0390625,
+            347.25,
+            206.0390625,
+            347.25,
+            225.0390625,
+            256.0,
+            225.0390625,
         ]
         .iter()
         .map(|n| coord_value(*n))

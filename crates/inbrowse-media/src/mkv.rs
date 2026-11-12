@@ -73,7 +73,9 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                 for child in children {
                     match child {
                         MatroskaSpec::TimestampScale(s) if s > 0 => scale_ns = s,
-                        MatroskaSpec::Duration(d) if d.is_finite() && d > 0.0 => duration_ticks = Some(d),
+                        MatroskaSpec::Duration(d) if d.is_finite() && d > 0.0 => {
+                            duration_ticks = Some(d)
+                        }
                         _ => {}
                     }
                 }
@@ -97,7 +99,10 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                     continue;
                 };
                 let frames = match block.read_frame_data() {
-                    Ok(frames) => frames.into_iter().map(|f| f.data.to_vec()).collect::<Vec<_>>(),
+                    Ok(frames) => frames
+                        .into_iter()
+                        .map(|f| f.data.to_vec())
+                        .collect::<Vec<_>>(),
                     Err(_) => {
                         warnings.push("skipped a block with bad lacing".into());
                         continue;
@@ -134,7 +139,10 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                     continue;
                 };
                 let frames = match block.read_frame_data() {
-                    Ok(frames) => frames.into_iter().map(|f| f.data.to_vec()).collect::<Vec<_>>(),
+                    Ok(frames) => frames
+                        .into_iter()
+                        .map(|f| f.data.to_vec())
+                        .collect::<Vec<_>>(),
                     Err(_) => {
                         warnings.push("skipped a block with bad lacing".into());
                         continue;
@@ -187,11 +195,14 @@ fn push_frames(
     let track = &mut tracks[index];
     let ticks = i128::from(cluster_ts) + i128::from(relative);
     let pts_us = (ticks * i128::from(scale_ns) / 1000).clamp(0, i64::MAX as i128) as i64;
-    let dur_us = duration_ticks.map(|d| (i128::from(d) * i128::from(scale_ns) / 1000).min(i64::MAX as i128) as i64);
+    let dur_us = duration_ticks
+        .map(|d| (i128::from(d) * i128::from(scale_ns) / 1000).min(i64::MAX as i128) as i64);
     for frame in frames {
         *total += 1;
         if *total > MAX_SAMPLES {
-            return Err(MediaError::TooLarge(format!("more than {MAX_SAMPLES} blocks")));
+            return Err(MediaError::TooLarge(format!(
+                "more than {MAX_SAMPLES} blocks"
+            )));
         }
         track.samples.push(Sample {
             pts_us,
@@ -234,7 +245,9 @@ fn track_entry(fields: Vec<MatroskaSpec>) -> Option<(u64, Track)> {
             MatroskaSpec::Audio(Master::Full(audio)) => {
                 for a in audio {
                     match a {
-                        MatroskaSpec::SamplingFrequency(f) if f.is_finite() && f > 0.0 => rate = Some(f as u32),
+                        MatroskaSpec::SamplingFrequency(f) if f.is_finite() && f > 0.0 => {
+                            rate = Some(f as u32)
+                        }
                         MatroskaSpec::Channels(c) => channels = u32::try_from(c).ok(),
                         _ => {}
                     }

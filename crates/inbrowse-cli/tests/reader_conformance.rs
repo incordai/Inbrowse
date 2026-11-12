@@ -34,8 +34,13 @@ fn sample_markdown() -> (Server, String) {
 /// expected Markdown. Fragments are separated by a marker paragraph, so one
 /// browser run checks them all and every mismatch is reported together.
 fn convert(cases: &[(&str, &str)]) {
-    let fragments: String = cases.iter().map(|(html, _)| format!("<div>{html}</div><p>@@@</p>")).collect();
-    let page = format!("<!doctype html><html><head><title>cases</title></head><body>{fragments}</body></html>");
+    let fragments: String = cases
+        .iter()
+        .map(|(html, _)| format!("<div>{html}</div><p>@@@</p>"))
+        .collect();
+    let page = format!(
+        "<!doctype html><html><head><title>cases</title></head><body>{fragments}</body></html>"
+    );
     let server = Server::start(vec![("/cases", Response::html(&page))]);
     let output = fetch(&server.url("/cases"), &["--dump", "markdown"]);
     let got: Vec<&str> = output.split("@@@").map(str::trim).collect();
@@ -44,16 +49,28 @@ fn convert(cases: &[(&str, &str)]) {
         .iter()
         .zip(&got)
         .filter(|((_, expected), got)| expected != *got)
-        .map(|((html, expected), got)| format!("{html}\n  expected: {expected:?}\n  got:      {got:?}"))
+        .map(|((html, expected), got)| {
+            format!("{html}\n  expected: {expected:?}\n  got:      {got:?}")
+        })
         .collect();
-    assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), cases.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
 }
 
 /// The Markdown of one body.
 fn markdown_of(body: &str, args: &[&str]) -> String {
-    let page = format!("<!doctype html><html><head><title>t</title></head><body>{body}</body></html>");
+    let page =
+        format!("<!doctype html><html><head><title>t</title></head><body>{body}</body></html>");
     let server = Server::start(vec![("/page", Response::html(&page))]);
-    fetch(&server.url("/page"), &[&["--dump", "markdown"], args].concat())
+    fetch(
+        &server.url("/page"),
+        &[&["--dump", "markdown"], args].concat(),
+    )
 }
 
 // content-fidelity: headings
@@ -61,9 +78,15 @@ fn markdown_of(body: &str, args: &[&str]) -> String {
 #[test]
 fn h1_is_a_level_one_heading_and_all_sections_survive() {
     let (_server, md) = sample_markdown();
-    assert!(md.lines().any(|line| line == "# Web Crawling Guide"), "{md}");
+    assert!(
+        md.lines().any(|line| line == "# Web Crawling Guide"),
+        "{md}"
+    );
     for section in ["One", "Two", "Three", "Four", "Five", "Six", "Seven"] {
-        assert!(md.contains(&format!("Section {section}")), "Section {section} missing:\n{md}");
+        assert!(
+            md.contains(&format!("Section {section}")),
+            "Section {section} missing:\n{md}"
+        );
     }
 }
 
@@ -72,15 +95,30 @@ fn h1_is_a_level_one_heading_and_all_sections_survive() {
 #[test]
 fn sample_inline_quote_code_list_and_rule() {
     let (_server, md) = sample_markdown();
-    assert!(md.contains("This is the **main content** of the article"), "{md}");
-    assert!(md.contains("involves *fetching pages* from"), "{md}");
-    assert!(md.lines().any(|line| line == "> The web is a graph, not a tree."), "{md}");
     assert!(
-        md.contains("```\nconst crawler = new Crawler();\ncrawler.start('https://example.com');\n```"),
+        md.contains("This is the **main content** of the article"),
         "{md}"
     );
-    assert!(md.contains("- Fetch HTML pages\n- Parse links\n- Follow links recursively"), "{md}");
-    assert!(md.contains("Content before the rule.\n\n---\n\nContent after the rule."), "{md}");
+    assert!(md.contains("involves *fetching pages* from"), "{md}");
+    assert!(
+        md.lines()
+            .any(|line| line == "> The web is a graph, not a tree."),
+        "{md}"
+    );
+    assert!(
+        md.contains(
+            "```\nconst crawler = new Crawler();\ncrawler.start('https://example.com');\n```"
+        ),
+        "{md}"
+    );
+    assert!(
+        md.contains("- Fetch HTML pages\n- Parse links\n- Follow links recursively"),
+        "{md}"
+    );
+    assert!(
+        md.contains("Content before the rule.\n\n---\n\nContent after the rule."),
+        "{md}"
+    );
 }
 
 // gfm-tables
@@ -99,10 +137,22 @@ fn sample_table_is_a_gfm_pipe_table() {
 #[test]
 fn sample_links_and_images_keep_their_text_and_urls() {
     let (_server, md) = sample_markdown();
-    assert!(md.contains("[link to crawling docs](https://example.com/crawling)"), "{md}");
-    assert!(md.contains("[link about robots.txt](https://example.org/robots)"), "{md}");
-    assert!(md.contains("![A spider crawling the web](https://example.com/spider.png)"), "{md}");
-    assert!(md.contains("![Network diagram](https://example.com/network.jpg)"), "{md}");
+    assert!(
+        md.contains("[link to crawling docs](https://example.com/crawling)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("[link about robots.txt](https://example.org/robots)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("![A spider crawling the web](https://example.com/spider.png)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("![Network diagram](https://example.com/network.jpg)"),
+        "{md}"
+    );
     assert!(md.contains("![](https://example.com/noalt.png)"), "{md}");
 }
 
@@ -113,7 +163,10 @@ fn a_data_url_image_keeps_its_alt_text_and_not_its_payload() {
     let (_server, md) = sample_markdown();
     assert!(md.contains("![Tiny pixel](data:image/png)"), "{md}");
     assert!(!md.contains("base64") && !md.contains("iVBOR"), "{md}");
-    assert!(md.contains("https://example.com/spider.png"), "other images are untouched: {md}");
+    assert!(
+        md.contains("https://example.com/spider.png"),
+        "other images are untouched: {md}"
+    );
 }
 
 // base-url-resolution
@@ -146,7 +199,10 @@ fn a_base_element_sets_the_base_of_links_and_images() {
 fn relative_urls_resolve_against_the_final_url_after_a_redirect() {
     let server = Server::start(vec![
         ("/old", Response::redirect("/new/dir/page")),
-        ("/new/dir/page", Response::html(r#"<p><a href="next">next</a></p>"#)),
+        (
+            "/new/dir/page",
+            Response::html(r#"<p><a href="next">next</a></p>"#),
+        ),
     ]);
     let md = fetch(&server.url("/old"), &["--dump", "markdown"]);
     assert_eq!(md, format!("[next]({})", server.url("/new/dir/next")));
@@ -155,7 +211,10 @@ fn relative_urls_resolve_against_the_final_url_after_a_redirect() {
 #[test]
 fn an_error_page_is_still_converted() {
     let server = Server::start(vec![("/gone", Response::html("<h1>Gone</h1>").status(404))]);
-    assert_eq!(fetch(&server.url("/gone"), &["--dump", "markdown"]), "# Gone");
+    assert_eq!(
+        fetch(&server.url("/gone"), &["--dump", "markdown"]),
+        "# Gone"
+    );
 }
 
 // detach-invisibles
@@ -189,16 +248,31 @@ fn content_hidden_by_style_is_left_out() {
 #[test]
 fn a_selector_narrows_to_the_element() {
     let (_server, md) = sample(&["--dump", "markdown", "--selector", "#main-content"]);
-    assert!(md.contains("# Web Crawling Guide") && md.contains("Section One: Basics"), "{md}");
-    for outside in ["Related articles sidebar", "Copyright 2024", "example.com/related", "/privacy", "/home"] {
-        assert!(!md.contains(outside), "{outside} is outside #main-content:\n{md}");
+    assert!(
+        md.contains("# Web Crawling Guide") && md.contains("Section One: Basics"),
+        "{md}"
+    );
+    for outside in [
+        "Related articles sidebar",
+        "Copyright 2024",
+        "example.com/related",
+        "/privacy",
+        "/home",
+    ] {
+        assert!(
+            !md.contains(outside),
+            "{outside} is outside #main-content:\n{md}"
+        );
     }
 }
 
 #[test]
 fn a_selector_can_target_a_sidebar() {
     let (_server, md) = sample(&["--dump", "markdown", "--selector", ".sidebar"]);
-    assert_eq!(md, "Related articles sidebar content\n\n[Related Article](https://example.com/related)");
+    assert_eq!(
+        md,
+        "Related articles sidebar content\n\n[Related Article](https://example.com/related)"
+    );
 }
 
 // html-input
@@ -228,7 +302,10 @@ fn nested_sections_keep_their_headings_and_text() {
 fn identical_pages_give_identical_output() {
     let body = "<h1>Deterministic</h1><p>Same every time.</p>";
     assert_eq!(markdown_of(body, &[]), markdown_of(body, &[]));
-    assert_eq!(markdown_of(body, &[]), "# Deterministic\n\nSame every time.");
+    assert_eq!(
+        markdown_of(body, &[]),
+        "# Deterministic\n\nSame every time."
+    );
 }
 
 // markify: headings
@@ -244,13 +321,28 @@ fn headings() {
         ("<h6>Deepest</h6>", "###### Deepest"),
         ("<h1></h1>", ""),
         ("<h1>Title</h1><p>body</p>", "# Title\n\nbody"),
-        ("<h2>Section</h2><p>Content here.</p>", "## Section\n\nContent here."),
+        (
+            "<h2>Section</h2><p>Content here.</p>",
+            "## Section\n\nContent here.",
+        ),
         ("<h2>Hello <em>world</em></h2>", "## Hello *world*"),
-        ("<h2><a href=\"https://x.com\">Linked Heading</a></h2>", "## [Linked Heading](https://x.com/)"),
+        (
+            "<h2><a href=\"https://x.com\">Linked Heading</a></h2>",
+            "## [Linked Heading](https://x.com/)",
+        ),
         ("<h3>Two<br>lines</h3>", "### Two lines"),
-        ("<h2>With <code>code</code> and <strong>bold</strong></h2>", "## With `code` and **bold**"),
-        ("<h2><span>Split</span> <span>spans</span></h2>", "## Split spans"),
-        ("<h2><img src=\"https://x.test/i.png\" alt=\"Icon\"> Title</h2>", "## ![Icon](https://x.test/i.png) Title"),
+        (
+            "<h2>With <code>code</code> and <strong>bold</strong></h2>",
+            "## With `code` and **bold**",
+        ),
+        (
+            "<h2><span>Split</span> <span>spans</span></h2>",
+            "## Split spans",
+        ),
+        (
+            "<h2><img src=\"https://x.test/i.png\" alt=\"Icon\"> Title</h2>",
+            "## ![Icon](https://x.test/i.png) Title",
+        ),
     ]);
 }
 
@@ -274,8 +366,14 @@ fn inline_formatting() {
         ("<code>const x = 1</code>", "`const x = 1`"),
         ("<code>  trimmed  </code>", "`trimmed`"),
         ("<code>a ` b</code>", "``a ` b``"),
-        ("<p>This is <strong>bold</strong> and <em>italic</em>.</p>", "This is **bold** and *italic*."),
-        ("<p>Inner <strong>bold <em>both</em></strong></p>", "Inner **bold *both***"),
+        (
+            "<p>This is <strong>bold</strong> and <em>italic</em>.</p>",
+            "This is **bold** and *italic*.",
+        ),
+        (
+            "<p>Inner <strong>bold <em>both</em></strong></p>",
+            "Inner **bold *both***",
+        ),
     ]);
 }
 
@@ -285,21 +383,54 @@ fn inline_formatting() {
 fn links_and_images() {
     convert(&[
         // URLs are written in their normalized form, as `a.href` reads them.
-        ("<a href=\"https://example.com\">click</a>", "[click](https://example.com/)"),
+        (
+            "<a href=\"https://example.com\">click</a>",
+            "[click](https://example.com/)",
+        ),
         ("<a>anchor</a>", "anchor"),
         ("<a href=\"\">empty</a>", "empty"),
         ("<a href=\"javascript:void(0)\">script</a>", "script"),
-        ("<a href=\"https://x.com\">\nclick\nme\n</a>", "[click me](https://x.com/)"),
-        ("<a href=\"mailto:a@x.test\">mail</a>", "[mail](mailto:a@x.test)"),
-        ("<a href=\"https://x.com\"><img src=\"https://x.com/a.png\" alt=\"A\"></a>", "[![A](https://x.com/a.png)](https://x.com/)"),
-        ("<a href=\"https://x.com\">text <img src=\"https://x.com/a.png\" alt=\"A\"></a>", "[text ![A](https://x.com/a.png)](https://x.com/)"),
-        ("<img src=\"https://x.test/img.png\" alt=\"a photo\">", "![a photo](https://x.test/img.png)"),
-        ("<img src=\"https://x.test/img.png\">", "![](https://x.test/img.png)"),
-        ("<img src=\"https://x.test/img.png\" alt=\"\">", "![](https://x.test/img.png)"),
+        (
+            "<a href=\"https://x.com\">\nclick\nme\n</a>",
+            "[click me](https://x.com/)",
+        ),
+        (
+            "<a href=\"mailto:a@x.test\">mail</a>",
+            "[mail](mailto:a@x.test)",
+        ),
+        (
+            "<a href=\"https://x.com\"><img src=\"https://x.com/a.png\" alt=\"A\"></a>",
+            "[![A](https://x.com/a.png)](https://x.com/)",
+        ),
+        (
+            "<a href=\"https://x.com\">text <img src=\"https://x.com/a.png\" alt=\"A\"></a>",
+            "[text ![A](https://x.com/a.png)](https://x.com/)",
+        ),
+        (
+            "<img src=\"https://x.test/img.png\" alt=\"a photo\">",
+            "![a photo](https://x.test/img.png)",
+        ),
+        (
+            "<img src=\"https://x.test/img.png\">",
+            "![](https://x.test/img.png)",
+        ),
+        (
+            "<img src=\"https://x.test/img.png\" alt=\"\">",
+            "![](https://x.test/img.png)",
+        ),
         ("<img alt=\"no source\">", ""),
-        ("<p>See <img src=\"https://x.test/chart.png\" alt=\"chart\"> here.</p>", "See ![chart](https://x.test/chart.png) here."),
-        ("<img src=\"data:image/png;base64,AAAA\" alt=\"Tiny\">", "![Tiny](data:image/png)"),
-        ("<img src=\"data:image/svg+xml;utf8,<svg/>\" alt=\"Icon\">", "![Icon](data:image/svg+xml)"),
+        (
+            "<p>See <img src=\"https://x.test/chart.png\" alt=\"chart\"> here.</p>",
+            "See ![chart](https://x.test/chart.png) here.",
+        ),
+        (
+            "<img src=\"data:image/png;base64,AAAA\" alt=\"Tiny\">",
+            "![Tiny](data:image/png)",
+        ),
+        (
+            "<img src=\"data:image/svg+xml;utf8,<svg/>\" alt=\"Icon\">",
+            "![Icon](data:image/svg+xml)",
+        ),
     ]);
 }
 
@@ -308,24 +439,45 @@ fn links_and_images() {
 #[test]
 fn code_blocks_keep_their_text_and_language() {
     convert(&[
-        ("<pre><code>line1\nline2</code></pre>", "```\nline1\nline2\n```"),
+        (
+            "<pre><code>line1\nline2</code></pre>",
+            "```\nline1\nline2\n```",
+        ),
         (
             "<pre><code class=\"language-js\">const x = 1\nconst y = 2</code></pre>",
             "```js\nconst x = 1\nconst y = 2\n```",
         ),
-        ("<pre><code class=\"lang-python\">x = 1\ny = 2</code></pre>", "```python\nx = 1\ny = 2\n```"),
-        ("<pre class=\"language-rust\"><code>fn main() {}</code></pre>", "```rust\nfn main() {}\n```"),
-        ("<pre data-lang=\"go\">package main</pre>", "```go\npackage main\n```"),
-        ("<pre><code>  line1\n  line2</code></pre>", "```\n  line1\n  line2\n```"),
+        (
+            "<pre><code class=\"lang-python\">x = 1\ny = 2</code></pre>",
+            "```python\nx = 1\ny = 2\n```",
+        ),
+        (
+            "<pre class=\"language-rust\"><code>fn main() {}</code></pre>",
+            "```rust\nfn main() {}\n```",
+        ),
+        (
+            "<pre data-lang=\"go\">package main</pre>",
+            "```go\npackage main\n```",
+        ),
+        (
+            "<pre><code>  line1\n  line2</code></pre>",
+            "```\n  line1\n  line2\n```",
+        ),
         ("<pre>a\n\n\nb</pre>", "```\na\n\n\nb\n```"),
         ("<pre>use ``` here</pre>", "````\nuse ``` here\n````"),
-        ("<p>intro</p><pre><code>line1\nline2</code></pre>", "intro\n\n```\nline1\nline2\n```"),
+        (
+            "<p>intro</p><pre><code>line1\nline2</code></pre>",
+            "intro\n\n```\nline1\nline2\n```",
+        ),
         ("<pre><code></code></pre>", ""),
         (
             "<ul><li>Run:<pre><code class=\"language-sh\">make\nmake test</code></pre></li></ul>",
             "- Run:\n  ```sh\n  make\n  make test\n  ```",
         ),
-        ("<blockquote><pre>a\n\nb</pre></blockquote>", "> ```\n> a\n>\n> b\n> ```"),
+        (
+            "<blockquote><pre>a\n\nb</pre></blockquote>",
+            "> ```\n> a\n>\n> b\n> ```",
+        ),
     ]);
 }
 
@@ -334,21 +486,42 @@ fn code_blocks_keep_their_text_and_language() {
 #[test]
 fn lists_quotes_and_rules() {
     convert(&[
-        ("<ul><li>Item A</li><li>Item B</li></ul>", "- Item A\n- Item B"),
-        ("<ol><li>First</li><li>Second</li><li>Third</li></ol>", "1. First\n2. Second\n3. Third"),
-        ("<ul><li>Top<ul><li>Sub</li></ul></li></ul>", "- Top\n  - Sub"),
+        (
+            "<ul><li>Item A</li><li>Item B</li></ul>",
+            "- Item A\n- Item B",
+        ),
+        (
+            "<ol><li>First</li><li>Second</li><li>Third</li></ol>",
+            "1. First\n2. Second\n3. Third",
+        ),
+        (
+            "<ul><li>Top<ul><li>Sub</li></ul></li></ul>",
+            "- Top\n  - Sub",
+        ),
         ("<ol><li>a<ol><li>b</li></ol></li></ol>", "1. a\n   1. b"),
         ("<ol><li>a<ul><li>b</li></ul></li></ol>", "1. a\n   - b"),
         ("<ul><li><p>One</p><p>Two</p></li></ul>", "- One\n\n  Two"),
-        ("<ul><li>See <a href=\"https://x.test\">x</a></li></ul>", "- See [x](https://x.test/)"),
+        (
+            "<ul><li>See <a href=\"https://x.test\">x</a></li></ul>",
+            "- See [x](https://x.test/)",
+        ),
         ("<ul></ul>", ""),
-        ("<blockquote><p>quoted text</p></blockquote>", "> quoted text"),
-        ("<blockquote><p>line one</p><p>line two</p></blockquote>", "> line one\n>\n> line two"),
+        (
+            "<blockquote><p>quoted text</p></blockquote>",
+            "> quoted text",
+        ),
+        (
+            "<blockquote><p>line one</p><p>line two</p></blockquote>",
+            "> line one\n>\n> line two",
+        ),
         (
             "<blockquote><p>outer</p><blockquote><p>inner</p></blockquote></blockquote>",
             "> outer\n>\n> > inner",
         ),
-        ("<blockquote><ul><li>a</li><li>b</li></ul></blockquote>", "> - a\n> - b"),
+        (
+            "<blockquote><ul><li>a</li><li>b</li></ul></blockquote>",
+            "> - a\n> - b",
+        ),
         ("<blockquote></blockquote>", ""),
         ("<p>a</p><hr><p>b</p>", "a\n\n---\n\nb"),
     ]);
@@ -436,7 +609,13 @@ fn text_leaves_out_content_hidden_by_style() {
         <p hidden>attr hidden</p>"#;
     let server = Server::start(vec![("/page", Response::html(page))]);
     let text = fetch(&server.url("/page"), &["--dump", "text"]);
-    for shown in ["CrawlerVisibleContent99", "ShownAgain", "kept", "row", "More visible text below."] {
+    for shown in [
+        "CrawlerVisibleContent99",
+        "ShownAgain",
+        "kept",
+        "row",
+        "More visible text below.",
+    ] {
         assert!(text.contains(shown), "{shown} missing:\n{text}");
     }
     for hidden in [
@@ -478,9 +657,22 @@ const BOILERPLATE_PAGE: &str = r#"<header>SITE HEADER</header>
     <aside>SIDEBAR</aside>
     <div role="contentinfo">CONTENT INFO</div>
     <footer>SITE FOOTER</footer>"#;
-const PAGE_BOILERPLATE: [&str; 6] = ["SITE HEADER", "NAV LINKS", "NAV ROLE", "SIDEBAR", "CONTENT INFO", "SITE FOOTER"];
-const PAGE_CONTENT: [&str; 6] =
-    ["Headline", "By Jane", "Body text", "Pull quote", "Filed under news", "Section head"];
+const PAGE_BOILERPLATE: [&str; 6] = [
+    "SITE HEADER",
+    "NAV LINKS",
+    "NAV ROLE",
+    "SIDEBAR",
+    "CONTENT INFO",
+    "SITE FOOTER",
+];
+const PAGE_CONTENT: [&str; 6] = [
+    "Headline",
+    "By Jane",
+    "Body text",
+    "Pull quote",
+    "Filed under news",
+    "Section head",
+];
 
 fn boilerplate_page(args: &[&str]) -> String {
     let server = Server::start(vec![("/page", Response::html(BOILERPLATE_PAGE))]);
@@ -495,7 +687,10 @@ fn text_and_markdown_drop_the_same_boilerplate_when_asked() {
             assert!(output.contains(kept), "{dump} dropped '{kept}':\n{output}");
         }
         for dropped in PAGE_BOILERPLATE {
-            assert!(!output.contains(dropped), "{dump} kept '{dropped}':\n{output}");
+            assert!(
+                !output.contains(dropped),
+                "{dump} kept '{dropped}':\n{output}"
+            );
         }
     }
 }
@@ -505,7 +700,10 @@ fn text_and_markdown_keep_everything_when_asked() {
     for dump in ["text", "markdown"] {
         let output = boilerplate_page(&["--dump", dump, "--boilerplate", "keep"]);
         for wanted in PAGE_CONTENT.iter().chain(&PAGE_BOILERPLATE) {
-            assert!(output.contains(wanted), "{dump} dropped '{wanted}':\n{output}");
+            assert!(
+                output.contains(wanted),
+                "{dump} dropped '{wanted}':\n{output}"
+            );
         }
     }
 }
@@ -516,7 +714,10 @@ fn text_and_markdown_drop_boilerplate_by_default() {
         let output = boilerplate_page(&["--dump", dump]);
         assert!(output.contains("Body text"), "{dump}: {output}");
         for dropped in PAGE_BOILERPLATE {
-            assert!(!output.contains(dropped), "{dump} kept '{dropped}':\n{output}");
+            assert!(
+                !output.contains(dropped),
+                "{dump} kept '{dropped}':\n{output}"
+            );
         }
     }
 }
@@ -524,8 +725,17 @@ fn text_and_markdown_drop_boilerplate_by_default() {
 #[test]
 fn the_sample_page_without_boilerplate() {
     let (_server, md) = sample_markdown();
-    assert!(md.contains("# Web Crawling Guide") && md.contains("Buy our product!"), "{md}");
-    for boilerplate in ["Home", "About", "Related articles sidebar", "Copyright 2024", "Privacy Policy"] {
+    assert!(
+        md.contains("# Web Crawling Guide") && md.contains("Buy our product!"),
+        "{md}"
+    );
+    for boilerplate in [
+        "Home",
+        "About",
+        "Related articles sidebar",
+        "Copyright 2024",
+        "Privacy Policy",
+    ] {
         assert!(!md.contains(boilerplate), "{boilerplate} kept:\n{md}");
     }
 }
@@ -535,7 +745,10 @@ fn a_selected_element_is_kept_even_when_it_is_boilerplate() {
     let server = Server::start(vec![("/page", Response::html(BOILERPLATE_PAGE))]);
     let url = server.url("/page");
     for dump in ["text", "markdown"] {
-        let output = fetch(&url, &["--dump", dump, "--boilerplate", "drop", "--selector", "nav"]);
+        let output = fetch(
+            &url,
+            &["--dump", dump, "--boilerplate", "drop", "--selector", "nav"],
+        );
         assert_eq!(output, "NAV LINKS", "{dump}");
     }
 }
@@ -543,7 +756,10 @@ fn a_selected_element_is_kept_even_when_it_is_boilerplate() {
 #[test]
 fn boilerplate_applies_to_text_markdown_and_json_only() {
     let server = Server::start(vec![("/page", Response::html(BOILERPLATE_PAGE))]);
-    let output = fetch_output(&server.url("/page"), &["--dump", "html", "--boilerplate", "drop"]);
+    let output = fetch_output(
+        &server.url("/page"),
+        &["--dump", "html", "--boilerplate", "drop"],
+    );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--boilerplate applies to"));
 }

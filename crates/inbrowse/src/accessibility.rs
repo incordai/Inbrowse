@@ -75,9 +75,14 @@ pub fn build_ax_tree(
     ids.extend(dom.descendants(document));
     let context = AccessibilityContext::new(dom, &ids, styles);
 
-    let mut tree = AccessibilityTree { entries: Vec::new(), by_dom: HashMap::new() };
+    let mut tree = AccessibilityTree {
+        entries: Vec::new(),
+        by_dom: HashMap::new(),
+    };
     for id in ids {
-        let Some(node) = dom.get_node(id) else { continue };
+        let Some(node) = dom.get_node(id) else {
+            continue;
+        };
         let role = map_role(&node.data);
         if role.is_empty() || context.is_not_rendered(id) {
             continue;
@@ -85,7 +90,11 @@ pub fn build_ax_tree(
         let parent = if id == document {
             None
         } else {
-            match node.parent.and_then(|parent| tree.by_dom.get(&parent)).copied() {
+            match node
+                .parent
+                .and_then(|parent| tree.by_dom.get(&parent))
+                .copied()
+            {
                 Some(parent) => Some(parent),
                 None => continue,
             }
@@ -109,7 +118,12 @@ pub fn build_ax_tree(
             tree.entries[parent].children.push(index);
         }
         tree.by_dom.insert(id, index);
-        tree.entries.push(AxEntry { parent, children: Vec::new(), depth, node: ax_node });
+        tree.entries.push(AxEntry {
+            parent,
+            children: Vec::new(),
+            depth,
+            node: ax_node,
+        });
     }
     for index in 0..tree.entries.len() {
         if tree.entries[index].children.is_empty() {
@@ -158,7 +172,13 @@ impl AccessibilityTree {
     /// The children of the node with this AX id, `None` if there is no such node.
     pub fn children(&self, ax_id: &str) -> Option<Vec<Value>> {
         let entry = &self.entries[*self.by_dom.get(&dom_node_of(ax_id)?)?];
-        Some(entry.children.iter().map(|child| self.entries[*child].node.clone()).collect())
+        Some(
+            entry
+                .children
+                .iter()
+                .map(|child| self.entries[*child].node.clone())
+                .collect(),
+        )
     }
 
     /// The node for a DOM node, then, with `relatives`, its children and each
@@ -181,7 +201,12 @@ impl AccessibilityTree {
                 ancestor = self.entries[index].parent;
             }
         }
-        Some(order.into_iter().map(|index| self.entries[index].node.clone()).collect())
+        Some(
+            order
+                .into_iter()
+                .map(|index| self.entries[index].node.clone())
+                .collect(),
+        )
     }
 
     /// The subtree of a DOM node (itself included, breadth first) filtered by
@@ -196,7 +221,9 @@ impl AccessibilityTree {
             let matches = |wanted: Option<&str>, actual: &Value| {
                 wanted.is_none_or(|wanted| actual.as_str() == Some(wanted))
             };
-            if matches(name, &entry.node["name"]["value"]) && matches(role, &entry.node["role"]["value"]) {
+            if matches(name, &entry.node["name"]["value"])
+                && matches(role, &entry.node["role"]["value"])
+            {
                 found.push(entry.node.clone());
             }
         }
@@ -279,8 +306,7 @@ fn map_role(data: &NodeData) -> &'static str {
                 "textarea" => "textbox",
                 "select" => {
                     if attrs.iter().any(|a| {
-                        a.name.local.as_ref() == "multiple"
-                            || a.name.local.as_ref() == "size"
+                        a.name.local.as_ref() == "multiple" || a.name.local.as_ref() == "size"
                     }) {
                         "listbox"
                     } else {
@@ -307,17 +333,16 @@ fn map_role(data: &NodeData) -> &'static str {
                 "section" => "region",
                 "figure" => "figure",
                 "figcaption" => "StaticText",
-                "p" | "div" | "span" | "pre" | "blockquote" | "code"
-                | "em" | "strong" | "b" | "i" | "u" | "s" | "small"
-                | "sub" | "sup" | "mark" | "del" | "ins" => "generic",
+                "p" | "div" | "span" | "pre" | "blockquote" | "code" | "em" | "strong" | "b"
+                | "i" | "u" | "s" | "small" | "sub" | "sup" | "mark" | "del" | "ins" => "generic",
                 "iframe" => "Iframe",
                 _ => "generic",
             }
         }
         NodeData::Text { .. } => "StaticText",
-        NodeData::Doctype { .. } | NodeData::Comment { .. } | NodeData::ProcessingInstruction { .. } => {
-            ""
-        }
+        NodeData::Doctype { .. }
+        | NodeData::Comment { .. }
+        | NodeData::ProcessingInstruction { .. } => "",
     }
 }
 
@@ -346,19 +371,29 @@ impl AccessibilityContext {
 
     /// Describe only the requested visible node; CDP adds tree links separately.
     pub fn describe_node(&self, dom: &DomTree, id: NodeId) -> Option<Value> {
-        if self.is_hidden(id) { return None; }
+        if self.is_hidden(id) {
+            return None;
+        }
         let node = dom.get_node(id)?;
         let role = map_role(&node.data);
-        if role.is_empty() { return None; }
+        if role.is_empty() {
+            return None;
+        }
         Some(self.describe_visible(dom, &node, role))
     }
 
     fn describe_visible(&self, dom: &DomTree, node: &inbrowse_dom::Node, role: &str) -> Value {
         let mut result = json!({"backendDOMNodeId":node.id.raw(),"role":ax_value_role(role)});
-        if let Some(name) = compute_name(dom, node, self) { result["name"] = ax_value_string(&name); }
-        if let Some(value) = compute_value(dom, node) { result["value"] = ax_value_string(&value); }
+        if let Some(name) = compute_name(dom, node, self) {
+            result["name"] = ax_value_string(&name);
+        }
+        if let Some(value) = compute_value(dom, node) {
+            result["value"] = ax_value_string(&value);
+        }
         let properties = compute_properties(dom, node);
-        if !properties.is_empty() { result["properties"] = json!(properties); }
+        if !properties.is_empty() {
+            result["properties"] = json!(properties);
+        }
         result
     }
 
@@ -367,7 +402,11 @@ impl AccessibilityContext {
         let state = self.visibility.get(&node.id).copied().unwrap_or_default();
         let mut reasons = Vec::new();
         if state.aria_hidden {
-            reasons.push(if has_aria_hidden(node) { "ariaHiddenElement" } else { "ariaHiddenSubtree" });
+            reasons.push(if has_aria_hidden(node) {
+                "ariaHiddenElement"
+            } else {
+                "ariaHiddenSubtree"
+            });
         }
         if state.visibility_hidden {
             reasons.push("notVisible");
@@ -445,18 +484,21 @@ impl AccessibilityContext {
 
     /// Hidden from the AX tree's exposed nodes by any means.
     pub fn is_hidden(&self, id: NodeId) -> bool {
-        self.visibility
-            .get(&id)
-            .is_some_and(|state| state.subtree_hidden || state.aria_hidden || state.visibility_hidden)
+        self.visibility.get(&id).is_some_and(|state| {
+            state.subtree_hidden || state.aria_hidden || state.visibility_hidden
+        })
     }
 
     fn is_not_rendered(&self, id: NodeId) -> bool {
-        self.visibility.get(&id).is_some_and(|state| state.subtree_hidden)
+        self.visibility
+            .get(&id)
+            .is_some_and(|state| state.subtree_hidden)
     }
 }
 
 fn has_aria_hidden(node: &inbrowse_dom::Node) -> bool {
-    node.get_attribute("aria-hidden").is_some_and(|value| value.eq_ignore_ascii_case("true"))
+    node.get_attribute("aria-hidden")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
 fn tag(node: &inbrowse_dom::Node) -> &str {
@@ -597,7 +639,11 @@ fn content_name(
 }
 
 /// Compute the accessible name for a node.
-fn compute_name(dom: &DomTree, node: &inbrowse_dom::Node, context: &AccessibilityContext) -> Option<String> {
+fn compute_name(
+    dom: &DomTree,
+    node: &inbrowse_dom::Node,
+    context: &AccessibilityContext,
+) -> Option<String> {
     if let NodeData::Text { contents } = &node.data {
         return nonempty(contents);
     }
@@ -684,7 +730,10 @@ fn compute_value(dom: &DomTree, node: &inbrowse_dom::Node) -> Option<String> {
             if tag == "input" && input_type(node) == "password" {
                 return None;
             }
-            if let Some(value) = dom.form_control_state(node.id).and_then(|state| state.value) {
+            if let Some(value) = dom
+                .form_control_state(node.id)
+                .and_then(|state| state.value)
+            {
                 return Some(value);
             }
             return attrs
@@ -761,7 +810,8 @@ fn compute_properties(dom: &DomTree, node: &inbrowse_dom::Node) -> Vec<Value> {
         }
 
         // editable
-        if tag == "input" || tag == "textarea"
+        if tag == "input"
+            || tag == "textarea"
             || attrs
                 .iter()
                 .any(|a| a.name.local.as_ref() == "contenteditable" && a.value != "false")
@@ -770,11 +820,14 @@ fn compute_properties(dom: &DomTree, node: &inbrowse_dom::Node) -> Vec<Value> {
         }
 
         if tag == "input" && matches!(input_type(node).as_str(), "checkbox" | "radio") {
-            let checked = if input_type(node) == "checkbox" && dom.form_control_indeterminate(node.id) {
-                json!("mixed")
-            } else {
-                json!(dom.form_control_checked(node.id).unwrap_or_else(|| node.get_attribute("checked").is_some()))
-            };
+            let checked =
+                if input_type(node) == "checkbox" && dom.form_control_indeterminate(node.id) {
+                    json!("mixed")
+                } else {
+                    json!(dom
+                        .form_control_checked(node.id)
+                        .unwrap_or_else(|| node.get_attribute("checked").is_some()))
+                };
             props.push(json!({"name":"checked","value":{"type":"tristate","value":checked}}));
         } else if let Some(checked) = node.get_attribute("aria-checked") {
             let value = match checked {
@@ -791,11 +844,21 @@ fn compute_properties(dom: &DomTree, node: &inbrowse_dom::Node) -> Vec<Value> {
         // disabled
         if node.get_attribute("disabled").is_some() {
             props.push(json!({"name": "disabled", "value": ax_value_boolean(true)}));
-        } else if let Some(value) = node.get_attribute("aria-disabled").filter(|value| matches!(*value, "true" | "false")) {
+        } else if let Some(value) = node
+            .get_attribute("aria-disabled")
+            .filter(|value| matches!(*value, "true" | "false"))
+        {
             props.push(json!({"name":"disabled","value":ax_value_boolean(value == "true")}));
         }
-        for (property, attribute) in [("expanded", "aria-expanded"), ("selected", "aria-selected"), ("pressed", "aria-pressed")] {
-            if let Some(value) = node.get_attribute(attribute).filter(|value| matches!(*value, "true" | "false")) {
+        for (property, attribute) in [
+            ("expanded", "aria-expanded"),
+            ("selected", "aria-selected"),
+            ("pressed", "aria-pressed"),
+        ] {
+            if let Some(value) = node
+                .get_attribute(attribute)
+                .filter(|value| matches!(*value, "true" | "false"))
+            {
                 props.push(json!({"name":property,"value":ax_value_boolean(value == "true")}));
             }
         }
@@ -810,7 +873,10 @@ fn compute_properties(dom: &DomTree, node: &inbrowse_dom::Node) -> Vec<Value> {
         // required
         if node.get_attribute("required").is_some() {
             props.push(json!({"name": "required", "value": ax_value_boolean(true)}));
-        } else if let Some(value) = node.get_attribute("aria-required").filter(|value| matches!(*value, "true" | "false")) {
+        } else if let Some(value) = node
+            .get_attribute("aria-required")
+            .filter(|value| matches!(*value, "true" | "false"))
+        {
             props.push(json!({"name":"required","value":ax_value_boolean(value == "true")}));
         }
 
@@ -839,17 +905,28 @@ mod tests {
         let dom = parse_html("<input id=c type=checkbox checked><input id=f value=old><input id=p type=password value=secret>");
         let checkbox = dom.get_element_by_id("c").unwrap();
         dom.update_form_control_state(checkbox, |state| state.checked = Some(false));
-        dom.update_form_control_state(dom.get_element_by_id("f").unwrap(), |state| state.value = Some("fresh".into()));
+        dom.update_form_control_state(dom.get_element_by_id("f").unwrap(), |state| {
+            state.value = Some("fresh".into())
+        });
         let nodes = build_ax_nodes(&dom);
         let node = ax_node_for(&nodes, checkbox);
-        let checked = node["properties"].as_array().unwrap().iter().find(|property| property["name"] == "checked").unwrap();
+        let checked = node["properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|property| property["name"] == "checked")
+            .unwrap();
         assert_eq!(checked["value"]["value"], json!(false));
         assert_ax_value(&nodes, &dom, "f", Some("fresh"));
         assert_ax_value(&nodes, &dom, "p", None);
         dom.update_form_control_state(checkbox, |state| state.indeterminate = true);
         let nodes = build_ax_nodes(&dom);
-        let mixed = ax_node_for(&nodes, checkbox)["properties"].as_array().unwrap().iter()
-            .find(|property| property["name"] == "checked").unwrap();
+        let mixed = ax_node_for(&nodes, checkbox)["properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|property| property["name"] == "checked")
+            .unwrap();
         assert_eq!(mixed["value"]["value"], json!("mixed"));
     }
 
@@ -857,9 +934,20 @@ mod tests {
     fn aria_control_states_preserve_false_and_mixed_values() {
         let dom = parse_html("<div id=tab role=tab aria-selected=true></div><div id=field role=textbox aria-required=false></div><button id=exp aria-expanded=false aria-pressed=true aria-disabled=false></button><div id=mixed role=checkbox aria-checked=mixed></div>");
         let nodes = build_ax_nodes(&dom);
-        for (id, name, expected) in [("tab", "selected", json!(true)), ("field", "required", json!(false)), ("exp", "expanded", json!(false)), ("exp", "pressed", json!(true)), ("exp", "disabled", json!(false)), ("mixed", "checked", json!("mixed"))] {
+        for (id, name, expected) in [
+            ("tab", "selected", json!(true)),
+            ("field", "required", json!(false)),
+            ("exp", "expanded", json!(false)),
+            ("exp", "pressed", json!(true)),
+            ("exp", "disabled", json!(false)),
+            ("mixed", "checked", json!("mixed")),
+        ] {
             let node = ax_node_for(&nodes, dom.get_element_by_id(id).unwrap());
-            let property = node["properties"].as_array().unwrap().iter().find(|property| property["name"] == name)
+            let property = node["properties"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|property| property["name"] == name)
                 .unwrap_or_else(|| panic!("missing {name} for #{id}"));
             assert_eq!(property["value"]["value"], expected, "#{id}: {name}");
         }

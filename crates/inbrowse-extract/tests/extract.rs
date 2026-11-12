@@ -2,12 +2,16 @@
 
 use std::io::{Cursor, Write};
 
-use inbrowse_extract::{detect, extract, extract_with_limits, Document, ExtractError, Format, Limits, Options, SectionKind};
+use inbrowse_extract::{
+    detect, extract, extract_with_limits, Document, ExtractError, Format, Limits, Options,
+    SectionKind,
+};
 use zip::write::SimpleFileOptions;
 
 fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let deflated = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (name, body) in entries {
         writer.start_file(*name, deflated).unwrap();
         writer.write_all(body.as_bytes()).unwrap();
@@ -40,7 +44,9 @@ fn docx_keeps_paragraphs_tabs_breaks_and_entities() {
 #[test]
 fn pptx_orders_slides_numerically() {
     let slide = |text: &str| {
-        format!(r#"<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:cSld></p:sld>"#)
+        format!(
+            r#"<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:cSld></p:sld>"#
+        )
     };
     let (two, ten) = (slide("second"), slide("tenth"));
     let bytes = zip_of(&[
@@ -50,7 +56,11 @@ fn pptx_orders_slides_numerically() {
     ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.format, Format::Pptx);
-    let names: Vec<_> = doc.sections.iter().map(|s| s.name.as_deref().unwrap()).collect();
+    let names: Vec<_> = doc
+        .sections
+        .iter()
+        .map(|s| s.name.as_deref().unwrap())
+        .collect();
     assert_eq!(names, ["Slide 2", "Slide 10"]);
     assert!(doc.sections.iter().all(|s| s.kind == SectionKind::Slide));
     assert_eq!(doc.text, "second\n\ntenth");
@@ -62,7 +72,10 @@ fn odt_expands_spaces_and_reads_headings_and_spans() {
         <text:h>Title</text:h>
         <text:p>a<text:s text:c="3"/>b<text:tab/><text:span>c</text:span><text:line-break/>d</text:p>
         </office:text></office:body></office:document-content>"#;
-    let bytes = zip_of(&[("mimetype", "application/vnd.oasis.opendocument.text"), ("content.xml", content)]);
+    let bytes = zip_of(&[
+        ("mimetype", "application/vnd.oasis.opendocument.text"),
+        ("content.xml", content),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.format, Format::Odt);
     assert_eq!(doc.text, "Title\na   b\tc\nd");
@@ -74,11 +87,27 @@ fn odp_splits_on_draw_page_and_keeps_names() {
         <draw:page draw:name="Intro &amp; goals"><draw:frame><draw:text-box><text:p>one</text:p></draw:text-box></draw:frame></draw:page>
         <draw:page><draw:frame><draw:text-box><text:p>two</text:p></draw:text-box></draw:frame></draw:page>
         </office:presentation></office:body></office:document-content>"#;
-    let bytes = zip_of(&[("mimetype", "application/vnd.oasis.opendocument.presentation"), ("content.xml", content)]);
+    let bytes = zip_of(&[
+        (
+            "mimetype",
+            "application/vnd.oasis.opendocument.presentation",
+        ),
+        ("content.xml", content),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.format, Format::Odp);
-    let got: Vec<_> = doc.sections.iter().map(|s| (s.name.clone().unwrap(), s.text.clone())).collect();
-    assert_eq!(got, [("Intro & goals".to_string(), "one".to_string()), ("Slide 2".to_string(), "two".to_string())]);
+    let got: Vec<_> = doc
+        .sections
+        .iter()
+        .map(|s| (s.name.clone().unwrap(), s.text.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("Intro & goals".to_string(), "one".to_string()),
+            ("Slide 2".to_string(), "two".to_string())
+        ]
+    );
 }
 
 #[test]
@@ -129,11 +158,17 @@ fn minimal_pdf() -> Vec<u8> {
         pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", i + 1));
     }
     let xref = pdf.len();
-    pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+    pdf.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
     for offset in offsets {
         pdf.push_str(&format!("{offset:010} 00000 n \n"));
     }
-    pdf.push_str(&format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1));
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+        objects.len() + 1
+    ));
     pdf.into_bytes()
 }
 
@@ -143,7 +178,11 @@ fn pdf_text_is_returned_per_page() {
     assert_eq!(doc.format, Format::Pdf);
     assert_eq!(doc.sections.len(), 1);
     assert_eq!(doc.sections[0].name.as_deref(), Some("Page 1"));
-    assert!(doc.sections[0].text.contains("Hello PDF"), "{:?}", doc.sections[0].text);
+    assert!(
+        doc.sections[0].text.contains("Hello PDF"),
+        "{:?}",
+        doc.sections[0].text
+    );
 }
 
 #[test]
@@ -151,13 +190,19 @@ fn corrupt_pdf_is_an_error_not_a_crash() {
     let mut bytes = minimal_pdf();
     bytes.truncate(bytes.len() / 2);
     let err = extract(&bytes, None).unwrap_err();
-    assert!(matches!(err, ExtractError::Malformed(_) | ExtractError::Panicked), "{err:?}");
+    assert!(
+        matches!(err, ExtractError::Malformed(_) | ExtractError::Panicked),
+        "{err:?}"
+    );
 }
 
 #[test]
 fn hint_marks_csv_and_bom_is_removed() {
     let bytes = b"\xEF\xBB\xBFa,b\n1,2\n";
-    assert_eq!(extract(bytes, Some("prices.csv")).unwrap().format, Format::Csv);
+    assert_eq!(
+        extract(bytes, Some("prices.csv")).unwrap().format,
+        Format::Csv
+    );
     let doc = extract(bytes, Some("text/plain")).unwrap();
     assert_eq!(doc.format, Format::Text);
     assert_eq!(doc.text, "a,b\n1,2");
@@ -165,17 +210,33 @@ fn hint_marks_csv_and_bom_is_removed() {
 
 #[test]
 fn unknown_binary_and_plain_zip_are_refused() {
-    assert!(matches!(extract(&[0u8, 1, 2, 3, 0xff], None), Err(ExtractError::Unsupported(_))));
+    assert!(matches!(
+        extract(&[0u8, 1, 2, 3, 0xff], None),
+        Err(ExtractError::Unsupported(_))
+    ));
     let plain = zip_of(&[("readme.txt", "hello")]);
-    assert!(matches!(extract(&plain, None), Err(ExtractError::Unsupported(_))));
+    assert!(matches!(
+        extract(&plain, None),
+        Err(ExtractError::Unsupported(_))
+    ));
 }
 
 #[test]
 fn archive_that_unpacks_past_the_limit_is_refused() {
     // 4 MiB of one character compresses to a few KiB.
-    let bytes = docx(&format!("<w:p><w:r><w:t>{}</w:t></w:r></w:p>", "a".repeat(4 << 20)));
-    assert!(bytes.len() < 64 << 10, "fixture should be small: {}", bytes.len());
-    let limits = Limits { max_unpacked_bytes: 1 << 20, ..Limits::default() };
+    let bytes = docx(&format!(
+        "<w:p><w:r><w:t>{}</w:t></w:r></w:p>",
+        "a".repeat(4 << 20)
+    ));
+    assert!(
+        bytes.len() < 64 << 10,
+        "fixture should be small: {}",
+        bytes.len()
+    );
+    let limits = Limits {
+        max_unpacked_bytes: 1 << 20,
+        ..Limits::default()
+    };
     let refused = extract_with_limits(&bytes, None, &limits, &Options::default());
     assert!(matches!(refused, Err(ExtractError::TooLarge(_))));
     assert!(extract(&bytes, None).is_ok(), "the default limit allows it");
@@ -184,11 +245,23 @@ fn archive_that_unpacks_past_the_limit_is_refused() {
 #[test]
 fn entry_count_and_input_size_limits_apply() {
     let bytes = docx("<w:p/>");
-    let few_entries = Limits { max_archive_entries: 0, ..Limits::default() };
+    let few_entries = Limits {
+        max_archive_entries: 0,
+        ..Limits::default()
+    };
     let options = Options::default();
-    assert!(matches!(extract_with_limits(&bytes, None, &few_entries, &options), Err(ExtractError::TooLarge(_))));
-    let small_input = Limits { max_input_bytes: 10, ..Limits::default() };
-    assert!(matches!(extract_with_limits(&bytes, None, &small_input, &options), Err(ExtractError::TooLarge(_))));
+    assert!(matches!(
+        extract_with_limits(&bytes, None, &few_entries, &options),
+        Err(ExtractError::TooLarge(_))
+    ));
+    let small_input = Limits {
+        max_input_bytes: 10,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        extract_with_limits(&bytes, None, &small_input, &options),
+        Err(ExtractError::TooLarge(_))
+    ));
 }
 
 #[test]
@@ -201,7 +274,10 @@ fn json_shape_is_stable() {
 }
 
 fn sections_of(doc: &Document) -> Vec<(SectionKind, Option<&str>, &str)> {
-    doc.sections.iter().map(|s| (s.kind, s.name.as_deref(), s.text.as_str())).collect()
+    doc.sections
+        .iter()
+        .map(|s| (s.kind, s.name.as_deref(), s.text.as_str()))
+        .collect()
 }
 
 const RELS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -210,9 +286,13 @@ const RELS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 fn rels(items: &[(&str, &str, &str)]) -> String {
     let list: String = items
         .iter()
-        .map(|(id, kind, target)| format!(r#"<Relationship Id="{id}" Type="{RELS}/{kind}" Target="{target}"/>"#))
+        .map(|(id, kind, target)| {
+            format!(r#"<Relationship Id="{id}" Type="{RELS}/{kind}" Target="{target}"/>"#)
+        })
         .collect();
-    format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{list}</Relationships>"#)
+    format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{list}</Relationships>"#
+    )
 }
 
 fn para(text: &str) -> String {
@@ -228,7 +308,13 @@ fn docx_reads_headers_footers_notes_and_comments_as_separate_sections() {
         para("FOOTNOTE ONE"),
     );
     let bytes = zip_of(&[
-        ("word/document.xml", &format!(r#"<w:document {W}><w:body>{}</w:body></w:document>"#, para("BODYTEXT"))),
+        (
+            "word/document.xml",
+            &format!(
+                r#"<w:document {W}><w:body>{}</w:body></w:document>"#,
+                para("BODYTEXT")
+            ),
+        ),
         (
             "word/_rels/document.xml.rels",
             &rels(&[
@@ -245,7 +331,13 @@ fn docx_reads_headers_footers_notes_and_comments_as_separate_sections() {
         ("word/header2.xml", &part(&para("HEADERTEXT"))),
         ("word/footer1.xml", &part(&para("FOOTERTEXT"))),
         ("word/footnotes.xml", &notes),
-        ("word/comments.xml", &format!(r#"<w:comments {W}><w:comment w:id="0">{}</w:comment></w:comments>"#, para("A COMMENT"))),
+        (
+            "word/comments.xml",
+            &format!(
+                r#"<w:comments {W}><w:comment w:id="0">{}</w:comment></w:comments>"#,
+                para("A COMMENT")
+            ),
+        ),
     ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(
@@ -265,10 +357,21 @@ fn docx_reads_headers_footers_notes_and_comments_as_separate_sections() {
 fn docx_numbers_distinct_headers_and_skips_unreadable_parts_with_a_warning() {
     let part = |text: &str| format!(r#"<w:hdr {W}>{}</w:hdr>"#, para(text));
     let bytes = zip_of(&[
-        ("word/document.xml", &format!(r#"<w:document {W}><w:body>{}</w:body></w:document>"#, para("BODY"))),
+        (
+            "word/document.xml",
+            &format!(
+                r#"<w:document {W}><w:body>{}</w:body></w:document>"#,
+                para("BODY")
+            ),
+        ),
         (
             "word/_rels/document.xml.rels",
-            &rels(&[("rId1", "header", "header1.xml"), ("rId2", "header", "header2.xml"), ("rId3", "footer", "missing.xml"), ("rId4", "header", "bad.xml")]),
+            &rels(&[
+                ("rId1", "header", "header1.xml"),
+                ("rId2", "header", "header2.xml"),
+                ("rId3", "footer", "missing.xml"),
+                ("rId4", "header", "bad.xml"),
+            ]),
         ),
         ("word/header1.xml", &part("FIRST")),
         ("word/header2.xml", &part("SECOND")),
@@ -284,21 +387,48 @@ fn docx_numbers_distinct_headers_and_skips_unreadable_parts_with_a_warning() {
         ]
     );
     assert_eq!(doc.warnings.len(), 2, "{:?}", doc.warnings);
-    assert!(doc.warnings.iter().any(|w| w.starts_with("part_missing: word/missing.xml")), "{:?}", doc.warnings);
-    assert!(doc.warnings.iter().any(|w| w.starts_with("part_skipped: word/bad.xml")), "{:?}", doc.warnings);
+    assert!(
+        doc.warnings
+            .iter()
+            .any(|w| w.starts_with("part_missing: word/missing.xml")),
+        "{:?}",
+        doc.warnings
+    );
+    assert!(
+        doc.warnings
+            .iter()
+            .any(|w| w.starts_with("part_skipped: word/bad.xml")),
+        "{:?}",
+        doc.warnings
+    );
 }
 
 #[test]
 fn docx_header_parts_count_against_the_unpack_limit() {
     let big = format!(r#"<w:hdr {W}>{}</w:hdr>"#, para(&"a".repeat(4 << 20)));
     let bytes = zip_of(&[
-        ("word/document.xml", &format!(r#"<w:document {W}><w:body>{}</w:body></w:document>"#, para("BODY"))),
-        ("word/_rels/document.xml.rels", &rels(&[("rId1", "header", "header1.xml")])),
+        (
+            "word/document.xml",
+            &format!(
+                r#"<w:document {W}><w:body>{}</w:body></w:document>"#,
+                para("BODY")
+            ),
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            &rels(&[("rId1", "header", "header1.xml")]),
+        ),
         ("word/header1.xml", &big),
     ]);
-    let limits = Limits { max_unpacked_bytes: 1 << 20, ..Limits::default() };
+    let limits = Limits {
+        max_unpacked_bytes: 1 << 20,
+        ..Limits::default()
+    };
     let refused = extract_with_limits(&bytes, None, &limits, &Options::default());
-    assert!(matches!(refused, Err(ExtractError::TooLarge(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(ExtractError::TooLarge(_))),
+        "{refused:?}"
+    );
 }
 
 fn cell(text: &str) -> String {
@@ -316,15 +446,26 @@ fn docx_table_rows_are_tab_separated_lines_set_off_by_blank_lines() {
         row(&[cell("Name"), cell("Qty"), cell("Price")]),
         row(&[cell("Widget"), cell("4"), cell("9.99")]),
     );
-    let doc = extract(&docx(&format!("{}{table}{}", para("before"), para("after"))), None).unwrap();
-    assert_eq!(doc.text, "before\n\nName\tQty\tPrice\nWidget\t4\t9.99\n\nafter");
+    let doc = extract(
+        &docx(&format!("{}{table}{}", para("before"), para("after"))),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        doc.text,
+        "before\n\nName\tQty\tPrice\nWidget\t4\t9.99\n\nafter"
+    );
 }
 
 #[test]
 fn docx_table_cells_join_paragraphs_pad_grid_spans_and_flatten_nested_tables() {
     let spanned = r#"<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Total</w:t></w:r></w:p></w:tc>"#;
     let two_paragraphs = format!("<w:tc>{}{}</w:tc>", para("first"), para("second"));
-    let nested = format!("<w:tc>{}<w:tbl>{}</w:tbl></w:tc>", para("outer"), row(&[cell("in1"), cell("in2")]));
+    let nested = format!(
+        "<w:tc>{}<w:tbl>{}</w:tbl></w:tc>",
+        para("outer"),
+        row(&[cell("in1"), cell("in2")])
+    );
     let table = format!(
         "<w:tbl>{}{}{}{}</w:tbl>",
         row(&[cell("A"), cell(""), cell("C")]),
@@ -335,7 +476,10 @@ fn docx_table_cells_join_paragraphs_pad_grid_spans_and_flatten_nested_tables() {
     let doc = extract(&docx(&table), None).unwrap();
     // Empty cells keep their column; a merged cell is followed by an empty one;
     // a table inside a cell is flattened into that cell.
-    assert_eq!(doc.text, "A\t\tC\nTotal\t\t10\nfirst second\tx\nouter in1 in2\ty");
+    assert_eq!(
+        doc.text,
+        "A\t\tC\nTotal\t\t10\nfirst second\tx\nouter in1 in2\ty"
+    );
 }
 
 #[test]
@@ -346,7 +490,11 @@ fn deeply_nested_tables_keep_their_text_without_quadratic_work() {
     let started = std::time::Instant::now();
     let doc = extract(&docx(&format!("{open}{}{close}", para("deep"))), None).unwrap();
     assert_eq!(doc.text, "deep");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -356,11 +504,24 @@ fn table_output_beyond_the_size_limit_is_refused() {
     let content = format!(
         r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text><table:table>{rows}</table:table></office:text></office:body></office:document-content>"#
     );
-    let bytes = zip_of(&[("mimetype", "application/vnd.oasis.opendocument.text"), ("content.xml", &content)]);
-    assert!(bytes.len() < 64 << 10, "fixture should be small: {}", bytes.len());
-    let limits = Limits { max_unpacked_bytes: 1 << 20, ..Limits::default() };
+    let bytes = zip_of(&[
+        ("mimetype", "application/vnd.oasis.opendocument.text"),
+        ("content.xml", &content),
+    ]);
+    assert!(
+        bytes.len() < 64 << 10,
+        "fixture should be small: {}",
+        bytes.len()
+    );
+    let limits = Limits {
+        max_unpacked_bytes: 1 << 20,
+        ..Limits::default()
+    };
     let refused = extract_with_limits(&bytes, None, &limits, &Options::default());
-    assert!(matches!(refused, Err(ExtractError::TooLarge(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(ExtractError::TooLarge(_))),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -375,9 +536,15 @@ fn odt_tables_pad_covered_cells_repeat_cells_and_flatten_nested_tables() {
         </table:table>
         <text:p>after</text:p>
         </office:text></office:body></office:document-content>"#;
-    let bytes = zip_of(&[("mimetype", "application/vnd.oasis.opendocument.text"), ("content.xml", content)]);
+    let bytes = zip_of(&[
+        ("mimetype", "application/vnd.oasis.opendocument.text"),
+        ("content.xml", content),
+    ]);
     let doc = extract(&bytes, None).unwrap();
-    assert_eq!(doc.text, "before\n\nName\tQty\tPrice\nTotal\t\t9.99\nr\tr\tone two\nin1 in2\t\n\nafter");
+    assert_eq!(
+        doc.text,
+        "before\n\nName\tQty\tPrice\nTotal\t\t9.99\nr\tr\tone two\nin1 in2\t\n\nafter"
+    );
 }
 
 const SLIDE_NS: &str = r#"xmlns:p="p" xmlns:a="a" xmlns:r="r""#;
@@ -387,7 +554,9 @@ fn slide(shapes: &str) -> String {
 }
 
 fn shape(placeholder: Option<&str>, text: &str) -> String {
-    let ph = placeholder.map(|t| format!(r#"<p:ph type="{t}"/>"#)).unwrap_or_default();
+    let ph = placeholder
+        .map(|t| format!(r#"<p:ph type="{t}"/>"#))
+        .unwrap_or_default();
     format!(
         r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"#
     )
@@ -399,14 +568,38 @@ fn pptx_follows_presentation_order_and_reads_notes_without_placeholders() {
         r#"<p:presentation {SLIDE_NS}><p:sldIdLst><p:sldId id="257" r:id="rId7"/><p:sldId id="256" r:id="rId3"/></p:sldIdLst></p:presentation>"#
     );
     let notes = |text: &str| {
-        slide(&format!("{}{}{}", shape(Some("body"), text), shape(Some("sldNum"), "9"), shape(Some("ftr"), "FOOTER")))
+        slide(&format!(
+            "{}{}{}",
+            shape(Some("body"), text),
+            shape(Some("sldNum"), "9"),
+            shape(Some("ftr"), "FOOTER")
+        ))
     };
     let bytes = zip_of(&[
         ("ppt/presentation.xml", &presentation),
-        ("ppt/_rels/presentation.xml.rels", &rels(&[("rId3", "slide", "slides/slide1.xml"), ("rId7", "slide", "slides/slide2.xml")])),
-        ("ppt/slides/slide1.xml", &slide(&format!("{}{}", shape(None, "was first in the file"), shape(Some("sldNum"), "1")))),
-        ("ppt/slides/slide2.xml", &slide(&shape(Some("title"), "was second"))),
-        ("ppt/slides/_rels/slide1.xml.rels", &rels(&[("rId1", "notesSlide", "../notesSlides/notesSlide1.xml")])),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            &rels(&[
+                ("rId3", "slide", "slides/slide1.xml"),
+                ("rId7", "slide", "slides/slide2.xml"),
+            ]),
+        ),
+        (
+            "ppt/slides/slide1.xml",
+            &slide(&format!(
+                "{}{}",
+                shape(None, "was first in the file"),
+                shape(Some("sldNum"), "1")
+            )),
+        ),
+        (
+            "ppt/slides/slide2.xml",
+            &slide(&shape(Some("title"), "was second")),
+        ),
+        (
+            "ppt/slides/_rels/slide1.xml.rels",
+            &rels(&[("rId1", "notesSlide", "../notesSlides/notesSlide1.xml")]),
+        ),
         ("ppt/notesSlides/notesSlide1.xml", &notes("NOTES ONE")),
     ]);
     let doc = extract(&bytes, None).unwrap();
@@ -423,7 +616,11 @@ fn pptx_follows_presentation_order_and_reads_notes_without_placeholders() {
 
 #[test]
 fn pptx_tables_keep_empty_and_merged_cells_aligned() {
-    let tc = |attrs: &str, text: &str| format!(r#"<a:tc{attrs}><a:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody></a:tc>"#);
+    let tc = |attrs: &str, text: &str| {
+        format!(
+            r#"<a:tc{attrs}><a:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody></a:tc>"#
+        )
+    };
     let table = format!(
         r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tr>{}{}{}</a:tr><a:tr>{}{}{}</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
         tc("", "A"),
@@ -433,24 +630,42 @@ fn pptx_tables_keep_empty_and_merged_cells_aligned() {
         tc(r#" hMerge="1""#, ""),
         tc("", "9"),
     );
-    let bytes = zip_of(&[("ppt/presentation.xml", "<p:presentation xmlns:p=\"p\"/>"), ("ppt/slides/slide1.xml", &slide(&table))]);
+    let bytes = zip_of(&[
+        ("ppt/presentation.xml", "<p:presentation xmlns:p=\"p\"/>"),
+        ("ppt/slides/slide1.xml", &slide(&table)),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.text, "A\t\tC\nTotal\t\t9");
 }
 
 #[test]
 fn pptx_with_a_missing_listed_slide_warns_and_goes_on() {
-    let presentation = format!(r#"<p:presentation {SLIDE_NS}><p:sldIdLst><p:sldId id="1" r:id="rId1"/><p:sldId id="2" r:id="rId2"/></p:sldIdLst></p:presentation>"#);
+    let presentation = format!(
+        r#"<p:presentation {SLIDE_NS}><p:sldIdLst><p:sldId id="1" r:id="rId1"/><p:sldId id="2" r:id="rId2"/></p:sldIdLst></p:presentation>"#
+    );
     let bytes = zip_of(&[
         ("ppt/presentation.xml", &presentation),
-        ("ppt/_rels/presentation.xml.rels", &rels(&[("rId1", "slide", "slides/slide1.xml"), ("rId2", "slide", "slides/slide2.xml")])),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            &rels(&[
+                ("rId1", "slide", "slides/slide1.xml"),
+                ("rId2", "slide", "slides/slide2.xml"),
+            ]),
+        ),
         ("ppt/slides/slide2.xml", &slide(&shape(None, "kept"))),
     ]);
     let doc = extract(&bytes, None).unwrap();
     // The slide keeps the number it has in the presentation.
-    assert_eq!(sections_of(&doc), [(SectionKind::Slide, Some("Slide 2"), "kept")]);
+    assert_eq!(
+        sections_of(&doc),
+        [(SectionKind::Slide, Some("Slide 2"), "kept")]
+    );
     assert_eq!(doc.warnings.len(), 1, "{:?}", doc.warnings);
-    assert!(doc.warnings[0].starts_with("part_missing: ppt/slides/slide1.xml"), "{:?}", doc.warnings);
+    assert!(
+        doc.warnings[0].starts_with("part_missing: ppt/slides/slide1.xml"),
+        "{:?}",
+        doc.warnings
+    );
 }
 
 #[test]
@@ -467,7 +682,13 @@ fn odp_splits_notes_out_skips_placeholders_and_numbers_generated_names() {
           <draw:frame presentation:class="page-number"><draw:text-box><text:p><text:page-number>&lt;number&gt;</text:page-number></text:p></draw:text-box></draw:frame>
         </draw:page>
         </office:presentation></office:body></office:document-content>"#;
-    let bytes = zip_of(&[("mimetype", "application/vnd.oasis.opendocument.presentation"), ("content.xml", content)]);
+    let bytes = zip_of(&[
+        (
+            "mimetype",
+            "application/vnd.oasis.opendocument.presentation",
+        ),
+        ("content.xml", content),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(
         sections_of(&doc),
@@ -536,11 +757,24 @@ fn legacy_office_containers_are_named_not_mistaken_for_spreadsheets() {
         Ok(doc) => panic!("{streams:?} was read as {:?}", doc.format),
     };
     let word = refused(&["1Table", "WordDocument"]);
-    assert!(word.starts_with("unsupported document: ") && word.contains(".doc") && word.contains(".docx"), "{word}");
+    assert!(
+        word.starts_with("unsupported document: ")
+            && word.contains(".doc")
+            && word.contains(".docx"),
+        "{word}"
+    );
     let slides = refused(&["Current User", "PowerPoint Document"]);
-    assert!(slides.starts_with("unsupported document: ") && slides.contains(".ppt") && slides.contains(".pptx"), "{slides}");
+    assert!(
+        slides.starts_with("unsupported document: ")
+            && slides.contains(".ppt")
+            && slides.contains(".pptx"),
+        "{slides}"
+    );
     let encrypted = refused(&["EncryptionInfo", "EncryptedPackage"]);
-    assert!(encrypted.starts_with("encrypted document: ") && encrypted.contains("password"), "{encrypted}");
+    assert!(
+        encrypted.starts_with("encrypted document: ") && encrypted.contains("password"),
+        "{encrypted}"
+    );
     let other = refused(&["Contents"]);
     assert!(other.starts_with("unsupported document: "), "{other}");
     assert!(!other.contains("Workbook"), "{other}");
@@ -550,7 +784,10 @@ fn legacy_office_containers_are_named_not_mistaken_for_spreadsheets() {
 fn compound_file_with_a_workbook_stream_is_still_xls() {
     let limits = Limits::default();
     for stream in ["Workbook", "Book"] {
-        assert_eq!(detect(&cfb_with_streams(&[stream]), None, &limits).unwrap(), Format::Xls);
+        assert_eq!(
+            detect(&cfb_with_streams(&[stream]), None, &limits).unwrap(),
+            Format::Xls
+        );
     }
 }
 
@@ -562,13 +799,23 @@ fn truncated_or_hostile_compound_files_are_errors_not_panics() {
     // A directory sector that points back at itself must not loop.
     let mut looping = good.clone();
     let fat_entry_of_directory = 512 + 4;
-    looping[fat_entry_of_directory..fat_entry_of_directory + 4].copy_from_slice(&1u32.to_le_bytes());
+    looping[fat_entry_of_directory..fat_entry_of_directory + 4]
+        .copy_from_slice(&1u32.to_le_bytes());
     let err = extract(&looping, None).unwrap_err();
-    assert!(matches!(err, ExtractError::Malformed(_) | ExtractError::Unsupported(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            ExtractError::Malformed(_) | ExtractError::Unsupported(_)
+        ),
+        "{err:?}"
+    );
     // A sector size past what the header allows.
     let mut huge_sector = good.clone();
     huge_sector[30..32].copy_from_slice(&31u16.to_le_bytes());
-    assert!(matches!(extract(&huge_sector, None), Err(ExtractError::Malformed(_))));
+    assert!(matches!(
+        extract(&huge_sector, None),
+        Err(ExtractError::Malformed(_))
+    ));
     // Every prefix of a valid file is handled.
     for end in 0..good.len() {
         let _ = extract(&good[..end], None);
@@ -578,11 +825,17 @@ fn truncated_or_hostile_compound_files_are_errors_not_panics() {
 /// An xlsx with one sheet named `name`, styles from `styles` (cell formats in
 /// order) and the 1904 date system when `date1904`.
 fn xlsx_of(name: &str, sheet: &str, styles: Option<&str>, date1904: bool) -> Vec<u8> {
-    let workbook_pr = if date1904 { r#"<workbookPr date1904="1"/>"# } else { "" };
+    let workbook_pr = if date1904 {
+        r#"<workbookPr date1904="1"/>"#
+    } else {
+        ""
+    };
     let workbook = format!(
         r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="{RELS}">{workbook_pr}<sheets><sheet name="{name}" sheetId="1" r:id="rId1"/></sheets></workbook>"#
     );
-    let sheet = format!(r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{sheet}</sheetData></worksheet>"#);
+    let sheet = format!(
+        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{sheet}</sheetData></worksheet>"#
+    );
     let mut entries = vec![
         (
             "_rels/.rels",
@@ -597,13 +850,19 @@ fn xlsx_of(name: &str, sheet: &str, styles: Option<&str>, date1904: bool) -> Vec
         ("xl/worksheets/sheet1.xml", sheet),
     ];
     if let Some(formats) = styles {
-        let xfs: String = formats.split(',').map(|id| format!(r#"<xf numFmtId="{id}"/>"#)).collect();
+        let xfs: String = formats
+            .split(',')
+            .map(|id| format!(r#"<xf numFmtId="{id}"/>"#))
+            .collect();
         entries.push((
             "xl/styles.xml",
             format!(r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs count="1">{xfs}</cellXfs></styleSheet>"#),
         ));
     }
-    let borrowed: Vec<(&str, &str)> = entries.iter().map(|(name, body)| (*name, body.as_str())).collect();
+    let borrowed: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|(name, body)| (*name, body.as_str()))
+        .collect();
     zip_of(&borrowed)
 }
 
@@ -613,7 +872,10 @@ fn xlsx_dates_and_durations_print_as_iso_text() {
     let sheet = r#"<row r="1"><c r="A1" s="1"><v>46335</v></c><c r="B1" s="2"><v>46335.5</v></c><c r="C1" s="2"><v>46335.25000116</v></c></row>
         <row r="2"><c r="A2" s="3"><v>0.5</v></c><c r="B2" s="4"><v>1.5</v></c><c r="C2" s="0"><v>46335</v></c></row>"#;
     let doc = extract(&xlsx_of("Dates", sheet, Some("0,14,22,21,46"), false), None).unwrap();
-    assert_eq!(doc.sections[0].text, "2026-11-09\t2026-11-09T12:00:00\t2026-11-09T06:00:00.100\n12:00:00\t36:00:00\t46335");
+    assert_eq!(
+        doc.sections[0].text,
+        "2026-11-09\t2026-11-09T12:00:00\t2026-11-09T06:00:00.100\n12:00:00\t36:00:00\t46335"
+    );
     assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
 }
 
@@ -631,11 +893,17 @@ fn xlsx_formula_cells_without_a_cached_value_are_warned_about_per_sheet() {
         <row r="2"><c r="A2"><f>A1*2</f></c></row>"#;
     let doc = extract(&xlsx_of("Sales", sheet, None, false), None).unwrap();
     assert_eq!(doc.sections[0].text, "4\t7");
-    assert_eq!(doc.warnings, ["no_cached_value: sheet \"Sales\": 2 formula cells have no cached value"]);
+    assert_eq!(
+        doc.warnings,
+        ["no_cached_value: sheet \"Sales\": 2 formula cells have no cached value"]
+    );
 
     let one = r#"<row r="1"><c r="A1"><f>1+1</f></c><c r="B1"><v>1</v></c></row>"#;
     let doc = extract(&xlsx_of("S", one, None, false), None).unwrap();
-    assert_eq!(doc.warnings, ["no_cached_value: sheet \"S\": 1 formula cell has no cached value"]);
+    assert_eq!(
+        doc.warnings,
+        ["no_cached_value: sheet \"S\": 1 formula cell has no cached value"]
+    );
 }
 
 /// A PDF whose pages are `(extra page entries, content stream)`, all sharing one
@@ -644,21 +912,33 @@ fn pdf_of(pages: &[(&str, &str)]) -> Vec<u8> {
     let first_page = 3;
     let font = first_page + 2 * pages.len();
     let image = font + 1;
-    let kids: String = (0..pages.len()).map(|i| format!("{} 0 R ", first_page + 2 * i)).collect();
+    let kids: String = (0..pages.len())
+        .map(|i| format!("{} 0 R ", first_page + 2 * i))
+        .collect();
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()),
     ];
     for (i, (entries, stream)) in pages.iter().enumerate() {
         // Only a page that draws the image lists it, as a real file would.
-        let xobject = if stream.contains("/Im1") { format!("/XObject << /Im1 {image} 0 R >>") } else { String::new() };
+        let xobject = if stream.contains("/Im1") {
+            format!("/XObject << /Im1 {image} 0 R >>")
+        } else {
+            String::new()
+        };
         objects.push(format!(
             "<< /Type /Page /Parent 2 0 R {entries} /Contents {} 0 R /Resources << /Font << /F1 {font} 0 R >> {xobject} >> >>",
             first_page + 2 * i + 1
         ));
-        objects.push(format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()));
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{stream}\nendstream",
+            stream.len()
+        ));
     }
-    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string());
+    objects.push(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_string(),
+    );
     objects.push("<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\u{1}\nendstream".to_string());
     let mut pdf = String::from("%PDF-1.4\n");
     let mut offsets = Vec::new();
@@ -667,11 +947,17 @@ fn pdf_of(pages: &[(&str, &str)]) -> Vec<u8> {
         pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", i + 1));
     }
     let xref = pdf.len();
-    pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+    pdf.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
     for offset in offsets {
         pdf.push_str(&format!("{offset:010} 00000 n \n"));
     }
-    pdf.push_str(&format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1));
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+        objects.len() + 1
+    ));
     pdf.into_bytes()
 }
 
@@ -681,25 +967,44 @@ const IMAGE_STREAM: &str = "q 100 0 0 100 10 10 cm /Im1 Do Q";
 
 #[test]
 fn pdf_pages_without_a_text_layer_are_flagged_only_when_they_hold_images() {
-    let bytes = pdf_of(&[(MEDIA_BOX, TEXT_STREAM), (MEDIA_BOX, IMAGE_STREAM), (MEDIA_BOX, "")]);
+    let bytes = pdf_of(&[
+        (MEDIA_BOX, TEXT_STREAM),
+        (MEDIA_BOX, IMAGE_STREAM),
+        (MEDIA_BOX, ""),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.sections.len(), 3);
     assert!(doc.sections[0].text.contains("Hello PDF"));
     assert_eq!(doc.sections[1].text, "");
-    assert_eq!(doc.warnings, ["no_text_layer: page 2 has no text layer; it may be scanned"]);
+    assert_eq!(
+        doc.warnings,
+        ["no_text_layer: page 2 has no text layer; it may be scanned"]
+    );
 }
 
 #[test]
 fn pdf_page_that_fails_does_not_cost_the_pages_after_it() {
     // Page 2 has no MediaBox anywhere, which the text extractor cannot place.
-    let bytes = pdf_of(&[(MEDIA_BOX, TEXT_STREAM), ("", TEXT_STREAM), (MEDIA_BOX, TEXT_STREAM)]);
+    let bytes = pdf_of(&[
+        (MEDIA_BOX, TEXT_STREAM),
+        ("", TEXT_STREAM),
+        (MEDIA_BOX, TEXT_STREAM),
+    ]);
     let doc = extract(&bytes, None).unwrap();
     assert_eq!(doc.sections.len(), 3);
     assert!(doc.sections[0].text.contains("Hello PDF"));
     assert_eq!(doc.sections[1].text, "");
-    assert!(doc.sections[2].text.contains("Hello PDF"), "{:?}", doc.sections[2].text);
+    assert!(
+        doc.sections[2].text.contains("Hello PDF"),
+        "{:?}",
+        doc.sections[2].text
+    );
     assert_eq!(doc.warnings.len(), 1, "{:?}", doc.warnings);
-    assert!(doc.warnings[0].starts_with("page_failed: page 2 "), "{:?}", doc.warnings);
+    assert!(
+        doc.warnings[0].starts_with("page_failed: page 2 "),
+        "{:?}",
+        doc.warnings
+    );
 }
 
 /// `minimal_pdf` encrypted with the 128-bit RC4 handler, user password "open".
@@ -708,7 +1013,8 @@ fn encrypted_pdf() -> Vec<u8> {
     let mut doc = pdf_extract::Document::load_mem(&minimal_pdf()).unwrap();
     // The key is derived from the file identifier, which `minimal_pdf` lacks.
     let id = pdf_extract::Object::string_literal("0123456789abcdef");
-    doc.trailer.set("ID", pdf_extract::Object::Array(vec![id.clone(), id]));
+    doc.trailer
+        .set("ID", pdf_extract::Object::Array(vec![id.clone(), id]));
     let state = EncryptionState::try_from(EncryptionVersion::V2 {
         document: &doc,
         owner_password: "owner",
@@ -728,25 +1034,46 @@ fn encrypted_pdf_needs_the_right_password() {
     let bytes = encrypted_pdf();
     let needs = extract(&bytes, None).unwrap_err();
     assert!(matches!(needs, ExtractError::Encrypted(_)), "{needs:?}");
-    assert_eq!(needs.to_string(), "encrypted document: the PDF is password-protected and needs a password");
+    assert_eq!(
+        needs.to_string(),
+        "encrypted document: the PDF is password-protected and needs a password"
+    );
 
     let with = |password: &str| {
-        let options = Options { password: Some(password.to_string()) };
+        let options = Options {
+            password: Some(password.to_string()),
+        };
         extract_with_limits(&bytes, None, &Limits::default(), &options)
     };
     let wrong = with("nope").unwrap_err();
-    assert_eq!(wrong.to_string(), "encrypted document: the password is incorrect");
+    assert_eq!(
+        wrong.to_string(),
+        "encrypted document: the password is incorrect"
+    );
 
     let doc = with("open").unwrap();
-    assert!(doc.sections[0].text.contains("Hello PDF"), "{:?}", doc.sections[0].text);
+    assert!(
+        doc.sections[0].text.contains("Hello PDF"),
+        "{:?}",
+        doc.sections[0].text
+    );
     assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
 }
 
 #[test]
 fn a_password_for_a_file_that_takes_none_is_reported_not_silently_dropped() {
-    let options = Options { password: Some("x".to_string()) };
+    let options = Options {
+        password: Some("x".to_string()),
+    };
     let doc = extract_with_limits(&docx("<w:p/>"), None, &Limits::default(), &options).unwrap();
-    assert_eq!(doc.warnings, ["password_ignored: only PDF files use a password"]);
+    assert_eq!(
+        doc.warnings,
+        ["password_ignored: only PDF files use a password"]
+    );
     let doc = extract_with_limits(&minimal_pdf(), None, &Limits::default(), &options).unwrap();
-    assert!(doc.warnings.is_empty(), "an unencrypted PDF ignores it too, quietly: {:?}", doc.warnings);
+    assert!(
+        doc.warnings.is_empty(),
+        "an unencrypted PDF ignores it too, quietly: {:?}",
+        doc.warnings
+    );
 }

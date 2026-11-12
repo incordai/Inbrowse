@@ -26,7 +26,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn new(cookie_jar: Arc<CookieJar>, proxy: Option<String>, user_agent: String) -> Self {
+    pub(crate) fn new(
+        cookie_jar: Arc<CookieJar>,
+        proxy: Option<String>,
+        user_agent: String,
+    ) -> Self {
         Self {
             cookie_jar,
             proxy,
@@ -36,7 +40,9 @@ impl Session {
 
     /// Value of one cookie that would be sent to `url`.
     pub(crate) fn cookie(&self, url: &Url, name: &str) -> Option<String> {
-        let header = self.cookie_jar.get_cookie_header_in_context(url, SameSiteContext::SameSite);
+        let header = self
+            .cookie_jar
+            .get_cookie_header_in_context(url, SameSiteContext::SameSite);
         header.split(';').find_map(|pair| {
             let (k, v) = pair.trim().split_once('=')?;
             (k == name).then(|| v.trim_matches('"').to_string())
@@ -52,7 +58,10 @@ impl Session {
         };
         let client = InbrowseHttpClient::with_full_options(jar, self.proxy.as_deref(), false);
         client.set_user_agent(&self.user_agent).await;
-        let map: HashMap<String, String> = headers.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let map: HashMap<String, String> = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
         client.set_extra_headers(map).await;
         client
     }
@@ -95,7 +104,11 @@ async fn pace(url: &Url, gap: Duration) {
     let wait = {
         let mut slots = next_slot().lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let at = slots.get(&host).copied().filter(|t| *t > now).unwrap_or(now);
+        let at = slots
+            .get(&host)
+            .copied()
+            .filter(|t| *t > now)
+            .unwrap_or(now);
         slots.insert(host, at + gap);
         at - now
     };
@@ -120,7 +133,11 @@ fn retry_after(resp: &Response) -> u64 {
     if let Some(v) = header(resp, "x-ratelimit-reset").and_then(|v| v.trim().parse::<f64>().ok()) {
         // Reddit sends seconds remaining; X and GitHub send an epoch.
         let v = v as i64;
-        return if v > 1_000_000_000 { (v - now).max(1) as u64 } else { v.max(1) as u64 };
+        return if v > 1_000_000_000 {
+            (v - now).max(1) as u64
+        } else {
+            v.max(1) as u64
+        };
     }
     if let Some(v) = header(resp, "x-rate-limit-reset").and_then(|v| v.trim().parse::<i64>().ok()) {
         return (v - now).max(1) as u64;
@@ -129,15 +146,28 @@ fn retry_after(resp: &Response) -> u64 {
 }
 
 fn looks_like_html(body: &[u8]) -> bool {
-    let head: Vec<u8> = body.iter().take(64).copied().skip_while(|b| b.is_ascii_whitespace()).collect();
+    let head: Vec<u8> = body
+        .iter()
+        .take(64)
+        .copied()
+        .skip_while(|b| b.is_ascii_whitespace())
+        .collect();
     head.first() == Some(&b'<')
 }
 
 /// GET (or POST a form) and return the response if it is a success.
-pub(crate) async fn fetch(session: &Session, url: &Url, req: Req<'_>, site: &str) -> Result<Response, SocialError> {
+pub(crate) async fn fetch(
+    session: &Session,
+    url: &Url,
+    req: Req<'_>,
+    site: &str,
+) -> Result<Response, SocialError> {
     pace(url, req.min_gap).await;
     // Decided before sending: the response may add cookies of its own.
-    let signed_in = req.cookies && req.login_cookie.is_some_and(|name| session.cookie(url, name).is_some());
+    let signed_in = req.cookies
+        && req
+            .login_cookie
+            .is_some_and(|name| session.cookie(url, name).is_some());
     let client = session.client(&req.headers, req.cookies).await;
     let result = match &req.form {
         Some(body) => client.post_form(url, body).await,
@@ -166,12 +196,20 @@ pub(crate) async fn fetch(session: &Session, url: &Url, req: Req<'_>, site: &str
 
 /// `fetch` and parse JSON. An HTML body (a block or login page served with
 /// status 200) is reported as blocked rather than as a parse error.
-pub(crate) async fn json(session: &Session, url: &Url, req: Req<'_>, site: &str) -> Result<Value, SocialError> {
+pub(crate) async fn json(
+    session: &Session,
+    url: &Url,
+    req: Req<'_>,
+    site: &str,
+) -> Result<Value, SocialError> {
     let resp = fetch(session, url, req, site).await?;
     if looks_like_html(&resp.body) {
-        return Err(SocialError::Blocked(format!("{site} answered with a web page instead of data")));
+        return Err(SocialError::Blocked(format!(
+            "{site} answered with a web page instead of data"
+        )));
     }
-    serde_json::from_slice(&resp.body).map_err(|e| SocialError::Failed(format!("{site}: unreadable JSON: {e}")))
+    serde_json::from_slice(&resp.body)
+        .map_err(|e| SocialError::Failed(format!("{site}: unreadable JSON: {e}")))
 }
 
 pub(crate) fn url(s: &str) -> Result<Url, SocialError> {
@@ -180,7 +218,10 @@ pub(crate) fn url(s: &str) -> Result<Url, SocialError> {
 
 /// Small JSON accessors used by every source.
 pub(crate) fn s(v: &Value, key: &str) -> Option<String> {
-    v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from)
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 pub(crate) fn i(v: &Value, key: &str) -> Option<i64> {
@@ -216,6 +257,10 @@ mod tests {
         for _ in 0..3 {
             pace(&url, Duration::from_millis(100)).await;
         }
-        assert!(start.elapsed() >= Duration::from_millis(200), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() >= Duration::from_millis(200),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

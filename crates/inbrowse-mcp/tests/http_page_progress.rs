@@ -47,14 +47,21 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
         reader.read_line(&mut request).await.unwrap();
         loop {
             let mut header = String::new();
-            if reader.read_line(&mut header).await.unwrap() == 0 || header == "\r\n" { break; }
+            if reader.read_line(&mut header).await.unwrap() == 0 || header == "\r\n" {
+                break;
+            }
         }
         reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").await.unwrap();
         let _ = sent.send(request);
     });
     let local = LocalSet::new();
     let server = local.spawn_local(inbrowse_mcp::http::run(
-        "127.0.0.1".into(), port, None, None, false, None,
+        "127.0.0.1".into(),
+        port,
+        None,
+        None,
+        false,
+        None,
     ));
     local.run_until(async {
         for _ in 0..100 {
@@ -126,7 +133,12 @@ async fn idle_pages_close_and_the_next_call_says_so() {
     drop(reservation);
     let local = LocalSet::new();
     let server = local.spawn_local(inbrowse_mcp::http::run(
-        "127.0.0.1".into(), port, None, None, false, Some(Duration::from_millis(500)),
+        "127.0.0.1".into(),
+        port,
+        None,
+        None,
+        false,
+        Some(Duration::from_millis(500)),
     ));
     local.run_until(async {
         for _ in 0..100 {

@@ -39,7 +39,8 @@ where
     R: Reader<RS>,
     R::Error: std::fmt::Display,
 {
-    calamine::open_workbook_from_rs(reader).map_err(|e| ExtractError::Malformed(format!("spreadsheet: {e}")))
+    calamine::open_workbook_from_rs(reader)
+        .map_err(|e| ExtractError::Malformed(format!("spreadsheet: {e}")))
 }
 
 fn sheets<R, RS>(mut workbook: R, warnings: &mut Vec<String>) -> Result<Vec<Section>, ExtractError>
@@ -58,7 +59,11 @@ where
             Ok(formulas) => {
                 let missing = formulas_without_value(&formulas, &range);
                 if missing > 0 {
-                    let cells = if missing == 1 { "cell has" } else { "cells have" };
+                    let cells = if missing == 1 {
+                        "cell has"
+                    } else {
+                        "cells have"
+                    };
                     warnings.push(format!("no_cached_value: sheet {name:?}: {missing} formula {cells} no cached value"));
                 }
             }
@@ -86,12 +91,16 @@ where
 /// program opens and saves the file). Positions in both ranges are absolute,
 /// and the two ranges need not start at the same cell. Called by `sheets`.
 fn formulas_without_value(formulas: &Range<String>, values: &Range<Data>) -> usize {
-    let Some((first_row, first_col)) = formulas.start() else { return 0 };
+    let Some((first_row, first_col)) = formulas.start() else {
+        return 0;
+    };
     formulas
         .used_cells()
         .filter(|(row, col, _)| {
             let at = (first_row + *row as u32, first_col + *col as u32);
-            values.get_value(at).is_none_or(|value| matches!(value, Data::Empty))
+            values
+                .get_value(at)
+                .is_none_or(|value| matches!(value, Data::Empty))
         })
         .count()
 }
@@ -134,7 +143,12 @@ fn duration_text(value: &ExcelDateTime) -> String {
     let total = (value.as_f64() * DAY_MS).round() as i64;
     let sign = if total < 0 { "-" } else { "" };
     let total = total.unsigned_abs();
-    let (hours, minutes, seconds, milli) = (total / 3_600_000, total / 60_000 % 60, total / 1000 % 60, total % 1000);
+    let (hours, minutes, seconds, milli) = (
+        total / 3_600_000,
+        total / 60_000 % 60,
+        total / 1000 % 60,
+        total % 1000,
+    );
     if milli == 0 {
         format!("{sign}{hours}:{minutes:02}:{seconds:02}")
     } else {
@@ -154,7 +168,9 @@ fn check_declared_size(bytes: &[u8], limits: &Limits) -> Result<(), ExtractError
             .map_err(|e| ExtractError::Malformed(format!("zip entry {index}: {e}")))?;
         total = total.saturating_add(entry.size());
         if total > limits.max_unpacked_bytes {
-            return Err(ExtractError::TooLarge("archive unpacks past the size limit".into()));
+            return Err(ExtractError::TooLarge(
+                "archive unpacks past the size limit".into(),
+            ));
         }
     }
     Ok(())

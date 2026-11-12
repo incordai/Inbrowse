@@ -9,9 +9,7 @@ pub async fn handle(method: &str, _params: &Value) -> Result<Value, String> {
             "userAgent": inbrowse_net::DEFAULT_USER_AGENT,
             "jsVersion": "14.5.0.0",
         })),
-        "close" => {
-            Ok(json!({}))
-        }
+        "close" => Ok(json!({})),
         "getWindowForTarget" => Ok(json!({
             "windowId": 1,
             "bounds": {

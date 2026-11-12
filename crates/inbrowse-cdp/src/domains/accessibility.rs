@@ -25,7 +25,9 @@ fn tree_for(page: &Page, params: &Value) -> Result<(AccessibilityTree, u32), Str
         Some(frame) => Some(
             page.frames
                 .iter()
-                .find(|child| crate::domains::page::child_frame_id(&page.frame_id, child.frame_id()) == frame)
+                .find(|child| {
+                    crate::domains::page::child_frame_id(&page.frame_id, child.frame_id()) == frame
+                })
                 .map(|child| child.frame_id())
                 .ok_or("Frame with the given id was not found.")?,
         ),
@@ -34,7 +36,11 @@ fn tree_for(page: &Page, params: &Value) -> Result<(AccessibilityTree, u32), Str
     match child {
         None => {
             #[cfg(feature = "render")]
-            let styles = page.js.as_ref().map(|js| js.accessibility_styles()).unwrap_or_default();
+            let styles = page
+                .js
+                .as_ref()
+                .map(|js| js.accessibility_styles())
+                .unwrap_or_default();
             #[cfg(not(feature = "render"))]
             let styles = HashMap::new();
             page.with_dom(|dom| build_ax_tree(dom, &styles, Some(frame_id)))
@@ -43,12 +49,18 @@ fn tree_for(page: &Page, params: &Value) -> Result<(AccessibilityTree, u32), Str
         }
         Some(child) => {
             #[cfg(feature = "render")]
-            let styles = page.js.as_ref().map(|js| js.frame_accessibility_styles(child)).unwrap_or_default();
+            let styles = page
+                .js
+                .as_ref()
+                .map(|js| js.frame_accessibility_styles(child))
+                .unwrap_or_default();
             #[cfg(not(feature = "render"))]
             let styles = HashMap::new();
             page.js
                 .as_ref()
-                .and_then(|js| js.with_frame_dom(child, |dom| build_ax_tree(dom, &styles, Some(frame_id))))
+                .and_then(|js| {
+                    js.with_frame_dom(child, |dom| build_ax_tree(dom, &styles, Some(frame_id)))
+                })
                 .map(|tree| (tree, child))
                 .ok_or("No DOM loaded".to_string())
         }
@@ -96,7 +108,10 @@ fn dom_node_param(
     params: &Value,
     session_id: &Option<String>,
 ) -> Result<(NodeId, Value), String> {
-    if ["nodeId", "backendNodeId", "objectId"].iter().all(|key| params.get(key).is_none_or(Value::is_null)) {
+    if ["nodeId", "backendNodeId", "objectId"]
+        .iter()
+        .all(|key| params.get(key).is_none_or(Value::is_null))
+    {
         return Err("Either nodeId, backendNodeId or objectId must be specified".to_string());
     }
     let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
@@ -130,14 +145,20 @@ pub async fn handle(
             Ok(json!({"node": qualify(frame, json!(root))}))
         }
         "getChildAXNodes" => {
-            let id = params.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+            let id = params
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("id must be a string")?;
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
             let (tree, frame) = tree_for(page, params)?;
             let children = tree.children(id).ok_or("No node with given id found")?;
             Ok(json!({"nodes": qualify(frame, json!(children))}))
         }
         "getPartialAXTree" => {
-            let relatives = params.get("fetchRelatives").and_then(Value::as_bool).unwrap_or(true);
+            let relatives = params
+                .get("fetchRelatives")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let (dom_node, params) = dom_node_param(ctx, params, session_id)?;
             let page = ctx.get_session_page(session_id).ok_or("No page")?;
             let (tree, frame) = tree_for(page, &params)?;

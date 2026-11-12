@@ -153,7 +153,10 @@ impl fmt::Display for OcrError {
         match self {
             OcrError::Unavailable(d) => write!(f, "ocr_unavailable: {d}"),
             OcrError::Rejected(d) => write!(f, "ocr_rejected: {d}"),
-            OcrError::TimedOut => write!(f, "ocr_timed_out: the deadline passed before any text came back"),
+            OcrError::TimedOut => write!(
+                f,
+                "ocr_timed_out: the deadline passed before any text came back"
+            ),
         }
     }
 }
@@ -254,7 +257,11 @@ impl Client {
 
     /// Read the text in one image (PNG, JPEG, WebP, GIF or BMP). Every error
     /// and warning is scrubbed of the key and the URL's user:password.
-    pub async fn recognize(&self, bytes: &[u8], deadline: Option<Instant>) -> Result<Recognized, OcrError> {
+    pub async fn recognize(
+        &self,
+        bytes: &[u8],
+        deadline: Option<Instant>,
+    ) -> Result<Recognized, OcrError> {
         match self.recognize_unscrubbed(bytes, deadline).await {
             Ok(mut r) => {
                 r.warnings = r.warnings.into_iter().map(|w| self.scrub(w)).collect();
@@ -276,7 +283,11 @@ impl Client {
         text
     }
 
-    async fn recognize_unscrubbed(&self, bytes: &[u8], deadline: Option<Instant>) -> Result<Recognized, OcrError> {
+    async fn recognize_unscrubbed(
+        &self,
+        bytes: &[u8],
+        deadline: Option<Instant>,
+    ) -> Result<Recognized, OcrError> {
         let started = Instant::now();
         let format = image::guess_format(bytes).ok();
         let (width, height) = dimensions(bytes).map_err(OcrError::Rejected)?;
@@ -319,11 +330,18 @@ impl Client {
             && width <= self.limits.max_width
     }
 
-    async fn tiled(&self, image: DynamicImage, deadline: Option<Instant>, started: Instant) -> Result<Recognized, OcrError> {
+    async fn tiled(
+        &self,
+        image: DynamicImage,
+        deadline: Option<Instant>,
+        started: Instant,
+    ) -> Result<Recognized, OcrError> {
         let (width, height) = (image.width(), image.height());
-        let rgb = Arc::new(tokio::task::spawn_blocking(move || flatten(image)).await.map_err(|e| {
-            OcrError::Rejected(format!("could not prepare the image: {e}"))
-        })?);
+        let rgb = Arc::new(
+            tokio::task::spawn_blocking(move || flatten(image))
+                .await
+                .map_err(|e| OcrError::Rejected(format!("could not prepare the image: {e}")))?,
+        );
         let mut queue: VecDeque<Rect> = plan(width, height, &self.limits).into();
         let mut found: Vec<Found> = Vec::new();
         let mut warnings = Vec::new();
@@ -335,10 +353,15 @@ impl Client {
         while let Some(rect) = queue.pop_front() {
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 timed_out = true;
-                warnings.push(format!("OCR stopped at the deadline; {} regions not read", queue.len() + 1));
+                warnings.push(format!(
+                    "OCR stopped at the deadline; {} regions not read",
+                    queue.len() + 1
+                ));
                 break;
             }
-            let png = encode_region(rgb.clone(), rect).await.map_err(OcrError::Rejected)?;
+            let png = encode_region(rgb.clone(), rect)
+                .await
+                .map_err(OcrError::Rejected)?;
             let sent = if png.len() > self.limits.max_file_bytes {
                 Sent::TooLarge(format!("tile PNG is {} bytes", png.len()))
             } else {
@@ -346,7 +369,10 @@ impl Client {
                     Ok(sent) => sent,
                     Err(OcrError::TimedOut) => {
                         timed_out = true;
-                        warnings.push(format!("OCR stopped at the deadline; {} regions not read", queue.len() + 1));
+                        warnings.push(format!(
+                            "OCR stopped at the deadline; {} regions not read",
+                            queue.len() + 1
+                        ));
                         break;
                     }
                     Err(e) => return Err(e),
@@ -360,9 +386,17 @@ impl Client {
                     for mut line in r.lines {
                         line.bbox[0] = line.bbox[0].saturating_add(rect.x);
                         line.bbox[1] = line.bbox[1].saturating_add(rect.y);
-                        found.push(Found { piece, tile: rect, line });
+                        found.push(Found {
+                            piece,
+                            tile: rect,
+                            line,
+                        });
                     }
-                    warnings.extend(r.warnings.into_iter().map(|w| format!("region {rect}: {w}")));
+                    warnings.extend(
+                        r.warnings
+                            .into_iter()
+                            .map(|w| format!("region {rect}: {w}")),
+                    );
                 }
                 Sent::TooLarge(reason) => match split(rect, self.limits.min_side) {
                     Some(parts) => {
@@ -370,9 +404,13 @@ impl Client {
                             queue.push_front(part);
                         }
                     }
-                    None => warnings.push(format!("region {rect} not read: too large for the OCR engine ({reason})")),
+                    None => warnings.push(format!(
+                        "region {rect} not read: too large for the OCR engine ({reason})"
+                    )),
                 },
-                Sent::Refused { detail, .. } => warnings.push(format!("region {rect} not read: {detail}")),
+                Sent::Refused { detail, .. } => {
+                    warnings.push(format!("region {rect} not read: {detail}"))
+                }
             }
         }
 
@@ -380,7 +418,11 @@ impl Client {
             return Err(OcrError::TimedOut);
         }
         let lines = merge(found);
-        let text = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         Ok(Recognized {
             text,
             lines,
@@ -394,7 +436,12 @@ impl Client {
     }
 
     /// One request, with the bounded retries for busy and loading.
-    async fn send(&self, bytes: &[u8], mime: &str, deadline: Option<Instant>) -> Result<Sent, OcrError> {
+    async fn send(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        deadline: Option<Instant>,
+    ) -> Result<Sent, OcrError> {
         let body = serde_json::to_vec(&serde_json::json!({
             "image_base64": base64::engine::general_purpose::STANDARD.encode(bytes),
             "mime": mime,
@@ -441,7 +488,11 @@ impl Client {
             let data = match resp.bytes().await {
                 Ok(d) => d,
                 Err(e) if e.is_timeout() => return Err(OcrError::TimedOut),
-                Err(e) => return Err(OcrError::Unavailable(format!("the OCR engine's answer broke off: {e}"))),
+                Err(e) => {
+                    return Err(OcrError::Unavailable(format!(
+                        "the OCR engine's answer broke off: {e}"
+                    )))
+                }
             };
             let error: EngineError = serde_json::from_slice(&data).unwrap_or_default();
             let detail = || match &error.reason {
@@ -521,7 +572,9 @@ fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
     if reader.format().is_none() {
         return Err(unreadable());
     }
-    reader.into_dimensions().map_err(|e| format!("could not read the image size: {e}"))
+    reader
+        .into_dimensions()
+        .map_err(|e| format!("could not read the image size: {e}"))
 }
 
 async fn decode(bytes: Vec<u8>, max_alloc: u64) -> Result<DynamicImage, String> {
@@ -533,7 +586,9 @@ async fn decode(bytes: Vec<u8>, max_alloc: u64) -> Result<DynamicImage, String> 
             let mut limits = image::Limits::default();
             limits.max_alloc = Some(max_alloc);
             reader.limits(limits);
-            reader.decode().map_err(|e| format!("could not decode the image: {e}"))
+            reader
+                .decode()
+                .map_err(|e| format!("could not decode the image: {e}"))
         })
         .unwrap_or_else(|_| Err("the image decoder failed on this file".into()))
     });
@@ -599,7 +654,9 @@ fn offsets(total: u32, n: u32, side: u32) -> Vec<u32> {
     if n <= 1 {
         return vec![0];
     }
-    (0..n).map(|i| ((total - side) as u64 * i as u64 / (n - 1) as u64) as u32).collect()
+    (0..n)
+        .map(|i| ((total - side) as u64 * i as u64 / (n - 1) as u64) as u32)
+        .collect()
 }
 
 /// The fewest windows of at most `max_side` px covering `total`, with their
@@ -644,8 +701,12 @@ fn plan(width: u32, height: u32, limits: &Limits) -> Vec<Rect> {
         }
         cols += 1;
     }
-    let Some((_, xs, ys, w, h)) = best else { return Vec::new() };
-    ys.iter().flat_map(|&y| xs.iter().map(move |&x| Rect { x, y, w, h })).collect()
+    let Some((_, xs, ys, w, h)) = best else {
+        return Vec::new();
+    };
+    ys.iter()
+        .flat_map(|&y| xs.iter().map(move |&x| Rect { x, y, w, h }))
+        .collect()
 }
 
 /// Halve the longer side, overlapping; `None` below `min_side`.
@@ -658,9 +719,23 @@ fn split(rect: Rect, min_side: u32) -> Option<[Rect; 2]> {
     }
     let second = len - half;
     Some(if horizontal {
-        [Rect { w: half, ..rect }, Rect { x: rect.x + second, w: half, ..rect }]
+        [
+            Rect { w: half, ..rect },
+            Rect {
+                x: rect.x + second,
+                w: half,
+                ..rect
+            },
+        ]
     } else {
-        [Rect { h: half, ..rect }, Rect { y: rect.y + second, h: half, ..rect }]
+        [
+            Rect { h: half, ..rect },
+            Rect {
+                y: rect.y + second,
+                h: half,
+                ..rect
+            },
+        ]
     })
 }
 
@@ -695,7 +770,11 @@ fn same_line(a: &Line, b: &Line) -> bool {
         return false;
     }
     let (ta, tb) = (normalized(&a.text), normalized(&b.text));
-    let (short, long) = if ta.len() <= tb.len() { (&ta, &tb) } else { (&tb, &ta) };
+    let (short, long) = if ta.len() <= tb.len() {
+        (&ta, &tb)
+    } else {
+        (&tb, &ta)
+    };
     short == long || (short.chars().count() >= 3 && long.contains(short.as_str()))
 }
 
@@ -722,7 +801,8 @@ fn is_seam_fragment(found: &Found, others: &[&Found]) -> bool {
         && others.iter().any(|o| {
             o.piece != found.piece
                 && area(&o.line.bbox) > area(&found.line.bbox)
-                && intersection(&o.line.bbox, &found.line.bbox) as f64 >= 0.8 * area(&found.line.bbox) as f64
+                && intersection(&o.line.bbox, &found.line.bbox) as f64
+                    >= 0.8 * area(&found.line.bbox) as f64
         })
 }
 
@@ -740,11 +820,18 @@ fn merge(mut found: Vec<Found>) -> Vec<Line> {
     });
     let mut kept: Vec<&Found> = Vec::new();
     for f in &found {
-        if !kept.iter().any(|k| k.piece != f.piece && same_line(&k.line, &f.line)) {
+        if !kept
+            .iter()
+            .any(|k| k.piece != f.piece && same_line(&k.line, &f.line))
+        {
             kept.push(f);
         }
     }
-    let survivors: Vec<&Found> = kept.iter().copied().filter(|f| !is_seam_fragment(f, &kept)).collect();
+    let survivors: Vec<&Found> = kept
+        .iter()
+        .copied()
+        .filter(|f| !is_seam_fragment(f, &kept))
+        .collect();
     let mut lines: Vec<Line> = survivors.into_iter().map(|f| f.line.clone()).collect();
     lines.sort_by_key(|l| (l.bbox[1] as u64 * 2 + l.bbox[3] as u64, l.bbox[0]));
     // Rows: a line whose vertical middle falls inside the row's first line.
@@ -773,12 +860,21 @@ mod tests {
     use super::*;
 
     fn line(text: &str, bbox: [u32; 4], confidence: f32) -> Line {
-        Line { text: text.into(), bbox, confidence }
+        Line {
+            text: text.into(),
+            bbox,
+            confidence,
+        }
     }
 
     #[test]
     fn plan_covers_the_image_with_overlap() {
-        let limits = Limits { tile_pixels: 6_000, tile_max_width: 100, min_side: 16, ..Limits::default() };
+        let limits = Limits {
+            tile_pixels: 6_000,
+            tile_max_width: 100,
+            min_side: 16,
+            ..Limits::default()
+        };
         let tiles = plan(300, 60, &limits);
         // Four equal columns, evenly spread, the last ending at the edge.
         let xs: Vec<u32> = tiles.iter().map(|t| t.x).collect();
@@ -786,9 +882,20 @@ mod tests {
         assert!(tiles.iter().all(|t| t.w == 93 && t.h == 60 && t.y == 0));
         // Every column is inside at least one tile.
         for x in 0..300 {
-            assert!(tiles.iter().any(|t| x >= t.x && x < t.x + t.w), "column {x}");
+            assert!(
+                tiles.iter().any(|t| x >= t.x && x < t.x + t.w),
+                "column {x}"
+            );
         }
-        assert_eq!(plan(50, 40, &limits), vec![Rect { x: 0, y: 0, w: 50, h: 40 }]);
+        assert_eq!(
+            plan(50, 40, &limits),
+            vec![Rect {
+                x: 0,
+                y: 0,
+                w: 50,
+                h: 40
+            }]
+        );
     }
 
     /// Asserts `tiles` cover `width` x `height` as a grid whose neighbours
@@ -803,14 +910,26 @@ mod tests {
         ys.dedup();
         assert_eq!(tiles.len(), xs.len() * ys.len(), "not a full grid");
         let (w, h) = (tiles[0].w, tiles[0].h);
-        assert!(tiles.iter().all(|t| t.w == w && t.h == h), "tiles differ in size");
+        assert!(
+            tiles.iter().all(|t| t.w == w && t.h == h),
+            "tiles differ in size"
+        );
         assert_eq!((xs[0], ys[0]), (0, 0));
-        assert_eq!((xs[xs.len() - 1] + w, ys[ys.len() - 1] + h), (width, height));
+        assert_eq!(
+            (xs[xs.len() - 1] + w, ys[ys.len() - 1] + h),
+            (width, height)
+        );
         for pair in xs.windows(2) {
-            assert!(pair[0] + w >= pair[1] + floor, "columns {pair:?} overlap less than {floor}");
+            assert!(
+                pair[0] + w >= pair[1] + floor,
+                "columns {pair:?} overlap less than {floor}"
+            );
         }
         for pair in ys.windows(2) {
-            assert!(pair[0] + h >= pair[1] + floor, "rows {pair:?} overlap less than {floor}");
+            assert!(
+                pair[0] + h >= pair[1] + floor,
+                "rows {pair:?} overlap less than {floor}"
+            );
         }
         (xs.len(), ys.len())
     }
@@ -822,7 +941,9 @@ mod tests {
         let limits = Limits::default();
         let tiles = plan(9000, 8000, &limits);
         assert!(tiles.iter().all(|t| t.w <= limits.tile_max_width));
-        assert!(tiles.iter().all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
+        assert!(tiles
+            .iter()
+            .all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
         let (cols, rows) = assert_grid(&tiles, 9000, 8000, MIN_OVERLAP);
         // No column is redundant: removing any would leave a gap, so no tile
         // sits mostly inside its neighbour.
@@ -831,7 +952,10 @@ mod tests {
         xs.sort_unstable();
         xs.dedup();
         for pair in xs.windows(2) {
-            assert!(pair[1] - pair[0] >= w / 2, "columns {pair:?} read the same pixels twice");
+            assert!(
+                pair[1] - pair[0] >= w / 2,
+                "columns {pair:?} read the same pixels twice"
+            );
         }
         // Far fewer requests than the 38 (2 x 19 strips) of before.
         assert!(cols * rows <= 24, "{cols} x {rows}");
@@ -841,7 +965,10 @@ mod tests {
         ys.sort_unstable();
         ys.dedup();
         for y in (0..8000 - MIN_OVERLAP).step_by(37) {
-            assert!(ys.iter().any(|&t| y >= t && y + MIN_OVERLAP <= t + h), "band at {y} is cut");
+            assert!(
+                ys.iter().any(|&t| y >= t && y + MIN_OVERLAP <= t + h),
+                "band at {y} is cut"
+            );
         }
     }
 
@@ -854,11 +981,15 @@ mod tests {
         assert_grid(&tiles, 1200, 30_000, MIN_OVERLAP);
         // Wide and short fits one row of near-square-or-wider tiles.
         let tiles = plan(30_000, 600, &limits);
-        assert!(tiles.iter().all(|t| t.h == 600 && t.w <= limits.tile_max_width));
+        assert!(tiles
+            .iter()
+            .all(|t| t.h == 600 && t.w <= limits.tile_max_width));
         assert_grid(&tiles, 30_000, 600, MIN_OVERLAP);
         // The largest image the engine accepts: every limit holds.
         let tiles = plan(8000, 8000, &limits);
-        assert!(tiles.iter().all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
+        assert!(tiles
+            .iter()
+            .all(|t| t.w as u64 * t.h as u64 <= limits.tile_pixels));
         assert_grid(&tiles, 8000, 8000, MIN_OVERLAP);
     }
 
@@ -873,21 +1004,57 @@ mod tests {
 
     #[test]
     fn split_halves_with_overlap_and_stops_at_the_floor() {
-        let [a, b] = split(Rect { x: 10, y: 0, w: 120, h: 40 }, 16).unwrap();
+        let [a, b] = split(
+            Rect {
+                x: 10,
+                y: 0,
+                w: 120,
+                h: 40,
+            },
+            16,
+        )
+        .unwrap();
         assert_eq!((a.x, a.w), (10, 75));
         assert_eq!((b.x, b.w), (55, 75));
         // 40 halves to 25 with overlap: allowed at a floor of 25, not 26.
-        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 25).is_some());
-        assert!(split(Rect { x: 0, y: 0, w: 40, h: 40 }, 26).is_none());
+        assert!(split(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 40
+            },
+            25
+        )
+        .is_some());
+        assert!(split(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 40
+            },
+            26
+        )
+        .is_none());
     }
 
     fn found(piece: usize, tile: Rect, text: &str, bbox: [u32; 4], confidence: f32) -> Found {
-        Found { piece, tile, line: line(text, bbox, confidence) }
+        Found {
+            piece,
+            tile,
+            line: line(text, bbox, confidence),
+        }
     }
 
     #[test]
     fn merge_drops_seam_copies_and_orders_rows() {
-        let tile = Rect { x: 0, y: 0, w: 200, h: 100 };
+        let tile = Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 100,
+        };
         let found = vec![
             found(1, tile, "world", [60, 10, 30, 10], 0.9),
             found(1, tile, "Hello wor", [0, 10, 55, 10], 0.8),
@@ -906,8 +1073,18 @@ mod tests {
     /// gives it away.
     #[test]
     fn merge_drops_misread_seam_fragments_by_box() {
-        let left = Rect { x: 0, y: 0, w: 5200, h: 900 };
-        let right = Rect { x: 4000, y: 0, w: 5000, h: 900 };
+        let left = Rect {
+            x: 0,
+            y: 0,
+            w: 5200,
+            h: 900,
+        };
+        let right = Rect {
+            x: 4000,
+            y: 0,
+            w: 5000,
+            h: 900,
+        };
         let lines = merge(vec![
             found(1, left, "HUGE IMAGE TEXT", [3600, 100, 1500, 160], 0.9),
             // Right tile starts at x = 4000 inside the line: its read of the
@@ -919,10 +1096,26 @@ mod tests {
 
         // The same across a horizontal seam: the upper tile ends at y = 900,
         // cutting a tall line, and reads a longer garbage string off the slice.
-        let upper = Rect { x: 4000, y: 0, w: 5000, h: 900 };
-        let lower = Rect { x: 4000, y: 700, w: 5000, h: 900 };
+        let upper = Rect {
+            x: 4000,
+            y: 0,
+            w: 5000,
+            h: 900,
+        };
+        let lower = Rect {
+            x: 4000,
+            y: 700,
+            w: 5000,
+            h: 900,
+        };
         let lines = merge(vec![
-            found(1, upper, "an mye ER RL = -_, ee ee CO eee", [4300, 780, 1500, 120], 0.2),
+            found(
+                1,
+                upper,
+                "an mye ER RL = -_, ee ee CO eee",
+                [4300, 780, 1500, 120],
+                0.2,
+            ),
             found(2, lower, "CORNER TEXT", [4300, 780, 1500, 160], 0.9),
         ]);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
@@ -931,8 +1124,18 @@ mod tests {
 
     #[test]
     fn merge_keeps_a_contained_line_that_no_tile_edge_cut() {
-        let left = Rect { x: 0, y: 0, w: 1000, h: 900 };
-        let right = Rect { x: 800, y: 0, w: 1000, h: 900 };
+        let left = Rect {
+            x: 0,
+            y: 0,
+            w: 1000,
+            h: 900,
+        };
+        let right = Rect {
+            x: 800,
+            y: 0,
+            w: 1000,
+            h: 900,
+        };
         // A small caption inside a big line, well inside its own tile: real text.
         let lines = merge(vec![
             found(1, left, "BANNER", [850, 300, 100, 200], 0.9),

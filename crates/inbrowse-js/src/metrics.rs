@@ -41,7 +41,10 @@ pub(crate) struct EntryTimer {
 impl EntryTimer {
     pub(crate) fn start(clock: &Rc<IsolateClock>) -> Self {
         OPEN_ENTRIES.with(|open| open.set(open.get() + 1));
-        Self { clock: clock.clone(), started: Instant::now() }
+        Self {
+            clock: clock.clone(),
+            started: Instant::now(),
+        }
     }
 }
 
@@ -49,7 +52,9 @@ impl Drop for EntryTimer {
     fn drop(&mut self) {
         OPEN_ENTRIES.with(|open| open.set(open.get().saturating_sub(1)));
         let nanos = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        self.clock.nanos.set(self.clock.nanos.get().saturating_add(nanos));
+        self.clock
+            .nanos
+            .set(self.clock.nanos.get().saturating_add(nanos));
     }
 }
 

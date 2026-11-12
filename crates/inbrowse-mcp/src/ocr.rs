@@ -57,7 +57,8 @@ pub async fn annotate_frames(report: &mut Value, deadline: Option<Instant>) {
         Ok(client) => {
             if let Some(frames) = report.get_mut("frames").and_then(Value::as_array_mut) {
                 for (i, frame) in frames.iter_mut().enumerate() {
-                    let Some(path) = frame.get("path").and_then(Value::as_str).map(String::from) else {
+                    let Some(path) = frame.get("path").and_then(Value::as_str).map(String::from)
+                    else {
                         continue;
                     };
                     let bytes = match tokio::fs::read(&path).await {
@@ -70,7 +71,11 @@ pub async fn annotate_frames(report: &mut Value, deadline: Option<Instant>) {
                     match client.recognize(&bytes, deadline).await {
                         Ok(r) => {
                             frame["ocr"] = json!({ "text": r.text, "lines": r.lines });
-                            warnings.extend(r.warnings.into_iter().map(|w| format!("ocr: frame {i}: {w}")));
+                            warnings.extend(
+                                r.warnings
+                                    .into_iter()
+                                    .map(|w| format!("ocr: frame {i}: {w}")),
+                            );
                         }
                         Err(e @ (OcrError::Unavailable(_) | OcrError::TimedOut)) => {
                             warnings.push(format!("{e} (frames from {i} on not read)"));

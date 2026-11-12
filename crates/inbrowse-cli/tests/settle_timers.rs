@@ -21,9 +21,17 @@ fn fetch_text(extra: &[&str]) -> (Output, Duration) {
 #[test]
 fn the_default_settle_leaves_long_timers_and_says_so() {
     let (output, _) = fetch_text(&[]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(text.trim(), "100", "only the near-term timer runs: {text:?}");
+    assert_eq!(
+        text.trim(),
+        "100",
+        "only the near-term timer runs: {text:?}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("note: 2 timers pending (next in 0.") && stderr.contains("--settle-timers"),
@@ -41,16 +49,27 @@ fn quiet_leaves_out_the_pending_timer_note() {
 #[test]
 fn settle_timers_waits_for_timers_within_the_horizon() {
     let (output, elapsed) = fetch_text(&["--settle-timers", "2000", "--quiet"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = String::from_utf8_lossy(&output.stdout);
     assert_eq!(text.trim(), "100 1000 1500", "{text:?}");
-    assert!(elapsed < Duration::from_secs(5), "returns once the last timer ran: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "returns once the last timer ran: {elapsed:?}"
+    );
 }
 
 #[test]
 fn settle_timers_stops_at_its_horizon() {
     let (output, _) = fetch_text(&["--settle-timers", "1200"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "100 1000");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("note: 1 timer pending"), "{stderr}");

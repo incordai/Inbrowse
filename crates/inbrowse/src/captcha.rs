@@ -185,7 +185,11 @@ pub fn inject(page: &mut Page, kind: CaptchaKind, token: &str) {
 /// Full flow: detect → solve (service) → inject. Returns `Ok(true)` when a
 /// challenge was found and a token injected, `Ok(false)` when there was no token
 /// captcha to solve, `Err` when solving failed (network/service/timeout).
-pub async fn try_solve(page: &mut Page, page_url: &str, cfg: &CaptchaConfig) -> anyhow::Result<bool> {
+pub async fn try_solve(
+    page: &mut Page,
+    page_url: &str,
+    cfg: &CaptchaConfig,
+) -> anyhow::Result<bool> {
     let Some(challenge) = detect(page) else {
         return Ok(false);
     };
@@ -230,7 +234,10 @@ async fn solve_capsolver(
     if create.get("errorId").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
         anyhow::bail!(
             "capsolver createTask: {}",
-            create.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("unknown")
+            create
+                .get("errorDescription")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
         );
     }
     let task_id = create
@@ -252,7 +259,9 @@ async fn solve_capsolver(
         if res.get("errorId").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
             anyhow::bail!(
                 "capsolver getTaskResult: {}",
-                res.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("unknown")
+                res.get("errorDescription")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
             );
         }
         match res.get("status").and_then(|v| v.as_str()) {
@@ -450,7 +459,10 @@ fn extract_clearance(solution: &Value, kind: ChallengeKind) -> SolvedChallenge {
     } else if let Some(t) = solution.get("token").and_then(|v| v.as_str()) {
         cookies.push((default.to_string(), t.to_string()));
     }
-    SolvedChallenge { cookies, user_agent }
+    SolvedChallenge {
+        cookies,
+        user_agent,
+    }
 }
 
 /// Solve a type-B challenge via CapSolver. `proxy` (inbrowse's egress) is passed
@@ -489,7 +501,10 @@ async fn solve_challenge(
     if create.get("errorId").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
         anyhow::bail!(
             "capsolver createTask: {}",
-            create.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("unknown")
+            create
+                .get("errorDescription")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
         );
     }
     let task_id = create
@@ -510,7 +525,9 @@ async fn solve_challenge(
         if res.get("errorId").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
             anyhow::bail!(
                 "capsolver getTaskResult: {}",
-                res.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("unknown")
+                res.get("errorDescription")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
             );
         }
         if res.get("status").and_then(|v| v.as_str()) == Some("ready") {
@@ -534,7 +551,10 @@ pub async fn try_solve_challenge(page: &mut Page, cfg: &CaptchaConfig) -> anyhow
         return Ok(false);
     };
     if cfg.provider != Provider::CapSolver {
-        tracing::warn!(?kind, "type-B challenge solving requires the CapSolver provider; skipping");
+        tracing::warn!(
+            ?kind,
+            "type-B challenge solving requires the CapSolver provider; skipping"
+        );
         return Ok(false);
     }
     let page_url = page.url_string();
@@ -560,11 +580,20 @@ mod tests {
 
     #[test]
     fn challenge_task_types_and_proxy_rules() {
-        assert_eq!(ChallengeKind::AwsWaf.capsolver_task_type(), "AntiAwsWafTask");
-        assert_eq!(ChallengeKind::Cloudflare.capsolver_task_type(), "AntiCloudflareTask");
+        assert_eq!(
+            ChallengeKind::AwsWaf.capsolver_task_type(),
+            "AntiAwsWafTask"
+        );
+        assert_eq!(
+            ChallengeKind::Cloudflare.capsolver_task_type(),
+            "AntiCloudflareTask"
+        );
         assert!(ChallengeKind::AwsWaf.proxyless_ok());
         assert!(!ChallengeKind::Cloudflare.proxyless_ok());
-        assert_eq!(ChallengeKind::from_tag("awswaf"), Some(ChallengeKind::AwsWaf));
+        assert_eq!(
+            ChallengeKind::from_tag("awswaf"),
+            Some(ChallengeKind::AwsWaf)
+        );
         assert_eq!(ChallengeKind::from_tag("nope"), None);
     }
 
@@ -588,27 +617,48 @@ mod tests {
     fn extract_clearance_handles_shapes() {
         // bare value
         let s = extract_clearance(&json!({"cookie":"abc123"}), ChallengeKind::AwsWaf);
-        assert_eq!(s.cookies, vec![("aws-waf-token".to_string(), "abc123".to_string())]);
+        assert_eq!(
+            s.cookies,
+            vec![("aws-waf-token".to_string(), "abc123".to_string())]
+        );
         // name=value with UA
         let s = extract_clearance(
             &json!({"cookie":"cf_clearance=XYZ","userAgent":"UA/1"}),
             ChallengeKind::Cloudflare,
         );
-        assert_eq!(s.cookies, vec![("cf_clearance".to_string(), "XYZ".to_string())]);
+        assert_eq!(
+            s.cookies,
+            vec![("cf_clearance".to_string(), "XYZ".to_string())]
+        );
         assert_eq!(s.user_agent.as_deref(), Some("UA/1"));
         // cookies object
-        let s = extract_clearance(&json!({"cookies":{"datadome":"DD1"}}), ChallengeKind::DataDome);
+        let s = extract_clearance(
+            &json!({"cookies":{"datadome":"DD1"}}),
+            ChallengeKind::DataDome,
+        );
         assert_eq!(s.cookies, vec![("datadome".to_string(), "DD1".to_string())]);
     }
 
     #[test]
     fn kind_maps_response_field_and_task_types() {
-        assert_eq!(CaptchaKind::RecaptchaV2.response_field(), "g-recaptcha-response");
+        assert_eq!(
+            CaptchaKind::RecaptchaV2.response_field(),
+            "g-recaptcha-response"
+        );
         assert_eq!(CaptchaKind::HCaptcha.response_field(), "h-captcha-response");
-        assert_eq!(CaptchaKind::Turnstile.response_field(), "cf-turnstile-response");
-        assert_eq!(CaptchaKind::Turnstile.capsolver_task_type(), "AntiTurnstileTaskProxyLess");
+        assert_eq!(
+            CaptchaKind::Turnstile.response_field(),
+            "cf-turnstile-response"
+        );
+        assert_eq!(
+            CaptchaKind::Turnstile.capsolver_task_type(),
+            "AntiTurnstileTaskProxyLess"
+        );
         assert_eq!(CaptchaKind::HCaptcha.twocaptcha_method(), "hcaptcha");
-        assert_eq!(CaptchaKind::from_tag("recaptcha_v2"), Some(CaptchaKind::RecaptchaV2));
+        assert_eq!(
+            CaptchaKind::from_tag("recaptcha_v2"),
+            Some(CaptchaKind::RecaptchaV2)
+        );
         assert_eq!(CaptchaKind::from_tag("nope"), None);
     }
 

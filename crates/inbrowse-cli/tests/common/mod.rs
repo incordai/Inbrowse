@@ -17,7 +17,12 @@ pub struct Response {
 
 impl Response {
     pub fn html(body: &str) -> Self {
-        Self { status: 200, content_type: "text/html; charset=utf-8", location: None, body: body.to_string() }
+        Self {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            location: None,
+            body: body.to_string(),
+        }
     }
 
     pub fn status(mut self, status: u16) -> Self {
@@ -27,7 +32,12 @@ impl Response {
 
     /// A 302 to `location`.
     pub fn redirect(location: &str) -> Self {
-        Self { status: 302, content_type: "text/plain", location: Some(location.to_string()), body: String::new() }
+        Self {
+            status: 302,
+            content_type: "text/plain",
+            location: Some(location.to_string()),
+            body: String::new(),
+        }
     }
 }
 
@@ -41,8 +51,12 @@ impl Server {
     pub fn start(routes: Vec<(&str, Response)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
         let address = listener.local_addr().expect("fixture address").to_string();
-        let routes: Arc<HashMap<String, Response>> =
-            Arc::new(routes.into_iter().map(|(path, response)| (path.to_string(), response)).collect());
+        let routes: Arc<HashMap<String, Response>> = Arc::new(
+            routes
+                .into_iter()
+                .map(|(path, response)| (path.to_string(), response))
+                .collect(),
+        );
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let routes = Arc::clone(&routes);
@@ -71,10 +85,17 @@ fn serve(mut stream: std::net::TcpStream, routes: &HashMap<String, Response>) {
     let path = target.split('?').next().unwrap_or("/");
     let response = routes.get(path);
     let (status, content_type, location, body) = match response {
-        Some(response) => (response.status, response.content_type, response.location.as_deref(), response.body.as_str()),
+        Some(response) => (
+            response.status,
+            response.content_type,
+            response.location.as_deref(),
+            response.body.as_str(),
+        ),
         None => (404, "text/plain", None, "not found"),
     };
-    let location = location.map(|location| format!("Location: {location}\r\n")).unwrap_or_default();
+    let location = location
+        .map(|location| format!("Location: {location}\r\n"))
+        .unwrap_or_default();
     let head = format!(
         "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -95,6 +116,12 @@ pub fn fetch_output(url: &str, args: &[&str]) -> Output {
 /// The stdout of a fetch that must succeed.
 pub fn fetch(url: &str, args: &[&str]) -> String {
     let output = fetch_output(url, args);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8_lossy(&output.stdout).trim_end().to_string()
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string()
 }

@@ -3,20 +3,20 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use deno_core::op2;
+use deno_core::v8;
 use deno_core::Extension;
 use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::{AsyncResult, CancelFuture, CancelHandle, Resource};
-use deno_core::op2;
-use deno_core::v8;
 use inbrowse_dom::tree::{AttachShadowError, ShadowRootMode};
 use inbrowse_dom::{DomTree, NodeData, NodeId};
 #[cfg(feature = "stealth")]
 use inbrowse_net::StealthHttpClient;
 use inbrowse_net::{
-    CallbackRegistry, CookieJar, InbrowseHttpClient, RequestInfo, ResourceRequest, ResourceType,
-    Response, SameSiteContext, same_site,
+    same_site, CallbackRegistry, CookieJar, InbrowseHttpClient, RequestInfo, ResourceRequest,
+    ResourceType, Response, SameSiteContext,
 };
 #[cfg(feature = "render")]
 use inbrowse_net::{RequestCredentials, RequestMode};
@@ -117,9 +117,16 @@ pub(crate) struct CanvasBackingSurface {
 }
 
 const NAVIGATION_TIMING_FIELDS: [&str; 10] = [
-    "navigationStart", "fetchStart", "responseEnd", "domLoading", "domInteractive",
-    "domContentLoadedEventStart", "domContentLoadedEventEnd", "domComplete",
-    "loadEventStart", "loadEventEnd",
+    "navigationStart",
+    "fetchStart",
+    "responseEnd",
+    "domLoading",
+    "domInteractive",
+    "domContentLoadedEventStart",
+    "domContentLoadedEventEnd",
+    "domComplete",
+    "loadEventStart",
+    "loadEventEnd",
 ];
 
 /// Observed document milestones, anchored once to the epoch and advanced by
@@ -135,20 +142,31 @@ impl Default for NavigationTiming {
     fn default() -> Self {
         let origin = std::time::Instant::now();
         let time_origin = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64() * 1_000.0;
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1_000.0;
         let mut values = [0; 10];
         values[0] = time_origin as u64;
-        Self { time_origin, origin, values }
+        Self {
+            time_origin,
+            origin,
+            values,
+        }
     }
 }
 
 impl NavigationTiming {
     pub fn record(&mut self, name: &str) {
-        if let Some(index) = NAVIGATION_TIMING_FIELDS.iter().position(|field| *field == name) {
+        if let Some(index) = NAVIGATION_TIMING_FIELDS
+            .iter()
+            .position(|field| *field == name)
+        {
             // document.open/close and synthetic events must not replace the
             // first navigation's already-completed milestones.
             if self.values[index] == 0 {
-                self.values[index] = (self.time_origin + self.origin.elapsed().as_secs_f64() * 1_000.0) as u64;
+                self.values[index] =
+                    (self.time_origin + self.origin.elapsed().as_secs_f64() * 1_000.0) as u64;
             }
         }
     }
@@ -189,7 +207,9 @@ pub struct OriginStorage {
 
 impl OriginStorage {
     fn lock(&self) -> std::sync::MutexGuard<'_, OriginStorageInner> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Independent store; each origin stays shared until its first mutation.
@@ -205,22 +225,44 @@ impl OriginStorage {
     }
 
     pub fn snapshot(&self, origin: &str) -> Vec<(String, String)> {
-        self.lock().origins.get(origin).map(|entries|
-            entries.items.iter().map(|entry| entry.as_ref().clone()).collect()).unwrap_or_default()
+        self.lock()
+            .origins
+            .get(origin)
+            .map(|entries| {
+                entries
+                    .items
+                    .iter()
+                    .map(|entry| entry.as_ref().clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn get(&self, origin: &str, key: &str) -> Option<String> {
-        self.lock().origins.get(origin)
-            .and_then(|entries| entries.indices.get(key).and_then(|index| entries.items.get(*index)))
+        self.lock()
+            .origins
+            .get(origin)
+            .and_then(|entries| {
+                entries
+                    .indices
+                    .get(key)
+                    .and_then(|index| entries.items.get(*index))
+            })
             .map(|entry| entry.1.clone())
     }
 
     pub fn len(&self, origin: &str) -> usize {
-        self.lock().origins.get(origin).map_or(0, |entries| entries.items.len())
+        self.lock()
+            .origins
+            .get(origin)
+            .map_or(0, |entries| entries.items.len())
     }
 
     pub fn key(&self, origin: &str, index: usize) -> Option<String> {
-        self.lock().origins.get(origin).and_then(|entries| entries.items.get(index))
+        self.lock()
+            .origins
+            .get(origin)
+            .and_then(|entries| entries.items.get(index))
             .map(|entry| entry.0.clone())
     }
 
@@ -228,17 +270,24 @@ impl OriginStorage {
     pub fn set(&self, origin: &str, key: String, value: String) -> bool {
         let mut inner = self.lock();
         if !inner.origins.contains_key(origin)
-            && inner.origins.len() >= LOCAL_STORAGE_ORIGIN_COUNT_LIMIT { return false; }
+            && inner.origins.len() >= LOCAL_STORAGE_ORIGIN_COUNT_LIMIT
+        {
+            return false;
+        }
         let entries = inner.origins.get(origin);
         let index = entries.and_then(|entries| entries.indices.get(&key).copied());
         let previous = entries.and_then(|entries| index.and_then(|index| entries.items.get(index)));
-        if previous.is_some_and(|previous| previous.1 == value) { return true; }
+        if previous.is_some_and(|previous| previous.1 == value) {
+            return true;
+        }
         let previous_bytes = previous.map_or(0, |entry| entry.0.len() + entry.1.len());
         let origin_bytes = entries.map_or(0, |entries| entries.bytes);
         let new_bytes = key.len() + value.len();
         let next_origin_bytes = origin_bytes.saturating_sub(previous_bytes) + new_bytes;
         let next_total_bytes = inner.bytes.saturating_sub(previous_bytes) + new_bytes;
-        if next_origin_bytes > LOCAL_STORAGE_ORIGIN_LIMIT || next_total_bytes > LOCAL_STORAGE_TOTAL_LIMIT {
+        if next_origin_bytes > LOCAL_STORAGE_ORIGIN_LIMIT
+            || next_total_bytes > LOCAL_STORAGE_TOTAL_LIMIT
+        {
             return false;
         }
         let entries = Arc::make_mut(inner.origins.entry(origin.to_string()).or_default());
@@ -263,22 +312,41 @@ impl OriginStorage {
             let removed = entries.items.remove(index);
             entries.bytes -= removed.0.len() + removed.1.len();
             for (index, entry) in entries.items.iter().enumerate().skip(index) {
-                if let Some(position) = entries.indices.get_mut(&entry.0) { *position = index; }
+                if let Some(position) = entries.indices.get_mut(&entry.0) {
+                    *position = index;
+                }
             }
             Some(removed)
         });
         if let Some(removed) = removed {
             inner.bytes -= removed.0.len() + removed.1.len();
-            if inner.origins.get(origin).is_some_and(|entries| entries.items.is_empty()) { inner.origins.remove(origin); }
+            if inner
+                .origins
+                .get(origin)
+                .is_some_and(|entries| entries.items.is_empty())
+            {
+                inner.origins.remove(origin);
+            }
             inner.changed.insert(origin.to_string());
         }
     }
 
     pub fn entries(&self) -> Vec<(String, Vec<(String, String)>)> {
         let inner = self.lock();
-        let mut out: Vec<_> = inner.origins.iter()
-            .map(|(origin, entries)| (origin.clone(),
-                entries.items.iter().map(|entry| entry.as_ref().clone()).collect())).collect();
+        let mut out: Vec<_> = inner
+            .origins
+            .iter()
+            .map(|(origin, entries)| {
+                (
+                    origin.clone(),
+                    entries
+                        .items
+                        .iter()
+                        .map(|entry| entry.as_ref().clone())
+                        .collect(),
+                )
+            })
+            .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
@@ -289,19 +357,40 @@ impl OriginStorage {
         let mut bytes = 0usize;
         for (index, (name, value)) in items.iter().enumerate() {
             bytes = bytes.saturating_add(name.len()).saturating_add(value.len());
-            if bytes > LOCAL_STORAGE_ORIGIN_LIMIT { return false; }
-            if indices.insert(name.clone(), index).is_some() { return false; }
+            if bytes > LOCAL_STORAGE_ORIGIN_LIMIT {
+                return false;
+            }
+            if indices.insert(name.clone(), index).is_some() {
+                return false;
+            }
         }
         let mut inner = self.lock();
-        if !items.is_empty() && !inner.origins.contains_key(origin)
-            && inner.origins.len() >= LOCAL_STORAGE_ORIGIN_COUNT_LIMIT { return false; }
+        if !items.is_empty()
+            && !inner.origins.contains_key(origin)
+            && inner.origins.len() >= LOCAL_STORAGE_ORIGIN_COUNT_LIMIT
+        {
+            return false;
+        }
         let previous_bytes = inner.origins.get(origin).map_or(0, |old| old.bytes);
-        let next_bytes = inner.bytes.saturating_sub(previous_bytes).saturating_add(bytes);
-        if next_bytes > LOCAL_STORAGE_TOTAL_LIMIT { return false; }
-        if items.is_empty() { inner.origins.remove(origin); }
-        else {
+        let next_bytes = inner
+            .bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(bytes);
+        if next_bytes > LOCAL_STORAGE_TOTAL_LIMIT {
+            return false;
+        }
+        if items.is_empty() {
+            inner.origins.remove(origin);
+        } else {
             let items = items.into_iter().map(Arc::new).collect();
-            inner.origins.insert(origin.to_string(), Arc::new(OriginStorageEntries { items, indices, bytes }));
+            inner.origins.insert(
+                origin.to_string(),
+                Arc::new(OriginStorageEntries {
+                    items,
+                    indices,
+                    bytes,
+                }),
+            );
         }
         inner.bytes = next_bytes;
         inner.changed.remove(origin);
@@ -319,8 +408,11 @@ impl OriginStorage {
     pub fn merge_changes(&self, initial: &Self, current: &Self) -> bool {
         let changed = {
             let current = current.lock();
-            let mut changed: Vec<_> = current.changed.iter()
-                .map(|origin| (origin.clone(), current.origins.get(origin).cloned())).collect();
+            let mut changed: Vec<_> = current
+                .changed
+                .iter()
+                .map(|origin| (origin.clone(), current.origins.get(origin).cloned()))
+                .collect();
             changed.sort_by(|a, b| a.0.cmp(&b.0));
             changed
         };
@@ -329,18 +421,30 @@ impl OriginStorage {
             let initial = initial.lock().origins.get(&origin).cloned();
             if let Some(initial) = &initial {
                 for entry in &initial.items {
-                    if !current.as_ref().is_some_and(|entries| entries.indices.contains_key(&entry.0)) {
+                    if !current
+                        .as_ref()
+                        .is_some_and(|entries| entries.indices.contains_key(&entry.0))
+                    {
                         self.remove(&origin, &entry.0);
                     }
                 }
             }
             if let Some(current) = current {
                 for entry in &current.items {
-                    let previous = initial.as_ref().and_then(|entries|
-                        entries.indices.get(&entry.0).and_then(|index| entries.items.get(*index)));
-                    if previous.is_some_and(|previous|
-                        Arc::ptr_eq(previous, entry) || previous.1 == entry.1) { continue; }
-                    if !self.set(&origin, entry.0.clone(), entry.1.clone()) { accepted = false; }
+                    let previous = initial.as_ref().and_then(|entries| {
+                        entries
+                            .indices
+                            .get(&entry.0)
+                            .and_then(|index| entries.items.get(*index))
+                    });
+                    if previous.is_some_and(|previous| {
+                        Arc::ptr_eq(previous, entry) || previous.1 == entry.1
+                    }) {
+                        continue;
+                    }
+                    if !self.set(&origin, entry.0.clone(), entry.1.clone()) {
+                        accepted = false;
+                    }
                 }
             }
         }
@@ -353,15 +457,26 @@ impl OriginStorage {
         let mut origins: Vec<_> = inner.changed.iter().cloned().collect();
         origins.sort();
         for origin in origins {
-            let entries: Vec<_> = inner.origins.get(&origin).map(|entries|
-                entries.items.iter().map(|entry| entry.as_ref().clone()).collect()).unwrap_or_default();
+            let entries: Vec<_> = inner
+                .origins
+                .get(&origin)
+                .map(|entries| {
+                    entries
+                        .items
+                        .iter()
+                        .map(|entry| entry.as_ref().clone())
+                        .collect()
+                })
+                .unwrap_or_default();
             if write(&origin, &entries) {
                 inner.changed.remove(&origin);
             }
         }
     }
 
-    pub fn is_dirty(&self) -> bool { !self.lock().changed.is_empty() }
+    pub fn is_dirty(&self) -> bool {
+        !self.lock().changed.is_empty()
+    }
 
     pub fn clear(&self, origin: &str) {
         let mut inner = self.lock();
@@ -539,9 +654,13 @@ pub struct InbrowseState {
     /// navigation identity and request credentials separate so neither stale
     /// pages nor incompatible CORS profiles share a completion.
     #[cfg(feature = "render")]
-    pub render_image_in_flight:
-        HashMap<(u64, String, ImageRequestProfile),
-            (tokio::sync::oneshot::Sender<()>, Vec<tokio::sync::oneshot::Sender<()>>)>,
+    pub render_image_in_flight: HashMap<
+        (u64, String, ImageRequestProfile),
+        (
+            tokio::sync::oneshot::Sender<()>,
+            Vec<tokio::sync::oneshot::Sender<()>>,
+        ),
+    >,
     /// Page-transport loads for resources that cache-only layout or paint
     /// missed. The owning page fetches them and sends the outcome here; the
     /// runtime applies results at its own event-loop turns and at every
@@ -668,7 +787,10 @@ impl InbrowseState {
         #[cfg(feature = "render")]
         {
             let (reduce, dark) = parent.media_preferences.get();
-            self.render_media = self.render_media.with_reduced_motion(reduce).with_dark_color_scheme(dark);
+            self.render_media = self
+                .render_media
+                .with_reduced_motion(reduce)
+                .with_dark_color_scheme(dark);
         }
         self.cookie_jar = parent.cookie_jar.clone();
         // A frame shares its page's Web Storage Arcs. The ops key by the frame
@@ -710,7 +832,10 @@ impl InbrowseState {
             inherited_origin: None,
             scripting_enabled: true,
             sandbox_opaque_origin: false,
-            storage_origin_cache: RefCell::new(StorageOriginCache { origin: "null".into(), ..Default::default() }),
+            storage_origin_cache: RefCell::new(StorageOriginCache {
+                origin: "null".into(),
+                ..Default::default()
+            }),
             encoding: "UTF-8".to_string(),
             content_type: String::new(),
             title: String::new(),
@@ -973,7 +1098,8 @@ fn record_js_network_completion(
     let gs = state_borrow.borrow::<SharedState>().clone();
     let mut gs = gs.borrow_mut();
     record_network_completion(&mut gs, event, || StoredNetworkResponseBody {
-        body: body.to_string(), base64_encoded,
+        body: body.to_string(),
+        base64_encoded,
     });
 }
 
@@ -985,8 +1111,10 @@ pub(crate) fn record_network_completion(
     let max_entries = response_body_entry_limit();
     let max_bytes = response_body_byte_limit();
     if max_entries > 0 && max_bytes > 0 && event.body_size <= max_bytes {
-        gs.network_response_bodies.insert(event.request_id.clone(), body());
-        gs.network_response_body_order.push_back(event.request_id.clone());
+        gs.network_response_bodies
+            .insert(event.request_id.clone(), body());
+        gs.network_response_body_order
+            .push_back(event.request_id.clone());
         while gs.network_response_body_order.len() > max_entries {
             if let Some(oldest) = gs.network_response_body_order.pop_front() {
                 gs.network_response_bodies.remove(&oldest);
@@ -1059,12 +1187,16 @@ impl Drop for PageInFlightGuard {
 struct FetchCancelResource(Rc<CancelHandle>);
 
 impl Resource for FetchCancelResource {
-    fn close(self: Rc<Self>) { self.0.cancel(); }
+    fn close(self: Rc<Self>) {
+        self.0.cancel();
+    }
 }
 
 #[op2(fast)]
 fn op_fetch_cancel_handle(state: &mut OpState) -> u32 {
-    state.resource_table.add(FetchCancelResource(CancelHandle::new_rc()))
+    state
+        .resource_table
+        .add(FetchCancelResource(CancelHandle::new_rc()))
 }
 
 // Private signal state survives realm crossings without public prototype
@@ -1076,11 +1208,19 @@ fn op_abort_signal_state<'s, 'i>(
     initial: v8::Local<'s, v8::Value>,
 ) -> v8::Local<'s, v8::Value> {
     let undefined = v8::undefined(scope).into();
-    let Ok(object) = v8::Local::<v8::Object>::try_from(value) else { return undefined; };
-    let Some(name) = v8::String::new(scope, "inbrowse.AbortSignal") else { return undefined; };
+    let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
+        return undefined;
+    };
+    let Some(name) = v8::String::new(scope, "inbrowse.AbortSignal") else {
+        return undefined;
+    };
     let brand = v8::Private::for_api(scope, Some(name));
     if !initial.is_undefined() {
-        if object.set_private(scope, brand, initial).unwrap_or(false) { initial } else { undefined }
+        if object.set_private(scope, brand, initial).unwrap_or(false) {
+            initial
+        } else {
+            undefined
+        }
     } else {
         object.get_private(scope, brand).unwrap_or(undefined)
     }
@@ -1096,13 +1236,26 @@ pub(crate) struct FetchNetworkGuard {
 
 impl Drop for FetchNetworkGuard {
     fn drop(&mut self) {
-        let Some(mut event) = self.event.take() else { return; };
+        let Some(mut event) = self.event.take() else {
+            return;
+        };
         event.status = 0;
-        event.error_text = Some(if self.cancel.as_ref().is_some_and(|cancel| cancel.is_canceled()) {
-            "net::ERR_ABORTED"
-        } else { "net::ERR_FAILED" }.into());
-        event.timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().as_secs_f64();
+        event.error_text = Some(
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.is_canceled())
+            {
+                "net::ERR_ABORTED"
+            } else {
+                "net::ERR_FAILED"
+            }
+            .into(),
+        );
+        event.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
         if let Some(state) = self.state.upgrade() {
             // Realm teardown can already own this borrow. Never unwind from
             // a resource destructor into V8 while the document is being freed.
@@ -1132,11 +1285,19 @@ async fn op_fetch_body(
     state: Rc<RefCell<OpState>>,
     rid: u32,
 ) -> Result<Vec<u8>, deno_error::JsErrorBox> {
-    let resource = state.borrow().resource_table.get::<FetchBodyResource>(rid)
+    let resource = state
+        .borrow()
+        .resource_table
+        .get::<FetchBodyResource>(rid)
         .map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))?;
-    let body = resource.body.borrow_mut().take()
+    let body = resource
+        .body
+        .borrow_mut()
+        .take()
         .ok_or_else(|| deno_error::JsErrorBox::type_error("Body is already consumed"))?;
-    let result = body.or_cancel(resource.cancel.clone()).await
+    let result = body
+        .or_cancel(resource.cancel.clone())
+        .await
         .map_err(|_| deno_error::JsErrorBox::generic("Response body was cancelled"));
     let closed = state.borrow_mut().resource_table.take_any(rid);
     if let Ok(resource) = closed {
@@ -1158,7 +1319,8 @@ async fn fetch_body_result(
         metadata["bodyBase64"] = serde_json::json!(BASE64.encode(&bytes));
     } else {
         let rid = state.borrow_mut().resource_table.add(FetchBodyResource {
-            body: RefCell::new(Some(body)), cancel: cancel.unwrap_or_else(CancelHandle::new_rc),
+            body: RefCell::new(Some(body)),
+            cancel: cancel.unwrap_or_else(CancelHandle::new_rc),
             opaque: metadata["opaque"].as_bool().unwrap_or(false),
         });
         metadata["bodyRid"] = serde_json::json!(rid);
@@ -1205,7 +1367,10 @@ struct FrameTimers {
 
 impl RealmStates {
     pub(crate) fn media_realms(&self) -> Vec<(v8::Global<v8::Context>, SharedState)> {
-        self.entries.iter().map(|(context, _, state)| (context.clone(), state.clone())).collect()
+        self.entries
+            .iter()
+            .map(|(context, _, state)| (context.clone(), state.clone()))
+            .collect()
     }
 
     pub(crate) fn live_count(&self) -> usize {
@@ -1213,7 +1378,9 @@ impl RealmStates {
     }
 
     pub(crate) fn context(&self, frame_id: u32) -> Option<v8::Global<v8::Context>> {
-        self.entries.iter().find(|(_, id, _)| *id == frame_id)
+        self.entries
+            .iter()
+            .find(|(_, id, _)| *id == frame_id)
             .map(|(context, _, _)| context.clone())
     }
 
@@ -1238,14 +1405,20 @@ impl RealmStates {
         frame_id: u32,
         state: SharedState,
     ) {
-        self.frame_timers.entry(frame_id).or_insert_with(|| FrameTimers {
-            owner: None, cancel: CancelHandle::new_rc(),
-        });
+        self.frame_timers
+            .entry(frame_id)
+            .or_insert_with(|| FrameTimers {
+                owner: None,
+                cancel: CancelHandle::new_rc(),
+            });
         self.entries.push((context, frame_id, state));
     }
 
     pub fn forget(&mut self, context: &v8::Global<v8::Context>) {
-        if let Some(id) = self.entries.iter().find(|(known, _, _)| known == context)
+        if let Some(id) = self
+            .entries
+            .iter()
+            .find(|(known, _, _)| known == context)
             .map(|(_, id, _)| *id)
         {
             self.forget_frame(id);
@@ -1254,66 +1427,103 @@ impl RealmStates {
 
     fn own_frame(&mut self, frame_id: u32, parent: &SharedState, node: NodeId) {
         let generation = parent.borrow().document_generation;
-        self.frame_timers.entry(frame_id).or_insert_with(|| FrameTimers {
-            owner: None, cancel: CancelHandle::new_rc(),
-        }).owner = Some((Rc::downgrade(parent), node, generation));
+        self.frame_timers
+            .entry(frame_id)
+            .or_insert_with(|| FrameTimers {
+                owner: None,
+                cancel: CancelHandle::new_rc(),
+            })
+            .owner = Some((Rc::downgrade(parent), node, generation));
     }
 
     pub(crate) fn frame_timers_active(&self, mut frame_id: u32) -> Option<bool> {
         // A child document is active only while all of its owners are active.
         // Keep the walk bounded even if an invalid frame-parent chain arrives.
         for _ in 0..=self.frame_timers.len() {
-            let Some(timers) = self.frame_timers.get(&frame_id) else { return Some(false) };
-            if timers.cancel.is_canceled() { return Some(false); }
-            let Some((parent, node, generation)) = &timers.owner else { return Some(true) };
-            let Some(parent) = parent.upgrade() else { return Some(false) };
+            let Some(timers) = self.frame_timers.get(&frame_id) else {
+                return Some(false);
+            };
+            if timers.cancel.is_canceled() {
+                return Some(false);
+            }
+            let Some((parent, node, generation)) = &timers.owner else {
+                return Some(true);
+            };
+            let Some(parent) = parent.upgrade() else {
+                return Some(false);
+            };
             // Host teardown may already hold the owner. Contention does not
             // establish that a sibling document is dead, so defer that check.
             let parent = parent.try_borrow().ok()?;
             if parent.document_generation != *generation
-                || !parent.dom.as_ref().is_some_and(|dom| dom.is_connected(*node))
+                || !parent
+                    .dom
+                    .as_ref()
+                    .is_some_and(|dom| dom.is_connected(*node))
             {
                 return Some(false);
             }
             frame_id = parent.frame_id;
-            if frame_id == 0 { return Some(true); }
+            if frame_id == 0 {
+                return Some(true);
+            }
         }
         Some(false)
     }
 
     pub(crate) fn cancel_inactive_frame_timers(&self) {
         for (id, timers) in &self.frame_timers {
-            if self.frame_timers_active(*id) == Some(false) { timers.cancel.cancel(); }
+            if self.frame_timers_active(*id) == Some(false) {
+                timers.cancel.cancel();
+            }
         }
     }
 
     fn cancel_frame_timers(&self, frame_id: u32) {
-        if let Some(timers) = self.frame_timers.get(&frame_id) { timers.cancel.cancel(); }
+        if let Some(timers) = self.frame_timers.get(&frame_id) {
+            timers.cancel.cancel();
+        }
         self.cancel_inactive_frame_timers();
     }
 
-    fn frames_removed_by(&self, shared: &SharedState, cmd: &str, arg1: &str, arg2: &str)
-        -> Vec<(u32, u32)>
-    {
-        if self.frame_timers.is_empty() { return Vec::new(); }
+    fn frames_removed_by(
+        &self,
+        shared: &SharedState,
+        cmd: &str,
+        arg1: &str,
+        arg2: &str,
+    ) -> Vec<(u32, u32)> {
+        if self.frame_timers.is_empty() {
+            return Vec::new();
+        }
         let (root, inclusive) = match cmd {
             "append_child" => (arg2, true),
             "insert_before" | "remove_child" => (arg1, true),
-            "set_inner_html" | "set_inner_html_context" | "set_fragment_html_executable"
-                | "set_text_content" => (arg1, false),
+            "set_inner_html"
+            | "set_inner_html_context"
+            | "set_fragment_html_executable"
+            | "set_text_content" => (arg1, false),
             _ => return Vec::new(),
         };
-        let Ok(root) = root.parse::<u32>() else { return Vec::new() };
+        let Ok(root) = root.parse::<u32>() else {
+            return Vec::new();
+        };
         let root = NodeId::new(root);
         let state = shared.borrow();
-        let Some(dom) = &state.dom else { return Vec::new() };
+        let Some(dom) = &state.dom else {
+            return Vec::new();
+        };
         let mut removed = Vec::new();
         // ponytail: scan the bounded live-frame registry only on structural
         // mutations; index owners by document if frame-heavy profiling warrants it.
         for (id, timers) in &self.frame_timers {
-            let Some((parent, node, generation)) = &timers.owner else { continue };
-            if parent.as_ptr() != Rc::as_ptr(shared) || *generation != state.document_generation
-                || timers.cancel.is_canceled() || !dom.is_connected(*node)
+            let Some((parent, node, generation)) = &timers.owner else {
+                continue;
+            };
+            if parent.as_ptr() != Rc::as_ptr(shared)
+                || *generation != state.document_generation
+                || timers.cancel.is_canceled()
+                || !dom.is_connected(*node)
             {
                 continue;
             }
@@ -1324,7 +1534,9 @@ impl RealmStates {
                     removed.push((*id, node.index() as u32));
                     break;
                 }
-                current = dom.with_node(current_node, |node| node.parent).flatten()
+                current = dom
+                    .with_node(current_node, |node| node.parent)
+                    .flatten()
                     .or_else(|| dom.shadow_root_info(current_node).map(|root| root.host));
             }
         }
@@ -1340,7 +1552,10 @@ impl RealmStates {
 
     /// The child frame whose realm is `context`, or `None` for any other.
     pub(crate) fn frame_id_of(&self, context: v8::Local<v8::Context>) -> Option<u32> {
-        self.entries.iter().find(|(known, _, _)| *known == context).map(|(_, id, _)| *id)
+        self.entries
+            .iter()
+            .find(|(known, _, _)| *known == context)
+            .map(|(_, id, _)| *id)
     }
 
     /// The frame id of the document that holds child frame `frame_id`'s
@@ -1396,11 +1611,14 @@ impl RealmStates {
             .iter()
             .filter(|(_, timers)| {
                 !timers.cancel.is_canceled()
-                    && timers.owner.as_ref().is_some_and(|(parent, owner, owner_generation)| {
-                        parent.as_ptr() == Rc::as_ptr(host)
-                            && *owner == node
-                            && *owner_generation == generation
-                    })
+                    && timers
+                        .owner
+                        .as_ref()
+                        .is_some_and(|(parent, owner, owner_generation)| {
+                            parent.as_ptr() == Rc::as_ptr(host)
+                                && *owner == node
+                                && *owner_generation == generation
+                        })
             })
             .map(|(id, _)| *id)
             .filter(|id| self.entries.iter().any(|(_, known, _)| known == id))
@@ -1538,7 +1756,9 @@ fn render_mutation_impact(
                 .map(|(_, local)| local)
                 .unwrap_or(qualified);
             let actual_change = dom
-                .with_node(target, |node| node.get_attribute_ns(namespace, local) != Some(value))
+                .with_node(target, |node| {
+                    node.get_attribute_ns(namespace, local) != Some(value)
+                })
                 .unwrap_or(true);
             RenderMutationImpact {
                 connected: node_is_connected(dom, target),
@@ -1576,9 +1796,10 @@ fn render_mutation_impact(
             let (Some(parent), Some(child)) = (node(arg1), node(arg2)) else {
                 return RenderMutationImpact::default();
             };
-            let (Some(()), Some(old_parent)) =
-                (dom.with_node(parent, |_| ()), dom.with_node(child, |node| node.parent))
-            else {
+            let (Some(()), Some(old_parent)) = (
+                dom.with_node(parent, |_| ()),
+                dom.with_node(child, |node| node.parent),
+            ) else {
                 return RenderMutationImpact::default();
             };
             let already_last = old_parent == Some(parent)
@@ -1587,7 +1808,9 @@ fn render_mutation_impact(
                 // Moving a connected node into a detached subtree removes its
                 // old box, while attaching a detached node creates a new one.
                 connected: node_is_connected(dom, parent) || node_is_connected(dom, child),
-                actual_change: !already_last || dom.has_cssom_stylesheet(parent) || dom.has_cssom_stylesheet(child),
+                actual_change: !already_last
+                    || dom.has_cssom_stylesheet(parent)
+                    || dom.has_cssom_stylesheet(child),
             }
         }
         "remove_child" => {
@@ -1596,7 +1819,9 @@ fn render_mutation_impact(
             };
             RenderMutationImpact {
                 connected: node_is_connected(dom, child),
-                actual_change: dom.with_node(child, |node| node.parent.is_some()).unwrap_or(false),
+                actual_change: dom
+                    .with_node(child, |node| node.parent.is_some())
+                    .unwrap_or(false),
             }
         }
         "insert_before" => {
@@ -1615,8 +1840,10 @@ fn render_mutation_impact(
             let already_immediately_before = reference_prev == Some(new_node);
             RenderMutationImpact {
                 connected: node_is_connected(dom, reference_parent) || new_was_connected,
-                actual_change: new_node != reference && (!already_immediately_before
-                    || dom.has_cssom_stylesheet(reference_parent) || dom.has_cssom_stylesheet(new_node)),
+                actual_change: new_node != reference
+                    && (!already_immediately_before
+                        || dom.has_cssom_stylesheet(reference_parent)
+                        || dom.has_cssom_stylesheet(new_node)),
             }
         }
         "set_inner_html" | "set_inner_html_context" => {
@@ -1637,11 +1864,12 @@ fn render_mutation_impact(
             let changed = dom
                 .with_node(target, |node| match &node.data {
                     NodeData::Text { contents } => {
-                        contents.as_str() != arg2 || node.parent.is_some_and(|parent| dom.has_cssom_stylesheet(parent))
-                    }
-                    NodeData::Comment { contents } => {
                         contents.as_str() != arg2
+                            || node
+                                .parent
+                                .is_some_and(|parent| dom.has_cssom_stylesheet(parent))
                     }
+                    NodeData::Comment { contents } => contents.as_str() != arg2,
                     NodeData::ProcessingInstruction { data, .. } => data.as_str() != arg2,
                     // Element/DocumentFragment textContent replaces their
                     // child structure, which can change style even when the
@@ -1697,15 +1925,16 @@ fn retained_style_mutation(
             let keep_value = keep_inline_style_values || !name.eq_ignore_ascii_case("style");
             Some(
                 inbrowse_render::AttributeStyleMutation {
-                node,
-                name: name.to_string(),
-                old_value: keep_value.then(|| {
-                        dom.with_node(node, |node| node.get_attribute(name).map(str::to_owned))
-                            .flatten()
-                    })
-                    .flatten(),
-                new_value: keep_value.then(|| value.to_string()),
-            }
+                    node,
+                    name: name.to_string(),
+                    old_value: keep_value
+                        .then(|| {
+                            dom.with_node(node, |node| node.get_attribute(name).map(str::to_owned))
+                                .flatten()
+                        })
+                        .flatten(),
+                    new_value: keep_value.then(|| value.to_string()),
+                }
                 .into(),
             )
         }
@@ -1718,15 +1947,16 @@ fn retained_style_mutation(
             let keep_value = keep_inline_style_values || !arg2.eq_ignore_ascii_case("style");
             Some(
                 inbrowse_render::AttributeStyleMutation {
-                node,
-                name: arg2.to_string(),
-                old_value: keep_value.then(|| {
-                        dom.with_node(node, |node| node.get_attribute(arg2).map(str::to_owned))
-                            .flatten()
-                    })
-                    .flatten(),
-                new_value: None,
-            }
+                    node,
+                    name: arg2.to_string(),
+                    old_value: keep_value
+                        .then(|| {
+                            dom.with_node(node, |node| node.get_attribute(arg2).map(str::to_owned))
+                                .flatten()
+                        })
+                        .flatten(),
+                    new_value: None,
+                }
                 .into(),
             )
         }
@@ -1763,16 +1993,10 @@ fn retained_style_mutation(
                 .into(),
             )
         }
-        "set_text_content" => match dom
-            .with_node(node, |node| matches!(node.data, NodeData::Text { .. }).then_some(node.parent))?
-        {
-            Some(parent) => Some(
-                inbrowse_render::TreeStyleMutation::Text {
-                    node,
-                    parent,
-                }
-                .into(),
-            ),
+        "set_text_content" => match dom.with_node(node, |node| {
+            matches!(node.data, NodeData::Text { .. }).then_some(node.parent)
+        })? {
+            Some(parent) => Some(inbrowse_render::TreeStyleMutation::Text { node, parent }.into()),
             // Element/fragment textContent replaces a child list. That can
             // flip :empty and structural/relational selectors, so the local
             // text fast path cannot describe the mutation safely.
@@ -1918,7 +2142,9 @@ pub(crate) fn has_page_transport(state: &InbrowseState) -> bool {
 /// cache-only and are fed through the page transport; standalone render
 /// runtimes without a transport keep the compatibility loader.
 #[cfg(feature = "render")]
-pub(crate) fn fresh_render_resources(state: &InbrowseState) -> inbrowse_render::RenderResourceCache {
+pub(crate) fn fresh_render_resources(
+    state: &InbrowseState,
+) -> inbrowse_render::RenderResourceCache {
     let mut cache = inbrowse_render::RenderResourceCache::default();
     if has_page_transport(state) {
         cache.set_sync_loading_enabled(false);
@@ -2043,12 +2269,7 @@ fn op_script_try_start(state: &OpState, nid: u32) -> bool {
 /// tree. Layout intentionally remains unaware of the detached root until
 /// scoped style, slot assignment, and composed-tree paint are implemented.
 #[op2(fast)]
-fn op_shadow_attach(
-    state: &OpState,
-    host_nid: u32,
-    #[string] mode: String,
-    frame_id: u32,
-) -> i32 {
+fn op_shadow_attach(state: &OpState, host_nid: u32, #[string] mode: String, frame_id: u32) -> i32 {
     let mode = match mode.as_str() {
         "open" => ShadowRootMode::Open,
         "closed" => ShadowRootMode::Closed,
@@ -2172,17 +2393,27 @@ fn op_stylesheet_generation(state: &OpState, frame_id: u32, linked: bool) -> f64
     let shared = frame_state(state, frame_id);
     let state = shared.borrow();
     let generation = if linked {
-        state.dom.as_ref().map_or(0, |dom| dom.external_stylesheet_generation())
+        state
+            .dom
+            .as_ref()
+            .map_or(0, |dom| dom.external_stylesheet_generation())
     } else {
         state.activity_generation.wrapping_add(
-            state.dom.as_ref().map_or(0, |dom| dom.external_stylesheet_generation()))
+            state
+                .dom
+                .as_ref()
+                .map_or(0, |dom| dom.external_stylesheet_generation()),
+        )
     };
     generation as f64
 }
 
 #[op2(fast)]
 fn op_cssom_stylesheet_has(state: &OpState, owner_nid: u32, frame_id: u32) -> bool {
-    frame_state(state, frame_id).borrow().dom.as_ref()
+    frame_state(state, frame_id)
+        .borrow()
+        .dom
+        .as_ref()
         .is_some_and(|dom| dom.has_cssom_stylesheet(NodeId::new(owner_nid)))
 }
 
@@ -2198,14 +2429,28 @@ fn invalidate_cssom_render(state: &mut InbrowseState) {
 
 #[op2]
 fn op_cssom_stylesheet_update(
-    state: &OpState, owner_nid: u32, index: u32, delete_count: u32,
-    #[serde] rules: Vec<String>, reset: bool, frame_id: u32,
+    state: &OpState,
+    owner_nid: u32,
+    index: u32,
+    delete_count: u32,
+    #[serde] rules: Vec<String>,
+    reset: bool,
+    frame_id: u32,
 ) -> bool {
     let shared = frame_state(state, frame_id);
     let mut state = shared.borrow_mut();
-    let changed = state.dom.as_ref().is_some_and(|dom| dom.update_cssom_stylesheet(
-        NodeId::new(owner_nid), index as usize, delete_count as usize, rules, reset));
-    if changed { invalidate_cssom_render(&mut state); }
+    let changed = state.dom.as_ref().is_some_and(|dom| {
+        dom.update_cssom_stylesheet(
+            NodeId::new(owner_nid),
+            index as usize,
+            delete_count as usize,
+            rules,
+            reset,
+        )
+    });
+    if changed {
+        invalidate_cssom_render(&mut state);
+    }
     changed
 }
 
@@ -2213,7 +2458,11 @@ fn op_cssom_stylesheet_update(
 fn op_cssom_stylesheet_clear(state: &OpState, owner_nid: u32, frame_id: u32) {
     let shared = frame_state(state, frame_id);
     let mut state = shared.borrow_mut();
-    if state.dom.as_ref().is_some_and(|dom| dom.clear_cssom_stylesheet(NodeId::new(owner_nid))) {
+    if state
+        .dom
+        .as_ref()
+        .is_some_and(|dom| dom.clear_cssom_stylesheet(NodeId::new(owner_nid)))
+    {
         invalidate_cssom_render(&mut state);
     }
 }
@@ -2244,10 +2493,16 @@ fn op_external_stylesheet_get(state: &OpState, owner_nid: u32, frame_id: u32) ->
 }
 
 fn window_named_attributes(node: &inbrowse_dom::tree::Node) -> [Option<&str>; 2] {
-    let Some(tag) = node.as_element() else { return [None, None] };
+    let Some(tag) = node.as_element() else {
+        return [None, None];
+    };
     let name = (tag.ns.as_ref() == "http://www.w3.org/1999/xhtml"
-        && matches!(tag.local.as_ref(), "embed" | "form" | "iframe" | "img" | "object"))
-        .then(|| node.get_attribute_ns("", "name")).flatten();
+        && matches!(
+            tag.local.as_ref(),
+            "embed" | "form" | "iframe" | "img" | "object"
+        ))
+    .then(|| node.get_attribute_ns("", "name"))
+    .flatten();
     [node.get_attribute_ns("", "id"), name].map(|value| value.filter(|value| !value.is_empty()))
 }
 
@@ -2270,15 +2525,21 @@ fn op_dom(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let registry = state.borrow::<Rc<RefCell<RealmStates>>>();
         if cmd == "retire_frame" {
-            if let Ok(id) = arg1.parse::<u32>() { registry.borrow().cancel_frame_timers(id); }
+            if let Ok(id) = arg1.parse::<u32>() {
+                registry.borrow().cancel_frame_timers(id);
+            }
             return "true".into();
         }
-        let removed = registry.borrow().frames_removed_by(&shared, &cmd, &arg1, &arg2);
+        let removed = registry
+            .borrow()
+            .frames_removed_by(&shared, &cmd, &arg1, &arg2);
         let result = op_dom_inner(shared, cmd, arg1, arg2);
         if result == "true" && !removed.is_empty() {
             let registry = registry.borrow();
             for (id, _) in &removed {
-                if let Some(timers) = registry.frame_timers.get(id) { timers.cancel.cancel(); }
+                if let Some(timers) = registry.frame_timers.get(id) {
+                    timers.cancel.cancel();
+                }
             }
             registry.cancel_inactive_frame_timers();
             // The bootstrap unwraps this private mutation result before any
@@ -2309,11 +2570,17 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         let timing = &state.navigation_timing;
         if arg1.is_empty() {
             let values: serde_json::Map<String, serde_json::Value> = NAVIGATION_TIMING_FIELDS
-                .iter().zip(timing.values).map(|(name, value)| (name.to_string(), value.into())).collect();
+                .iter()
+                .zip(timing.values)
+                .map(|(name, value)| (name.to_string(), value.into()))
+                .collect();
             return serde_json::Value::Object(values).to_string();
         }
-        return NAVIGATION_TIMING_FIELDS.iter().position(|field| *field == arg1)
-            .map(|index| timing.values[index].to_string()).unwrap_or_else(|| "null".into());
+        return NAVIGATION_TIMING_FIELDS
+            .iter()
+            .position(|field| *field == arg1)
+            .map(|index| timing.values[index].to_string())
+            .unwrap_or_else(|| "null".into());
     }
     if cmd == "performance_lifecycle" {
         shared.borrow_mut().navigation_timing.record(&arg1);
@@ -2328,8 +2595,15 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 state.pending_runtime_events.pop_front();
             }
             let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-            state.pending_runtime_events.push_back(RuntimeEvent::DocumentLifecycle { name: arg1, timestamp });
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            state
+                .pending_runtime_events
+                .push_back(RuntimeEvent::DocumentLifecycle {
+                    name: arg1,
+                    timestamp,
+                });
         }
         return "true".into();
     }
@@ -2408,9 +2682,10 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             invalidate && !matches!(cmd.as_str(), "set_form_value" | "set_form_indeterminate");
         #[cfg(feature = "render")]
         let retained_style_mutation = if invalidate_geometry && state.prepared_render.is_some() {
-            state.dom.as_ref().and_then(|dom| {
-                retained_style_mutation(dom, &cmd, &arg1, &arg2, true)
-            })
+            state
+                .dom
+                .as_ref()
+                .and_then(|dom| retained_style_mutation(dom, &cmd, &arg1, &arg2, true))
         } else {
             None
         };
@@ -2460,16 +2735,25 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             }
             let scope_root = match cmd.as_str() {
                 "append_child" => arg1.parse::<u32>().ok().map(NodeId::new),
-                "insert_before" => arg2
-                    .parse::<u32>()
-                    .ok()
-                    .map(NodeId::new)
-                    .and_then(|reference| state.dom.as_ref()?.with_node(reference, |node| node.parent).flatten()),
-                "remove_child" => arg1
-                    .parse::<u32>()
-                    .ok()
-                    .map(NodeId::new)
-                    .and_then(|child| state.dom.as_ref()?.with_node(child, |node| node.parent).flatten()),
+                "insert_before" => {
+                    arg2.parse::<u32>()
+                        .ok()
+                        .map(NodeId::new)
+                        .and_then(|reference| {
+                            state
+                                .dom
+                                .as_ref()?
+                                .with_node(reference, |node| node.parent)
+                                .flatten()
+                        })
+                }
+                "remove_child" => arg1.parse::<u32>().ok().map(NodeId::new).and_then(|child| {
+                    state
+                        .dom
+                        .as_ref()?
+                        .with_node(child, |node| node.parent)
+                        .flatten()
+                }),
                 "set_inner_html" | "set_inner_html_context" | "set_text_content" => {
                     arg1.parse::<u32>().ok().map(NodeId::new)
                 }
@@ -2551,21 +2835,27 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             for node in std::iter::once(root).chain(dom.descendants(root)) {
                 dom.with_node(node, |node| {
                     for name in window_named_attributes(node).into_iter().flatten() {
-                        if seen.insert(name.to_string()) { names.push(name.to_string()); }
+                        if seen.insert(name.to_string()) {
+                            names.push(name.to_string());
+                        }
                     }
                 });
             }
             serde_json::to_string(&names).unwrap_or_else(|_| "[]".into())
         }
         "window_named_candidates" => {
-            if arg1.is_empty() { return "[]".into(); }
+            if arg1.is_empty() {
+                return "[]".into();
+            }
             let mut matches = Vec::new();
             for node_id in dom.descendants(dom.document()) {
                 dom.with_node(node_id, |node| {
                     let names = window_named_attributes(node);
                     if names.contains(&Some(arg1.as_str())) {
                         let named_frame = names[1] == Some(arg1.as_str())
-                            && node.as_element().is_some_and(|tag| tag.local.as_ref() == "iframe");
+                            && node
+                                .as_element()
+                                .is_some_and(|tag| tag.local.as_ref() == "iframe");
                         matches.push((node_id.index(), named_frame));
                     }
                 });
@@ -2573,7 +2863,12 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             serde_json::to_string(&matches).unwrap_or_else(|_| "[]".into())
         }
         "document_node_id" => dom.document().index().to_string(),
-        "document_compat_mode" => if dom.is_quirks() { "BackCompat" } else { "CSS1Compat" }.into(),
+        "document_compat_mode" => if dom.is_quirks() {
+            "BackCompat"
+        } else {
+            "CSS1Compat"
+        }
+        .into(),
         "document_title" => {
             // The DOM is authoritative after parsing. In particular, script
             // changes through title.textContent must be reflected by
@@ -2595,10 +2890,14 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         "document_url" => serde_json::to_string(&gs.url).unwrap_or("\"\"".into()),
         "scripting_enabled" => gs.scripting_enabled.to_string(),
         "sandbox_opaque_origin" => gs.sandbox_opaque_origin.to_string(),
-        "document_origin" => serde_json::to_string(&gs.inherited_origin.clone().unwrap_or_else(|| {
-            url::Url::parse(&gs.url).map(|url| url.origin().ascii_serialization())
-                .unwrap_or_else(|_| "null".to_string())
-        })).unwrap_or("\"null\"".into()),
+        "document_origin" => {
+            serde_json::to_string(&gs.inherited_origin.clone().unwrap_or_else(|| {
+                url::Url::parse(&gs.url)
+                    .map(|url| url.origin().ascii_serialization())
+                    .unwrap_or_else(|_| "null".to_string())
+            }))
+            .unwrap_or("\"null\"".into())
+        }
         // The base for relative URLs. It differs from document_url exactly when the page carries
         // a <base href>, and that is the point: HTML resolves against the base, not the document.
         "document_base_url" => serde_json::to_string(
@@ -2831,9 +3130,12 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         }
         "prefix" => {
             let nid = arg1.parse::<u32>().unwrap_or(0);
-            let prefix = dom.with_node(NodeId::new(nid), |n| {
-                n.as_element().and_then(|name| name.prefix.as_ref().map(|prefix| prefix.to_string()))
-            }).flatten();
+            let prefix = dom
+                .with_node(NodeId::new(nid), |n| {
+                    n.as_element()
+                        .and_then(|name| name.prefix.as_ref().map(|prefix| prefix.to_string()))
+                })
+                .flatten();
             serde_json::to_string(&prefix).unwrap_or("null".into())
         }
         "local_name" => {
@@ -2870,7 +3172,10 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         }
         "parse_html_document" => {
             let root = NodeId::new(arg1.parse::<u32>().unwrap_or(0));
-            if root == dom.document() || !dom.with_node(root, |node| matches!(node.data, NodeData::Document)).unwrap_or(false)
+            if root == dom.document()
+                || !dom
+                    .with_node(root, |node| matches!(node.data, NodeData::Document))
+                    .unwrap_or(false)
                 || !dom.children(root).is_empty()
             {
                 return "null".into();
@@ -2878,10 +3183,17 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             use html5ever::tendril::TendrilSink;
             let mut options = html5ever::ParseOpts::default();
             options.tree_builder.scripting_enabled = false;
-            let parsed = html5ever::parse_document(DomTree::new(), options).from_utf8().one(arg2.as_bytes());
+            let parsed = html5ever::parse_document(DomTree::new(), options)
+                .from_utf8()
+                .one(arg2.as_bytes());
             dom.import_children_from(root, &parsed, parsed.document());
             mark_script_subtree_started(&gs, root);
-            if parsed.is_quirks() { "BackCompat" } else { "CSS1Compat" }.into()
+            if parsed.is_quirks() {
+                "BackCompat"
+            } else {
+                "CSS1Compat"
+            }
+            .into()
         }
         "attribute_metadata" => {
             let nid = arg1.parse::<u32>().unwrap_or(0);
@@ -3139,15 +3451,22 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         "document_write" | "document_write_close" => {
             let mut slot = gs.write_stream.borrow_mut();
             let placements = if cmd == "document_write_close" {
-                let Some(mut stream) = slot.take() else { return "[]".into(); };
+                let Some(mut stream) = slot.take() else {
+                    return "[]".into();
+                };
                 let placements = stream.close(dom);
                 // EOF in a script's text insertion mode marks it already started.
                 // Newly released scripts have no closing tag and must not execute.
-                gs.already_started_scripts.borrow_mut().extend(placements.iter()
-                    .filter(|p| node_is_script(dom, p.node)).map(|p| p.node));
+                gs.already_started_scripts.borrow_mut().extend(
+                    placements
+                        .iter()
+                        .filter(|p| node_is_script(dom, p.node))
+                        .map(|p| p.node),
+                );
                 placements
             } else {
-                slot.get_or_insert_with(|| DocumentWriteStream::new(false)).write(&arg2, dom)
+                slot.get_or_insert_with(|| DocumentWriteStream::new(false))
+                    .write(&arg2, dom)
             };
             if placements
                 .iter()
@@ -3353,7 +3672,9 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 return "-1,-1".into();
             };
             let (prev, next) = dom
-                .with_node(NodeId::new(nid), |node| (node.prev_sibling, node.next_sibling))
+                .with_node(NodeId::new(nid), |node| {
+                    (node.prev_sibling, node.next_sibling)
+                })
                 .unwrap_or((None, None));
             let id = |value: Option<NodeId>| value.map_or(-1, |id| id.index() as i64);
             format!("{},{}", id(prev), id(next))
@@ -3516,35 +3837,51 @@ fn queue_exception_event(
         .and_then(|frame| frame.file_name.clone())
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| fallback_url.to_string());
-    let line_number = first.and_then(|frame| frame.line_number).unwrap_or(1).saturating_sub(1);
-    let column_number = first.and_then(|frame| frame.column_number).unwrap_or(1).saturating_sub(1);
-    let stack_trace = error.frames.iter().map(|frame| {
-        serde_json::json!({
-            "functionName": frame.function_name.as_deref().unwrap_or(""),
-            "scriptId": "",
-            "url": frame.file_name.as_deref().unwrap_or(fallback_url),
-            "lineNumber": frame.line_number.unwrap_or(1).saturating_sub(1),
-            "columnNumber": frame.column_number.unwrap_or(1).saturating_sub(1),
+    let line_number = first
+        .and_then(|frame| frame.line_number)
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let column_number = first
+        .and_then(|frame| frame.column_number)
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let stack_trace = error
+        .frames
+        .iter()
+        .map(|frame| {
+            serde_json::json!({
+                "functionName": frame.function_name.as_deref().unwrap_or(""),
+                "scriptId": "",
+                "url": frame.file_name.as_deref().unwrap_or(fallback_url),
+                "lineNumber": frame.line_number.unwrap_or(1).saturating_sub(1),
+                "columnNumber": frame.column_number.unwrap_or(1).saturating_sub(1),
+            })
         })
-    }).collect();
+        .collect();
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs_f64() * 1_000.0;
+        .as_secs_f64()
+        * 1_000.0;
     if state.pending_runtime_events.len() >= 1_024 {
         state.pending_runtime_events.pop_front();
     }
-    state.pending_runtime_events.push_back(RuntimeEvent::Exception(RuntimeExceptionEvent {
-        exception_id: state.runtime_exception_counter,
-        name: error.name.clone().unwrap_or_else(|| "Error".to_string()),
-        description: error.stack.clone().unwrap_or_else(|| error.exception_message.clone()),
-        in_promise,
-        url,
-        line_number,
-        column_number,
-        stack_trace,
-        timestamp,
-    }));
+    state
+        .pending_runtime_events
+        .push_back(RuntimeEvent::Exception(RuntimeExceptionEvent {
+            exception_id: state.runtime_exception_counter,
+            name: error.name.clone().unwrap_or_else(|| "Error".to_string()),
+            description: error
+                .stack
+                .clone()
+                .unwrap_or_else(|| error.exception_message.clone()),
+            in_promise,
+            url,
+            line_number,
+            column_number,
+            stack_trace,
+            timestamp,
+        }));
 }
 
 /// Report an error the page's JS saw escape a callback (`in_promise` false) or
@@ -3559,9 +3896,15 @@ fn op_report_browser_exception<'s, 'i>(
     frame_id: u32,
     in_promise: bool,
 ) {
-    let Some(owner) = posted_task_owner(state, frame_id) else { return; };
-    let Ok(page) = owner.try_borrow() else { return; };
-    if !page.runtime_events_enabled { return; }
+    let Some(owner) = posted_task_owner(state, frame_id) else {
+        return;
+    };
+    let Ok(page) = owner.try_borrow() else {
+        return;
+    };
+    if !page.runtime_events_enabled {
+        return;
+    }
     let url = page.url.clone();
     drop(page);
     let error = deno_core::error::JsError::from_v8_exception(scope, error);
@@ -4025,7 +4368,11 @@ pub fn url_matches_cdp_pattern(pattern: &str, url: &str) -> bool {
             }
             None if url.as_str().is_empty() => return true,
             Some(token) => {
-                let literal = if token == '\\' { next_pattern.next() } else { Some(token) };
+                let literal = if token == '\\' {
+                    next_pattern.next()
+                } else {
+                    Some(token)
+                };
                 let mut next_url = url.clone();
                 if let Some(character) = next_url.next() {
                     if token == '?' || literal == Some(character) {
@@ -4051,7 +4398,11 @@ pub fn url_matches_cdp_pattern(pattern: &str, url: &str) -> bool {
 /// Whether a scripted request is paused for the interception consumer. Like
 /// Chrome, only requests matching a `Fetch.enable` URL pattern pause.
 pub(crate) fn should_intercept_url(enabled: bool, patterns: &[String], url: &str) -> bool {
-    enabled && (patterns.is_empty() || patterns.iter().any(|pattern| url_matches_cdp_pattern(pattern, url)))
+    enabled
+        && (patterns.is_empty()
+            || patterns
+                .iter()
+                .any(|pattern| url_matches_cdp_pattern(pattern, url)))
 }
 
 /// Build the JS-facing result for an intercepted request a CDP client chose to
@@ -4105,15 +4456,37 @@ async fn op_fetch_url(
     // async-op code-generation limit with another positional argument.
     let (destination, cancel_rid) = match options {
         FetchOptions::Destination(destination) => (destination, None),
-        FetchOptions::Cancelable { cancel_rid, destination } => (destination, Some(cancel_rid)),
+        FetchOptions::Cancelable {
+            cancel_rid,
+            destination,
+        } => (destination, Some(cancel_rid)),
     };
-    let cancel = cancel_rid.map(|rid| state.borrow().resource_table.get::<FetchCancelResource>(rid)
-        .map(|resource| resource.0.clone())
-        .map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))).transpose()?;
-    let future = fetch_url_inner(state, url, method, headers_json, body, origin, mode, credentials,
-        destination, cancel.clone());
+    let cancel = cancel_rid
+        .map(|rid| {
+            state
+                .borrow()
+                .resource_table
+                .get::<FetchCancelResource>(rid)
+                .map(|resource| resource.0.clone())
+                .map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))
+        })
+        .transpose()?;
+    let future = fetch_url_inner(
+        state,
+        url,
+        method,
+        headers_json,
+        body,
+        origin,
+        mode,
+        credentials,
+        destination,
+        cancel.clone(),
+    );
     match cancel {
-        Some(cancel) => future.or_cancel(cancel).await
+        Some(cancel) => future
+            .or_cancel(cancel)
+            .await
             .map_err(|_| deno_error::JsErrorBox::generic("Fetch was cancelled"))?,
         None => future.await,
     }
@@ -4123,13 +4496,23 @@ async fn op_fetch_url(
 #[serde(untagged)]
 enum FetchOptions {
     Destination(String),
-    Cancelable { cancel_rid: u32, destination: String },
+    Cancelable {
+        cancel_rid: u32,
+        destination: String,
+    },
 }
 
 async fn fetch_url_inner(
-    state: Rc<RefCell<OpState>>, url: String, method: String, headers_json: String,
-    body: JsBuffer, origin: String, mode: String, credentials: String,
-    destination: String, cancel: Option<Rc<CancelHandle>>,
+    state: Rc<RefCell<OpState>>,
+    url: String,
+    method: String,
+    headers_json: String,
+    body: JsBuffer,
+    origin: String,
+    mode: String,
+    credentials: String,
+    destination: String,
+    cancel: Option<Rc<CancelHandle>>,
 ) -> Result<String, deno_error::JsErrorBox> {
     let (resource_type, resource_type_name) = match destination.as_str() {
         "Script" => (ResourceType::Script, "Script"),
@@ -4138,8 +4521,10 @@ async fn fetch_url_inner(
         "XHR" => (ResourceType::Xhr, "XHR"),
         _ => (ResourceType::Fetch, "Fetch"),
     };
-    let internal_load = matches!(resource_type,
-        ResourceType::Script | ResourceType::Stylesheet | ResourceType::Document);
+    let internal_load = matches!(
+        resource_type,
+        ResourceType::Script | ResourceType::Stylesheet | ResourceType::Document
+    );
     let body = body.to_vec();
     tracing::debug!(
         "op_fetch_url called: {} {} (intercept check pending)",
@@ -4147,7 +4532,17 @@ async fn fetch_url_inner(
         url
     );
 
-    let (cookie_jar, in_flight, page_in_flight, intercept_tx, page_id, request_id, proxy_url, callbacks, http_client) = {
+    let (
+        cookie_jar,
+        in_flight,
+        page_in_flight,
+        intercept_tx,
+        page_id,
+        request_id,
+        proxy_url,
+        callbacks,
+        http_client,
+    ) = {
         let state_borrow = state.borrow();
         let gs = state_borrow.borrow::<SharedState>().clone();
         let mut gs = gs.borrow_mut();
@@ -4185,7 +4580,10 @@ async fn fetch_url_inner(
         // the request start, completion and retained response body.
         // The CDP resolver map spans pages and navigations on a connection.
         static NEXT_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let request_id = format!("fetch-{}", NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let request_id = format!(
+            "fetch-{}",
+            NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let itx = if should_intercept_url(gs.intercept_enabled, &gs.intercept_url_patterns, &url) {
             gs.intercept_tx.clone()
         } else {
@@ -4218,9 +4616,13 @@ async fn fetch_url_inner(
             let state_borrow = state.borrow();
             let shared = state_borrow.borrow::<SharedState>().clone();
             let shared = shared.borrow();
-            shared.about_base_url.clone().unwrap_or_else(|| shared.url.clone())
+            shared
+                .about_base_url
+                .clone()
+                .unwrap_or_else(|| shared.url.clone())
         };
-        if let (Some(client), Some(target)) = (&http_client, local_file_target(&document_url, &url)) {
+        if let (Some(client), Some(target)) = (&http_client, local_file_target(&document_url, &url))
+        {
             return Ok(fetch_local_file(client, &target, &document_url, resource_type).await);
         }
     }
@@ -4246,10 +4648,16 @@ async fn fetch_url_inner(
     let mut network_guard = FetchNetworkGuard {
         state: Rc::downgrade(state.borrow().borrow::<SharedState>()),
         event: Some(JsNetworkEvent {
-            request_id: request_id.clone(), intercepted: false,
-            url: url.clone(), method: method.clone(), status: 0,
+            request_id: request_id.clone(),
+            intercepted: false,
+            url: url.clone(),
+            method: method.clone(),
+            status: 0,
             resource_type: resource_type_name.to_string(),
-            response_headers: HashMap::new(), body_size: 0, timestamp: 0.0, error_text: None,
+            response_headers: HashMap::new(),
+            body_size: 0,
+            timestamp: 0.0,
+            error_text: None,
         }),
         cancel: cancel.clone(),
     };
@@ -4290,16 +4698,31 @@ async fn fetch_url_inner(
                     // Keep fulfilled responses visible to CDP just like transport
                     // responses, including exact binary bodies and bounded retention.
                     let encoded = !bb.is_empty();
-                    let body_size = if encoded { bb.trim_end_matches('=').len() * 3 / 4 } else { b.len() };
-                    record_js_network_completion(&state, JsNetworkEvent {
-                        request_id: request_id.clone(), intercepted: true,
-                        error_text: None,
-                        url: url.clone(), method: method.clone(), status,
-                        resource_type: resource_type_name.to_string(),
-                        response_headers: h.clone(), body_size,
-                        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default().as_secs_f64(),
-                    }, if encoded { &bb } else { &b }, encoded);
+                    let body_size = if encoded {
+                        bb.trim_end_matches('=').len() * 3 / 4
+                    } else {
+                        b.len()
+                    };
+                    record_js_network_completion(
+                        &state,
+                        JsNetworkEvent {
+                            request_id: request_id.clone(),
+                            intercepted: true,
+                            error_text: None,
+                            url: url.clone(),
+                            method: method.clone(),
+                            status,
+                            resource_type: resource_type_name.to_string(),
+                            response_headers: h.clone(),
+                            body_size,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64(),
+                        },
+                        if encoded { &bb } else { &b },
+                        encoded,
+                    );
                     let mut response = intercept_fulfill_response(
                         status,
                         h,
@@ -4449,8 +4872,8 @@ async fn fetch_url_inner(
             );
         }
         let preflight = preflight_request.send().await.map_err(|e| {
-                deno_error::JsErrorBox::generic(format!("CORS preflight failed: {}", e))
-            })?;
+            deno_error::JsErrorBox::generic(format!("CORS preflight failed: {}", e))
+        })?;
 
         // Fetch spec: the preflight response's status must be an ok status
         // before its CORS headers are consulted (#973).
@@ -4481,18 +4904,18 @@ async fn fetch_url_inner(
 
         let allowed_methods =
             parse_cors_header_list(preflight.headers(), "access-control-allow-methods")
-        .ok_or_else(|| {
-            deno_error::JsErrorBox::generic(
-                "CORS preflight returned an invalid Access-Control-Allow-Methods value",
-            )
-        })?;
+                .ok_or_else(|| {
+                    deno_error::JsErrorBox::generic(
+                        "CORS preflight returned an invalid Access-Control-Allow-Methods value",
+                    )
+                })?;
         let allowed_headers =
             parse_cors_header_list(preflight.headers(), "access-control-allow-headers")
-        .ok_or_else(|| {
-            deno_error::JsErrorBox::generic(
-                "CORS preflight returned an invalid Access-Control-Allow-Headers value",
-            )
-        })?;
+                .ok_or_else(|| {
+                    deno_error::JsErrorBox::generic(
+                        "CORS preflight returned an invalid Access-Control-Allow-Headers value",
+                    )
+                })?;
         let credentialed = credentials == FetchCredentials::Include;
         if !preflight_allows_method(&req_method, &allowed_methods, credentialed) {
             return Err(deno_error::JsErrorBox::generic(format!(
@@ -4615,7 +5038,9 @@ async fn fetch_url_inner(
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 PageInFlightGuard(counter.clone())
             });
-            req.send().await.map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))?
+            req.send()
+                .await
+                .map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))?
         };
 
         if credentials_allowed {
@@ -4790,29 +5215,50 @@ async fn fetch_url_inner(
         if let Some(ref cbs) = callbacks {
             if cbs.has_response_callbacks().await {
                 let resp = fetch_response(
-                    current_url.as_str(), status, resp_headers.clone(),
-                    resp_bytes.to_vec(), redirected_from,
+                    current_url.as_str(),
+                    status,
+                    resp_headers.clone(),
+                    resp_bytes.to_vec(),
+                    redirected_from,
                 );
                 let info = RequestInfo {
-                    url: resp.url.clone(), method: current_method.as_str().to_string(),
-                    headers: resp_headers.clone(), resource_type,
+                    url: resp.url.clone(),
+                    method: current_method.as_str().to_string(),
+                    headers: resp_headers.clone(),
+                    resource_type,
                 };
                 cbs.fire_response(&info, &resp).await;
             }
         }
         if let Some(state) = body_state.upgrade() {
-            record_js_network_completion(&state, JsNetworkEvent {
-                request_id, intercepted: was_intercepted,
-                error_text: None,
-                url: current_url, method: current_method.as_str().to_string(), status,
-                resource_type: resource_type_name.to_string(),
-                response_headers: resp_headers, body_size: resp_bytes.len(),
-                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default().as_secs_f64(),
-            }, &String::from_utf8_lossy(&resp_bytes), false);
+            record_js_network_completion(
+                &state,
+                JsNetworkEvent {
+                    request_id,
+                    intercepted: was_intercepted,
+                    error_text: None,
+                    url: current_url,
+                    method: current_method.as_str().to_string(),
+                    status,
+                    resource_type: resource_type_name.to_string(),
+                    response_headers: resp_headers,
+                    body_size: resp_bytes.len(),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                },
+                &String::from_utf8_lossy(&resp_bytes),
+                false,
+            );
         }
         network_guard.event = None;
-        tracing::debug!("op_fetch_url completed: {} {} ({} bytes)", method, url, resp_bytes.len());
+        tracing::debug!(
+            "op_fetch_url completed: {} {} ({} bytes)",
+            method,
+            url,
+            resp_bytes.len()
+        );
         Ok(resp_bytes)
     });
     fetch_body_result(&state, metadata, body, internal_load, cancel).await
@@ -5039,17 +5485,24 @@ async fn stealth_fetch_all(
     let body = Box::pin(async move {
         let _page_in_flight = page_in_flight;
         let mut network_guard = network_guard;
-        let resp_bytes = response.body.await
+        let resp_bytes = response
+            .body
+            .await
             .map_err(|error| deno_error::JsErrorBox::generic(error.to_string()))?;
         if let Some(ref cbs) = callbacks {
             if cbs.has_response_callbacks().await {
                 let resp = fetch_response(
-                    current_url.as_str(), status, resp_headers.clone(),
-                    resp_bytes.clone(), redirected_from,
+                    current_url.as_str(),
+                    status,
+                    resp_headers.clone(),
+                    resp_bytes.clone(),
+                    redirected_from,
                 );
                 let info = RequestInfo {
-                    url: resp.url.clone(), method: current_method.clone(),
-                    headers: resp_headers.clone(), resource_type,
+                    url: resp.url.clone(),
+                    method: current_method.clone(),
+                    headers: resp_headers.clone(),
+                    resource_type,
                 };
                 cbs.fire_response(&info, &resp).await;
             }
@@ -5061,10 +5514,19 @@ async fn stealth_fetch_all(
             event.status = status;
             event.response_headers = resp_headers;
             event.body_size = resp_bytes.len();
-            event.timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default().as_secs_f64();
-            record_js_network_completion(&state, event, &String::from_utf8_lossy(&resp_bytes), false);
-        } else { network_guard.event = None; }
+            event.timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            record_js_network_completion(
+                &state,
+                event,
+                &String::from_utf8_lossy(&resp_bytes),
+                false,
+            );
+        } else {
+            network_guard.event = None;
+        }
         Ok(resp_bytes)
     });
     fetch_body_result(&state, metadata, body, internal_load, cancel).await
@@ -5100,12 +5562,11 @@ pub(crate) fn glob_match(pattern: &str, url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FetchCredentials, LOCAL_STORAGE_ORIGIN_COUNT_LIMIT, LOCAL_STORAGE_ORIGIN_LIMIT,
-        LOCAL_STORAGE_TOTAL_LIMIT, InbrowseState, OriginStorage, cors_response_allows,
-        cors_unsafe_request_header_names,
-        glob_match, is_cors_safelisted_content_type, is_cors_safelisted_request_header,
-        parse_cors_header_list, preflight_allows_header, preflight_allows_method,
-        sanitize_redirect_headers, validate_fetch_url,
+        cors_response_allows, cors_unsafe_request_header_names, glob_match,
+        is_cors_safelisted_content_type, is_cors_safelisted_request_header, parse_cors_header_list,
+        preflight_allows_header, preflight_allows_method, sanitize_redirect_headers,
+        validate_fetch_url, FetchCredentials, InbrowseState, OriginStorage,
+        LOCAL_STORAGE_ORIGIN_COUNT_LIMIT, LOCAL_STORAGE_ORIGIN_LIMIT, LOCAL_STORAGE_TOTAL_LIMIT,
     };
     use crate::runtime::InbrowseJsRuntime;
     use inbrowse_dom::parse_html;
@@ -5117,7 +5578,10 @@ mod tests {
         use std::sync::Arc;
         let origin = "https://a.test";
         let original = OriginStorage::default();
-        assert!(original.load(origin, vec![("k".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 1))]));
+        assert!(original.load(
+            origin,
+            vec![("k".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 1))]
+        ));
         let copy = original.isolated_snapshot();
         let shared = original.lock().origins[origin].clone();
         assert!(!copy.set(origin, "extra".into(), String::new()));
@@ -5127,7 +5591,10 @@ mod tests {
         assert_eq!(copy.len(origin), 1);
         assert!(copy.load(origin, vec![("replacement".into(), "value".into())]));
         assert_eq!(original.len(origin), 0);
-        assert_eq!(copy.snapshot(origin), vec![("replacement".into(), "value".into())]);
+        assert_eq!(
+            copy.snapshot(origin),
+            vec![("replacement".into(), "value".into())]
+        );
         assert_eq!(copy.lock().bytes, "replacement".len() + "value".len());
         copy.remove(origin, "replacement");
         assert_eq!(copy.lock().bytes, 0);
@@ -5143,45 +5610,97 @@ mod tests {
         let copy = original.isolated_snapshot();
         let original_a = original.lock().origins["https://a.test"].clone();
         let original_b = original.lock().origins["https://b.test"].clone();
-        assert!(Arc::ptr_eq(&original_a, &copy.lock().origins["https://a.test"]));
+        assert!(Arc::ptr_eq(
+            &original_a,
+            &copy.lock().origins["https://a.test"]
+        ));
         assert!(copy.changed_origins().is_empty());
         copy.remove("https://a.test", "missing");
         assert!(copy.set("https://a.test", "seed".into(), "initial".into()));
-        assert!(Arc::ptr_eq(&original_a, &copy.lock().origins["https://a.test"]));
+        assert!(Arc::ptr_eq(
+            &original_a,
+            &copy.lock().origins["https://a.test"]
+        ));
         assert!(copy.set("https://a.test", "new".into(), "value".into()));
-        assert!(!Arc::ptr_eq(&original_a, &copy.lock().origins["https://a.test"]));
-        assert!(Arc::ptr_eq(&original_a.items[0], &copy.lock().origins["https://a.test"].items[0]));
+        assert!(!Arc::ptr_eq(
+            &original_a,
+            &copy.lock().origins["https://a.test"]
+        ));
+        assert!(Arc::ptr_eq(
+            &original_a.items[0],
+            &copy.lock().origins["https://a.test"].items[0]
+        ));
         assert!(copy.set("https://a.test", "seed".into(), "changed".into()));
-        assert!(!Arc::ptr_eq(&original_a, &copy.lock().origins["https://a.test"]));
-        assert!(!Arc::ptr_eq(&original_a.items[0], &copy.lock().origins["https://a.test"].items[0]));
-        assert!(Arc::ptr_eq(&original_b, &copy.lock().origins["https://b.test"]));
-        assert_eq!(original.get("https://a.test", "seed").as_deref(), Some("initial"));
-        assert_eq!(copy.get("https://a.test", "seed").as_deref(), Some("changed"));
+        assert!(!Arc::ptr_eq(
+            &original_a,
+            &copy.lock().origins["https://a.test"]
+        ));
+        assert!(!Arc::ptr_eq(
+            &original_a.items[0],
+            &copy.lock().origins["https://a.test"].items[0]
+        ));
+        assert!(Arc::ptr_eq(
+            &original_b,
+            &copy.lock().origins["https://b.test"]
+        ));
+        assert_eq!(
+            original.get("https://a.test", "seed").as_deref(),
+            Some("initial")
+        );
+        assert_eq!(
+            copy.get("https://a.test", "seed").as_deref(),
+            Some("changed")
+        );
         copy.clear("https://b.test");
-        assert_eq!(original.get("https://b.test", "other").as_deref(), Some("value"));
+        assert_eq!(
+            original.get("https://b.test", "other").as_deref(),
+            Some("value")
+        );
         assert_eq!(copy.get("https://b.test", "other"), None);
         assert_eq!(copy.changed_origins(), ["https://a.test", "https://b.test"]);
     }
 
     #[test]
-    fn origin_storage_deletion_reinsertion_and_profile_replacement_keep_keys_and_quota_consistent() {
+    fn origin_storage_deletion_reinsertion_and_profile_replacement_keep_keys_and_quota_consistent()
+    {
         let store = OriginStorage::default();
         let origin = "https://app.test";
-        assert!(store.load(origin, vec![("a".into(), "one".into()), ("b".into(), "two".into()), ("c".into(), "three".into())]));
+        assert!(store.load(
+            origin,
+            vec![
+                ("a".into(), "one".into()),
+                ("b".into(), "two".into()),
+                ("c".into(), "three".into())
+            ]
+        ));
         store.remove(origin, "b");
         assert_eq!(store.get(origin, "c").as_deref(), Some("three"));
         assert!(store.set(origin, "c".into(), "replaced".into()));
         assert!(store.set(origin, "b".into(), "last".into()));
-        assert_eq!(store.snapshot(origin), vec![("a".into(), "one".into()), ("c".into(), "replaced".into()), ("b".into(), "last".into())]);
+        assert_eq!(
+            store.snapshot(origin),
+            vec![
+                ("a".into(), "one".into()),
+                ("c".into(), "replaced".into()),
+                ("b".into(), "last".into())
+            ]
+        );
         store.remove(origin, "a");
         assert_eq!(store.key(origin, 0).as_deref(), Some("c"));
         assert_eq!(store.get(origin, "b").as_deref(), Some("last"));
 
-        assert!(store.load(origin, vec![("z".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 1))]));
+        assert!(store.load(
+            origin,
+            vec![("z".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 1))]
+        ));
         assert_eq!(store.get(origin, "c"), None);
         assert!(!store.set(origin, "extra".into(), "".into()));
         assert!(store.set(origin, "z".into(), "short".into()));
-        assert!(store.set(origin, "extra".into(), "y".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 11)));
+        assert!(store.set(
+            origin,
+            "extra".into(),
+            "y".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 11)
+        ));
         assert!(!store.set(origin, "third".into(), "".into()));
         store.remove(origin, "z");
         assert!(store.set(origin, "third".into(), "".into()));
@@ -5196,36 +5715,68 @@ mod tests {
     fn origin_storage_rejects_duplicate_profile_keys_without_replacing_valid_data() {
         let store = OriginStorage::default();
         assert!(store.set("https://app.test", "token".into(), "original".into()));
-        store.load("https://app.test", vec![("key".into(), "one".into()), ("key".into(), "two".into())]);
-        assert_eq!(store.get("https://app.test", "token").as_deref(), Some("original"));
+        store.load(
+            "https://app.test",
+            vec![("key".into(), "one".into()), ("key".into(), "two".into())],
+        );
+        assert_eq!(
+            store.get("https://app.test", "token").as_deref(),
+            Some("original")
+        );
     }
 
     #[test]
     fn origin_storage_rejects_over_budget_profiles_without_replacing_valid_data() {
         let store = OriginStorage::default();
         assert!(store.set("https://app.test", "token".into(), "original".into()));
-        store.load("https://app.test", vec![("key".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT))]);
-        assert_eq!(store.get("https://app.test", "token").as_deref(), Some("original"));
+        store.load(
+            "https://app.test",
+            vec![("key".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT))],
+        );
+        assert_eq!(
+            store.get("https://app.test", "token").as_deref(),
+            Some("original")
+        );
         let count_limited = OriginStorage::default();
         for index in 0..LOCAL_STORAGE_ORIGIN_COUNT_LIMIT {
-            assert!(count_limited.set(&format!("https://origin-{index}.test"), "key".into(), "value".into()));
+            assert!(count_limited.set(
+                &format!("https://origin-{index}.test"),
+                "key".into(),
+                "value".into()
+            ));
         }
         count_limited.load("https://extra.test", vec![("key".into(), "value".into())]);
         assert_eq!(count_limited.get("https://extra.test", "key"), None);
         let total_limited = OriginStorage::default();
         for index in 0..6 {
-            assert!(total_limited.set(&format!("https://large-{index}.test"), "key".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 3)));
+            assert!(total_limited.set(
+                &format!("https://large-{index}.test"),
+                "key".into(),
+                "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 3)
+            ));
         }
-        total_limited.load("https://extra.test", vec![("key".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 3))]);
+        total_limited.load(
+            "https://extra.test",
+            vec![("key".into(), "x".repeat(LOCAL_STORAGE_ORIGIN_LIMIT - 3))],
+        );
         assert_eq!(total_limited.get("https://extra.test", "key"), None);
     }
 
     #[test]
     fn origin_storage_restores_profiles_without_marking_them_dirty() {
         let store = OriginStorage::default();
-        store.load("https://app.test", vec![("token".into(), "restored".into())]);
-        assert_eq!(store.get("https://app.test", "token").as_deref(), Some("restored"));
-        assert!(!store.is_dirty(), "reading a saved profile must not schedule a rewrite");
+        store.load(
+            "https://app.test",
+            vec![("token".into(), "restored".into())],
+        );
+        assert_eq!(
+            store.get("https://app.test", "token").as_deref(),
+            Some("restored")
+        );
+        assert!(
+            !store.is_dirty(),
+            "reading a saved profile must not schedule a rewrite"
+        );
     }
 
     #[test]
@@ -5243,8 +5794,14 @@ mod tests {
             .collect();
         assert_eq!(order, vec!["k1".to_string(), "k2".to_string()]);
 
-        assert_eq!(store.get("https://a.example", "k1"), Some("one".to_string()));
-        assert_eq!(store.get("https://b.example", "k1"), Some("other".to_string()));
+        assert_eq!(
+            store.get("https://a.example", "k1"),
+            Some("one".to_string())
+        );
+        assert_eq!(
+            store.get("https://b.example", "k1"),
+            Some("other".to_string())
+        );
         assert_eq!(store.get("https://c.example", "k1"), None);
     }
 
@@ -5337,11 +5894,22 @@ mod tests {
         assert!(!super::should_intercept_url(false, &[], url));
         assert!(super::should_intercept_url(true, &[], url));
         assert!(super::should_intercept_url(true, &["*".to_string()], url));
-        assert!(super::should_intercept_url(true, &["*/value/*".to_string()], url));
-        assert!(!super::should_intercept_url(true, &["*never-matches*".to_string()], url));
         assert!(super::should_intercept_url(
             true,
-            &["*never-matches*".to_string(), "https://example.test/*".to_string()],
+            &["*/value/*".to_string()],
+            url
+        ));
+        assert!(!super::should_intercept_url(
+            true,
+            &["*never-matches*".to_string()],
+            url
+        ));
+        assert!(super::should_intercept_url(
+            true,
+            &[
+                "*never-matches*".to_string(),
+                "https://example.test/*".to_string()
+            ],
             url
         ));
     }
@@ -5371,8 +5939,11 @@ mod tests {
             ("ab*cd*ef", "abxxcdyyef", true),
             ("ab*cd*ef", "abxxcdyyefzz", false),
         ] {
-            assert_eq!(super::url_matches_cdp_pattern(pattern, url), expected,
-                "pattern {pattern:?}, URL {url:?}");
+            assert_eq!(
+                super::url_matches_cdp_pattern(pattern, url),
+                expected,
+                "pattern {pattern:?}, URL {url:?}"
+            );
         }
     }
 
@@ -5431,19 +6002,21 @@ mod tests {
 
     #[cfg(feature = "render")]
     use super::{
-        MAX_PENDING_STYLE_MUTATIONS, ensure_prepared_geometry, ensure_prepared_render,
-        node_is_connected, queue_retained_style_mutation, retained_style_mutation,
-        shadow_including_connected_nodes,
+        ensure_prepared_geometry, ensure_prepared_render, node_is_connected,
+        queue_retained_style_mutation, retained_style_mutation, shadow_including_connected_nodes,
+        MAX_PENDING_STYLE_MUTATIONS,
     };
     #[cfg(feature = "render")]
     use inbrowse_dom::ShadowRootMode;
 
     use super::read_body_capped;
     use super::url_set_inner;
-    use super::{PBKDF2_MAX_ITERATIONS, PBKDF2_MAX_OUTPUT_BYTES, pbkdf2_blocks, pbkdf2_can_inline, pbkdf2_derive,
-        pbkdf2_derive_with, validate_pbkdf2, CancelPbkdf2OnDrop, push_capped};
     use super::{intercept_fulfill_response, visible_response_headers};
-    use base64::{Engine as _, engine::general_purpose::STANDARD as FULFILL_BASE64};
+    use super::{
+        pbkdf2_blocks, pbkdf2_can_inline, pbkdf2_derive, pbkdf2_derive_with, push_capped,
+        validate_pbkdf2, CancelPbkdf2OnDrop, PBKDF2_MAX_ITERATIONS, PBKDF2_MAX_OUTPUT_BYTES,
+    };
+    use base64::{engine::general_purpose::STANDARD as FULFILL_BASE64, Engine as _};
 
     // #1008: URL property setters must follow WHATWG — search/hash keep a bare
     // delimiter as an empty component, and port parses the leading digits.
@@ -5714,7 +6287,7 @@ mod tests {
             1_000,
             PBKDF2_MAX_OUTPUT_BYTES + 1,
         )
-            .expect_err("output length above the cap must be rejected");
+        .expect_err("output length above the cap must be rejected");
         assert!(
             err.to_string().contains("length"),
             "error should name the length cap: {err}"
@@ -5751,8 +6324,14 @@ mod tests {
         for iterations in [1, 2, 4096, 4097, PBKDF2_MAX_ITERATIONS] {
             for length in [0, 32, 65] {
                 let error = pbkdf2_derive_with(
-                    "SHA-256", b"password", b"salt", iterations, length, &cancelled,
-                ).expect_err("cancellation must be checked before every derivation");
+                    "SHA-256",
+                    b"password",
+                    b"salt",
+                    iterations,
+                    length,
+                    &cancelled,
+                )
+                .expect_err("cancellation must be checked before every derivation");
                 assert!(error.to_string().contains("cancelled"), "{error}");
             }
         }
@@ -5763,9 +6342,16 @@ mod tests {
         let cancelled = std::sync::atomic::AtomicBool::new(true);
         let mut output = [7; 65];
         assert!(!pbkdf2_blocks::<hmac::Hmac<sha2::Sha256>>(
-            b"password", b"salt", 1, &mut output, &cancelled,
+            b"password",
+            b"salt",
+            1,
+            &mut output,
+            &cancelled,
         ));
-        assert_eq!(output, [7; 65], "cancelled work must not start its first block");
+        assert_eq!(
+            output, [7; 65],
+            "cancelled work must not start its first block"
+        );
     }
 
     #[test]
@@ -5773,18 +6359,47 @@ mod tests {
         let derived = pbkdf2_derive("SHA-1", b"password", b"salt", 4096, 20).unwrap();
         let hex: String = derived.iter().map(|byte| format!("{byte:02x}")).collect();
         assert_eq!(hex, "4b007901b765489abead49d926f721d065a429c1");
-        for (hash, length) in [("SHA-1", 45), ("SHA-256", 70), ("SHA-384", 49), ("SHA-512", 130)] {
+        for (hash, length) in [
+            ("SHA-1", 45),
+            ("SHA-256", 70),
+            ("SHA-384", 49),
+            ("SHA-512", 130),
+        ] {
             for iterations in [1, 2, 5000] {
-                let derived = pbkdf2_derive(hash, b"password", b"salt", iterations, length).unwrap();
+                let derived =
+                    pbkdf2_derive(hash, b"password", b"salt", iterations, length).unwrap();
                 let mut expected = vec![0; length as usize];
                 match hash {
-                    "SHA-1" => pbkdf2::pbkdf2_hmac::<sha1::Sha1>(b"password", b"salt", iterations, &mut expected),
-                    "SHA-256" => pbkdf2::pbkdf2_hmac::<sha2::Sha256>(b"password", b"salt", iterations, &mut expected),
-                    "SHA-384" => pbkdf2::pbkdf2_hmac::<sha2::Sha384>(b"password", b"salt", iterations, &mut expected),
-                    "SHA-512" => pbkdf2::pbkdf2_hmac::<sha2::Sha512>(b"password", b"salt", iterations, &mut expected),
+                    "SHA-1" => pbkdf2::pbkdf2_hmac::<sha1::Sha1>(
+                        b"password",
+                        b"salt",
+                        iterations,
+                        &mut expected,
+                    ),
+                    "SHA-256" => pbkdf2::pbkdf2_hmac::<sha2::Sha256>(
+                        b"password",
+                        b"salt",
+                        iterations,
+                        &mut expected,
+                    ),
+                    "SHA-384" => pbkdf2::pbkdf2_hmac::<sha2::Sha384>(
+                        b"password",
+                        b"salt",
+                        iterations,
+                        &mut expected,
+                    ),
+                    "SHA-512" => pbkdf2::pbkdf2_hmac::<sha2::Sha512>(
+                        b"password",
+                        b"salt",
+                        iterations,
+                        &mut expected,
+                    ),
                     _ => unreachable!(),
                 }
-                assert_eq!(derived, expected, "{hash}, iterations={iterations}, length={length}");
+                assert_eq!(
+                    derived, expected,
+                    "{hash}, iterations={iterations}, length={length}"
+                );
             }
         }
     }
@@ -5802,7 +6417,10 @@ mod tests {
     // buffer straight from an untrusted u32 length. Each must reject a length
     // above its fixed maximum before allocating, and still work for ordinary
     // inputs. See #910.
-    use super::{HKDF_MAX_OUTPUT_BYTES, RANDOM_BYTES_MAX, aes_kw, hkdf_derive, oct_jwk_json, parse_jwk, random_bytes};
+    use super::{
+        aes_kw, hkdf_derive, oct_jwk_json, parse_jwk, random_bytes, HKDF_MAX_OUTPUT_BYTES,
+        RANDOM_BYTES_MAX,
+    };
 
     #[test]
     fn hkdf_rejects_excessive_output_length() {
@@ -5813,7 +6431,7 @@ mod tests {
             b"info",
             HKDF_MAX_OUTPUT_BYTES + 1,
         )
-            .expect_err("output length above the cap must be rejected");
+        .expect_err("output length above the cap must be rejected");
         assert!(
             err.to_string().contains("exceeds"),
             "error should name the length cap: {err}"
@@ -5840,7 +6458,10 @@ mod tests {
                 0x7b, 0x82, 0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5
             ]
         );
-        assert_eq!(aes_kw(false, &kek, &wrapped).expect("the wrap unwraps"), data);
+        assert_eq!(
+            aes_kw(false, &kek, &wrapped).expect("the wrap unwraps"),
+            data
+        );
     }
 
     #[test]
@@ -5848,13 +6469,31 @@ mod tests {
         let kek = [7u8; 32];
         let mut wrapped = aes_kw(true, &kek, &[1u8; 24]).expect("a 192-bit key wraps");
         wrapped[3] ^= 1;
-        assert!(aes_kw(false, &kek, &wrapped).is_err(), "a tampered wrap must not unwrap");
-        assert!(aes_kw(false, &[8u8; 32], &aes_kw(true, &kek, &[1u8; 16]).unwrap()).is_err(), "another key must not unwrap");
-        assert!(aes_kw(true, &kek, &[1u8; 20]).is_err(), "data not a multiple of 8 bytes must not wrap");
-        assert!(aes_kw(true, &kek, &[1u8; 8]).is_err(), "a single block must not wrap");
-        assert!(aes_kw(false, &kek, &[1u8; 16]).is_err(), "a single wrapped block must not unwrap");
+        assert!(
+            aes_kw(false, &kek, &wrapped).is_err(),
+            "a tampered wrap must not unwrap"
+        );
+        assert!(
+            aes_kw(false, &[8u8; 32], &aes_kw(true, &kek, &[1u8; 16]).unwrap()).is_err(),
+            "another key must not unwrap"
+        );
+        assert!(
+            aes_kw(true, &kek, &[1u8; 20]).is_err(),
+            "data not a multiple of 8 bytes must not wrap"
+        );
+        assert!(
+            aes_kw(true, &kek, &[1u8; 8]).is_err(),
+            "a single block must not wrap"
+        );
+        assert!(
+            aes_kw(false, &kek, &[1u8; 16]).is_err(),
+            "a single wrapped block must not unwrap"
+        );
         assert!(aes_kw(false, &kek, &[]).is_err(), "nothing must not unwrap");
-        assert!(aes_kw(true, &[7u8; 20], &[1u8; 16]).is_err(), "a 160-bit KEK is not an AES key");
+        assert!(
+            aes_kw(true, &[7u8; 20], &[1u8; 16]).is_err(),
+            "a 160-bit KEK is not an AES key"
+        );
     }
 
     #[test]
@@ -5872,7 +6511,9 @@ mod tests {
 
     #[test]
     fn parse_jwk_wants_a_json_object() {
-        assert!(parse_jwk(br#"{"kty":"oct","k":"AQID"}"#).unwrap().is_object());
+        assert!(parse_jwk(br#"{"kty":"oct","k":"AQID"}"#)
+            .unwrap()
+            .is_object());
         assert!(parse_jwk(b"not json").is_err());
         assert!(parse_jwk(b"[1, 2]").is_err());
         assert!(parse_jwk(b"\"oct\"").is_err());
@@ -6365,7 +7006,7 @@ mod tests {
                 "class\0changed",
                 false,
             )
-                .is_none(),
+            .is_none(),
             "shadow mutations require a full scoped cascade"
         );
 
@@ -6587,7 +7228,9 @@ mod tests {
 /// destination. A network document, a `data:` frame and every other scheme get
 /// `None` and stay behind `validate_fetch_url`.
 fn local_file_target(document_url: &str, url: &str) -> Option<url::Url> {
-    let target = url::Url::parse(url).ok().filter(|target| target.scheme() == "file")?;
+    let target = url::Url::parse(url)
+        .ok()
+        .filter(|target| target.scheme() == "file")?;
     url::Url::parse(document_url)
         .is_ok_and(|document| document.scheme() == "file")
         .then_some(target)
@@ -6616,7 +7259,10 @@ async fn fetch_local_file(
         return failure(format!("Unparsable document URL: {document_url}"));
     };
     let request = ResourceRequest::subresource(resource_type, &initiator);
-    match client.fetch_resource_with_callbacks(target, request, None).await {
+    match client
+        .fetch_resource_with_callbacks(target, request, None)
+        .await
+    {
         Ok(response) => serde_json::json!({
             "status": response.status,
             "body": String::from_utf8_lossy(&response.body),
@@ -6637,9 +7283,16 @@ mod local_file_load_tests {
     #[test]
     fn only_a_file_document_may_read_file_urls() {
         let file_page = "file:///site/page.html";
-        let target = local_file_target(file_page, "file:///site/child.html").expect("file document");
+        let target =
+            local_file_target(file_page, "file:///site/child.html").expect("file document");
         assert_eq!(target.as_str(), "file:///site/child.html");
-        for document in ["http://127.0.0.1:8000/", "https://example.test/", "data:text/html,x", "about:blank", ""] {
+        for document in [
+            "http://127.0.0.1:8000/",
+            "https://example.test/",
+            "data:text/html,x",
+            "about:blank",
+            "",
+        ] {
             assert!(
                 local_file_target(document, "file:///site/child.html").is_none(),
                 "{document} must not read local files"
@@ -6650,7 +7303,8 @@ mod local_file_load_tests {
     }
 
     fn temp_file(name: &str, body: &str) -> url::Url {
-        let dir = std::env::temp_dir().join(format!("inbrowse-ops-file-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("inbrowse-ops-file-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("child.html");
         std::fs::write(&path, body).unwrap();
@@ -6665,20 +7319,44 @@ mod local_file_load_tests {
             None,
             false,
         );
-        let denied = fetch_local_file(&client, &target, "file:///site/page.html", ResourceType::Document).await;
+        let denied = fetch_local_file(
+            &client,
+            &target,
+            "file:///site/page.html",
+            ResourceType::Document,
+        )
+        .await;
         let denied: serde_json::Value = serde_json::from_str(&denied).unwrap();
         assert_eq!(denied["status"], 0);
-        assert!(denied["error"].as_str().unwrap().contains("allow-file-access"), "{denied}");
+        assert!(
+            denied["error"]
+                .as_str()
+                .unwrap()
+                .contains("allow-file-access"),
+            "{denied}"
+        );
 
         client.set_allow_file_access(true);
-        let allowed = fetch_local_file(&client, &target, "file:///site/page.html", ResourceType::Document).await;
+        let allowed = fetch_local_file(
+            &client,
+            &target,
+            "file:///site/page.html",
+            ResourceType::Document,
+        )
+        .await;
         let allowed: serde_json::Value = serde_json::from_str(&allowed).unwrap();
         assert_eq!(allowed["status"], 200);
         assert_eq!(allowed["body"], "<p>frame</p>");
         assert_eq!(allowed["url"], target.as_str());
 
         let missing = target.join("missing.html").unwrap();
-        let missing = fetch_local_file(&client, &missing, "file:///site/page.html", ResourceType::Document).await;
+        let missing = fetch_local_file(
+            &client,
+            &missing,
+            "file:///site/page.html",
+            ResourceType::Document,
+        )
+        .await;
         let missing: serde_json::Value = serde_json::from_str(&missing).unwrap();
         assert_eq!(missing["status"], 0);
     }
@@ -6769,12 +7447,19 @@ fn storage_origin(state: &InbrowseState) -> std::cell::Ref<'_, str> {
     cache.inherited_origin.clone_from(&state.inherited_origin);
     cache.origin = state.inherited_origin.clone().unwrap_or_else(|| {
         url::Url::parse(&state.url)
-            .map(|url| if url.scheme() == "file" { "file://".to_string() }
-                else { url.origin().ascii_serialization() })
+            .map(|url| {
+                if url.scheme() == "file" {
+                    "file://".to_string()
+                } else {
+                    url.origin().ascii_serialization()
+                }
+            })
             .unwrap_or_else(|_| "null".to_string())
     });
     drop(cache);
-    std::cell::Ref::map(state.storage_origin_cache.borrow(), |cache| cache.origin.as_str())
+    std::cell::Ref::map(state.storage_origin_cache.borrow(), |cache| {
+        cache.origin.as_str()
+    })
 }
 
 #[op2(fast)]
@@ -6787,18 +7472,36 @@ fn op_storage_access(scope: &mut v8::PinScope, state: &OpState) -> bool {
 
 #[op2]
 #[string]
-fn op_indexed_db(scope: &mut v8::PinScope, state: &OpState, #[string] action: &str, #[string] payload: &str) -> String {
-    if payload.len() > 24 * 1024 * 1024 { return "{\"error\":\"QuotaExceededError\"}".into(); }
+fn op_indexed_db(
+    scope: &mut v8::PinScope,
+    state: &OpState,
+    #[string] action: &str,
+    #[string] payload: &str,
+) -> String {
+    if payload.len() > 24 * 1024 * 1024 {
+        return "{\"error\":\"QuotaExceededError\"}".into();
+    }
     let gs = realm_state(scope, state);
     let mut gs = gs.borrow_mut();
     if gs.indexed_db_owner.is_none() {
-        gs.indexed_db_owner = Some(crate::indexed_db::IndexedDbOwner::new(gs.indexed_db.clone()));
+        gs.indexed_db_owner = Some(crate::indexed_db::IndexedDbOwner::new(
+            gs.indexed_db.clone(),
+        ));
     }
     let origin = storage_origin(&gs);
-    let result = serde_json::from_str(payload).map(|data|
-        gs.indexed_db_owner.as_ref().map(|owner| if action == "notices" {
-            serde_json::json!(owner.take_notices())
-        } else { owner.command(&origin, action, data) }).unwrap_or_default())
+    let result = serde_json::from_str(payload)
+        .map(|data| {
+            gs.indexed_db_owner
+                .as_ref()
+                .map(|owner| {
+                    if action == "notices" {
+                        serde_json::json!(owner.take_notices())
+                    } else {
+                        owner.command(&origin, action, data)
+                    }
+                })
+                .unwrap_or_default()
+        })
         .unwrap_or_else(|_| serde_json::json!({"error":"DataError"}));
     result.to_string()
 }
@@ -6806,7 +7509,10 @@ fn op_indexed_db(scope: &mut v8::PinScope, state: &OpState, #[string] action: &s
 #[op2(fast)]
 #[number]
 fn op_indexed_db_task(state: &OpState) -> u64 {
-    state.borrow::<SharedState>().borrow().animation_task_generation
+    state
+        .borrow::<SharedState>()
+        .borrow()
+        .animation_task_generation
 }
 
 fn origin_storage_command(
@@ -6816,7 +7522,9 @@ fn origin_storage_command(
     key: &str,
     value: &str,
 ) -> String {
-    if origin == "null" { return "{\"error\":\"SecurityError\"}".to_string(); }
+    if origin == "null" {
+        return "{\"error\":\"SecurityError\"}".to_string();
+    }
     let Some(storage) = storage else {
         return "null".to_string();
     };
@@ -6824,13 +7532,21 @@ fn origin_storage_command(
     match command {
         "access" => "true".to_string(),
         "length" => storage.len(origin).to_string(),
-        "key" => serde_json::to_string(&key.parse::<usize>().ok().and_then(|index| storage.key(origin, index)))
-            .unwrap_or_else(|_| "null".to_string()),
-        "snapshot" => serde_json::to_string(&storage.snapshot(origin))
-            .unwrap_or_else(|_| "[]".to_string()),
-        "get" => serde_json::to_string(&storage.get(origin, key))
-            .unwrap_or_else(|_| "null".to_string()),
-        "set" => storage.set(origin, key.to_string(), value.to_string()).to_string(),
+        "key" => serde_json::to_string(
+            &key.parse::<usize>()
+                .ok()
+                .and_then(|index| storage.key(origin, index)),
+        )
+        .unwrap_or_else(|_| "null".to_string()),
+        "snapshot" => {
+            serde_json::to_string(&storage.snapshot(origin)).unwrap_or_else(|_| "[]".to_string())
+        }
+        "get" => {
+            serde_json::to_string(&storage.get(origin, key)).unwrap_or_else(|_| "null".to_string())
+        }
+        "set" => storage
+            .set(origin, key.to_string(), value.to_string())
+            .to_string(),
         "remove" => {
             storage.remove(origin, key);
             "true".to_string()
@@ -6858,13 +7574,7 @@ fn op_local_storage(
     let gs = realm_state(scope, state);
     let gs = gs.borrow();
     let origin = storage_origin(&gs);
-    origin_storage_command(
-        &gs.local_storage,
-        &origin,
-        command,
-        key,
-        value,
-    )
+    origin_storage_command(&gs.local_storage, &origin, command, key, value)
 }
 
 /// `sessionStorage` backend, page-scoped in exactly the same way.
@@ -6880,13 +7590,7 @@ fn op_session_storage(
     let gs = realm_state(scope, state);
     let gs = gs.borrow();
     let origin = storage_origin(&gs);
-    origin_storage_command(
-        &gs.session_storage,
-        &origin,
-        command,
-        key,
-        value,
-    )
+    origin_storage_command(&gs.session_storage, &origin, command, key, value)
 }
 
 #[op2(fast)]
@@ -6919,7 +7623,12 @@ fn op_session_history(scope: &mut v8::PinScope, state: &OpState) -> String {
     let gs = realm_state(scope, state);
     let gs = gs.borrow();
     let history = &gs.session_history;
-    format!("{},{},{}", history.document_start, history.current, history.urls.len())
+    format!(
+        "{},{},{}",
+        history.document_start,
+        history.current,
+        history.urls.len()
+    )
 }
 
 /// Queue a traversal to another document's session history entry. Returns
@@ -6996,7 +7705,8 @@ fn op_post_frame_message(
         return false; // The page's self-post uses its existing local task queue.
     }
     let origin = source.inherited_origin.clone().unwrap_or_else(|| {
-        url::Url::parse(&source.url).map(|url| url.origin().ascii_serialization())
+        url::Url::parse(&source.url)
+            .map(|url| url.origin().ascii_serialization())
             .unwrap_or_else(|_| "null".to_string())
     });
     drop(source);
@@ -7037,15 +7747,25 @@ fn op_post_frame_message(
 /// instead, and V8 reports the frame as the microtask context, so the ops a
 /// timer callback makes still find the frame's own document.
 #[op2]
-async fn op_sleep(state: Rc<RefCell<OpState>>, #[number] millis: u64, frame_id: Option<u32>) -> bool {
+async fn op_sleep(
+    state: Rc<RefCell<OpState>>,
+    #[number] millis: u64,
+    frame_id: Option<u32>,
+) -> bool {
     let sleep = tokio::time::sleep(std::time::Duration::from_millis(millis));
     let frame_id = frame_id.unwrap_or(0);
-    if frame_id == 0 { sleep.await; return true; }
+    if frame_id == 0 {
+        sleep.await;
+        return true;
+    }
     let cancel = {
         let state = state.borrow();
         let registry = state.borrow::<Rc<RefCell<RealmStates>>>().borrow();
         registry.cancel_inactive_frame_timers();
-        registry.frame_timers.get(&frame_id).map(|timers| timers.cancel.clone())
+        registry
+            .frame_timers
+            .get(&frame_id)
+            .map(|timers| timers.cancel.clone())
     };
     let Some(cancel) = cancel else { return false };
     sleep.or_cancel(cancel).await.is_ok()
@@ -7100,7 +7820,9 @@ fn op_frame_document_ready(
         parent_frame_id,
     });
     drop(gs);
-    state.borrow::<Rc<RefCell<RealmStates>>>().borrow_mut()
+    state
+        .borrow::<Rc<RefCell<RealmStates>>>()
+        .borrow_mut()
         .own_frame(frame_id, &parent, NodeId::new(owner_node));
     frame_id
 }
@@ -7150,9 +7872,15 @@ fn op_document_realm_member<'s, 'i>(
 ) -> v8::Local<'s, v8::Value> {
     let member = (|| {
         let context = receiver.get_creation_context(scope)?;
-        let owner = context.get_embedder_data(scope, DOCUMENT_OWNER_SLOT)?.uint32_value(scope)?;
-        if owner == caller_frame_id { return None; }
-        let members = context.get_embedder_data(scope, DOCUMENT_MEMBERS_SLOT)?.to_object(scope)?;
+        let owner = context
+            .get_embedder_data(scope, DOCUMENT_OWNER_SLOT)?
+            .uint32_value(scope)?;
+        if owner == caller_frame_id {
+            return None;
+        }
+        let members = context
+            .get_embedder_data(scope, DOCUMENT_MEMBERS_SLOT)?
+            .to_object(scope)?;
         let key = v8::String::new(scope, name)?;
         let value = members.get(scope, key.into())?;
         value.is_function().then_some(value)
@@ -7163,8 +7891,10 @@ fn op_document_realm_member<'s, 'i>(
 /// Limit live contexts and DOM trees, including initial realms awaiting Page
 /// adoption. Synchronous and fetched frames share the same per-page budget.
 pub fn max_live_frames() -> usize {
-    std::env::var("INBROWSE_MAX_LIVE_FRAMES").ok()
-        .and_then(|value| value.parse().ok()).unwrap_or(64)
+    std::env::var("INBROWSE_MAX_LIVE_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(64)
 }
 
 /// Initial blank and srcdoc documents share their creator's realm setup.
@@ -7184,25 +7914,40 @@ fn op_initial_frame(
         let registry = state.borrow::<Rc<RefCell<RealmStates>>>().clone();
         let page = state.borrow::<SharedState>().clone();
         let parent_state = frame_state(state, parent_frame_id);
-        let frame_url = if srcdoc.is_some() { "about:srcdoc" } else { "about:blank" };
-        let bytes = frame_url.len().saturating_add(srcdoc.as_ref().map_or(0, String::len));
+        let frame_url = if srcdoc.is_some() {
+            "about:srcdoc"
+        } else {
+            "about:blank"
+        };
+        let bytes = frame_url
+            .len()
+            .saturating_add(srcdoc.as_ref().map_or(0, String::len));
         if registry.borrow().live_count() >= max_live_frames()
             || page.borrow().pending_frames.len() >= MAX_PENDING_FRAME_DOCUMENTS
             || page.borrow().pending_frame_bytes.saturating_add(bytes) > MAX_PENDING_FRAME_BYTES
         {
             return 0;
         }
-        let Some(frame_id) = page.borrow().frame_id_counter.checked_add(1) else { return 0 };
+        let Some(frame_id) = page.borrow().frame_id_counter.checked_add(1) else {
+            return 0;
+        };
         page.borrow_mut().frame_id_counter = frame_id;
-        let Some(parent_context) = initialize.get_creation_context(scope) else { return 0 };
+        let Some(parent_context) = initialize.get_creation_context(scope) else {
+            return 0;
+        };
         let main_context = scope.get_current_context();
         let Some(context) = v8::Context::from_snapshot(scope, 1, Default::default())
             .or_else(|| v8::Context::from_snapshot(scope, 0, Default::default()))
-        else { return 0 };
+        else {
+            return 0;
+        };
         // Same borrowed deno_core slots as fetched frame realms. Child contexts
         // must not own or free these pointers.
         unsafe {
-            for index in [deno_core::CONTEXT_STATE_SLOT_INDEX, deno_core::MODULE_MAP_SLOT_INDEX] {
+            for index in [
+                deno_core::CONTEXT_STATE_SLOT_INDEX,
+                deno_core::MODULE_MAP_SLOT_INDEX,
+            ] {
                 let pointer = main_context.get_aligned_pointer_from_embedder_data(index);
                 context.set_aligned_pointer_in_embedder_data(index, pointer);
             }
@@ -7215,44 +7960,74 @@ fn op_initial_frame(
         let opaque;
         {
             let parent = parent_state.borrow();
-            let sandbox = srcdoc.as_ref().and_then(|_| parent.dom.as_ref())
-                .and_then(|dom| dom.with_node(NodeId::new(owner_node), |node|
-                    node.get_attribute("sandbox").map(str::to_owned)).flatten());
-            opaque = parent.sandbox_opaque_origin || sandbox.as_deref().is_some_and(|value|
-                !value.split_ascii_whitespace().any(|token| token.eq_ignore_ascii_case("allow-same-origin")));
+            let sandbox = srcdoc
+                .as_ref()
+                .and_then(|_| parent.dom.as_ref())
+                .and_then(|dom| {
+                    dom.with_node(NodeId::new(owner_node), |node| {
+                        node.get_attribute("sandbox").map(str::to_owned)
+                    })
+                    .flatten()
+                });
+            opaque = parent.sandbox_opaque_origin
+                || sandbox.as_deref().is_some_and(|value| {
+                    !value
+                        .split_ascii_whitespace()
+                        .any(|token| token.eq_ignore_ascii_case("allow-same-origin"))
+                });
             child.sandbox_opaque_origin = opaque;
             child.url = frame_url.to_string();
             child.frame_id = frame_id;
             child.about_base_url = document_base_url(&parent);
-            child.scripting_enabled = parent.scripting_enabled && sandbox.as_deref().is_none_or(|value|
-                value.split_ascii_whitespace().any(|token| token.eq_ignore_ascii_case("allow-scripts")));
+            child.scripting_enabled = parent.scripting_enabled
+                && sandbox.as_deref().is_none_or(|value| {
+                    value
+                        .split_ascii_whitespace()
+                        .any(|token| token.eq_ignore_ascii_case("allow-scripts"))
+                });
             child.dom = Some(if let Some(html) = srcdoc.as_deref() {
                 inbrowse_dom::parse_srcdoc(html, child.scripting_enabled)
             } else {
                 inbrowse_dom::parse_html("<html><head></head><body></body></html>")
             });
-            child.inherited_origin = Some(if opaque { "null".to_string() } else {
+            child.inherited_origin = Some(if opaque {
+                "null".to_string()
+            } else {
                 parent.inherited_origin.clone().unwrap_or_else(|| {
-                url::Url::parse(&parent.url).map(|url| url.origin().ascii_serialization())
-                    .unwrap_or_else(|_| "null".to_string())
+                    url::Url::parse(&parent.url)
+                        .map(|url| url.origin().ascii_serialization())
+                        .unwrap_or_else(|_| "null".to_string())
                 })
             });
             child.inherit_resources(&parent);
         }
         let handle = v8::Global::new(scope, context);
-        registry.borrow_mut().register(handle.clone(), frame_id, Rc::new(RefCell::new(child)));
-        registry.borrow_mut().own_frame(frame_id, &parent_state, NodeId::new(owner_node));
+        registry
+            .borrow_mut()
+            .register(handle.clone(), frame_id, Rc::new(RefCell::new(child)));
+        registry
+            .borrow_mut()
+            .own_frame(frame_id, &parent_state, NodeId::new(owner_node));
         let window = context.global(scope);
         let id = v8::Integer::new_from_unsigned(scope, frame_id);
         let receiver = v8::undefined(scope);
         let opaque_value = v8::Boolean::new(scope, opaque);
-        if initialize.call(scope, receiver.into(), &[window.into(), id.into(), opaque_value.into()]).is_none() {
+        if initialize
+            .call(
+                scope,
+                receiver.into(),
+                &[window.into(), id.into(), opaque_value.into()],
+            )
+            .is_none()
+        {
             registry.borrow_mut().forget(&handle);
             return 0;
         }
         // Initialization needs the creator's token; author code must never
         // retain it when the sandbox requires an opaque origin.
-        if opaque { context.use_default_security_token(); }
+        if opaque {
+            context.use_default_security_token();
+        }
         let mut page = page.borrow_mut();
         page.pending_frame_bytes = page.pending_frame_bytes.saturating_add(bytes);
         page.pending_frames.push(PendingFrame {
@@ -7264,7 +8039,8 @@ fn op_initial_frame(
             viewport_height: 150,
         });
         frame_id
-    })).unwrap_or(0)
+    }))
+    .unwrap_or(0)
 }
 
 /// Whether async host work can be scheduled without aborting the isolate.
@@ -7332,7 +8108,9 @@ enum PostedTaskOwnerStatus {
     Generation(u64),
 }
 
-fn posted_task_owner_status(owner: &std::rc::Weak<RefCell<InbrowseState>>) -> PostedTaskOwnerStatus {
+fn posted_task_owner_status(
+    owner: &std::rc::Weak<RefCell<InbrowseState>>,
+) -> PostedTaskOwnerStatus {
     let Some(owner) = owner.upgrade() else {
         return PostedTaskOwnerStatus::Gone;
     };
@@ -7360,7 +8138,9 @@ fn posted_task_owner(state: &OpState, frame_id: u32) -> Option<SharedState> {
     }
     let registry = state.try_borrow::<Rc<RefCell<RealmStates>>>()?.clone();
     let registry = registry.try_borrow().ok()?;
-    if registry.frame_timers_active(frame_id) != Some(true) { return None; }
+    if registry.frame_timers_active(frame_id) != Some(true) {
+        return None;
+    }
     let owner = registry.by_frame_id(frame_id);
     owner
 }
@@ -7586,7 +8366,12 @@ fn aes_kw(wrap: bool, key: &[u8], data: &[u8]) -> Result<Vec<u8>, deno_error::Js
     macro_rules! run {
         ($kek:ty) => {{
             let kek = <$kek>::try_from(key).map_err(crypto_err)?;
-            if wrap { kek.wrap_vec(data) } else { kek.unwrap_vec(data) }.map_err(crypto_err)?
+            if wrap {
+                kek.wrap_vec(data)
+            } else {
+                kek.unwrap_vec(data)
+            }
+            .map_err(crypto_err)?
         }};
     }
     Ok(match key.len() {
@@ -7659,7 +8444,9 @@ fn parse_jwk(bytes: &[u8]) -> Result<serde_json::Value, deno_error::JsErrorBox> 
 
 #[op2]
 #[serde]
-fn op_subtle_jwk_parse(#[buffer] bytes: &[u8]) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+fn op_subtle_jwk_parse(
+    #[buffer] bytes: &[u8],
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
     parse_jwk(bytes)
 }
 
@@ -7733,10 +8520,18 @@ fn pbkdf2_derive_with(
     }
     let mut dk = vec![0u8; length as usize];
     let completed = match hash {
-        "SHA-1" => pbkdf2_blocks::<hmac::Hmac<sha1::Sha1>>(password, salt, iterations, &mut dk, cancelled),
-        "SHA-256" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha256>>(password, salt, iterations, &mut dk, cancelled),
-        "SHA-384" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha384>>(password, salt, iterations, &mut dk, cancelled),
-        "SHA-512" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha512>>(password, salt, iterations, &mut dk, cancelled),
+        "SHA-1" => {
+            pbkdf2_blocks::<hmac::Hmac<sha1::Sha1>>(password, salt, iterations, &mut dk, cancelled)
+        }
+        "SHA-256" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha256>>(
+            password, salt, iterations, &mut dk, cancelled,
+        ),
+        "SHA-384" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha384>>(
+            password, salt, iterations, &mut dk, cancelled,
+        ),
+        "SHA-512" => pbkdf2_blocks::<hmac::Hmac<sha2::Sha512>>(
+            password, salt, iterations, &mut dk, cancelled,
+        ),
         _ => return Err(crypto_err("unsupported PBKDF2 hash")),
     };
     if !completed {
@@ -7758,7 +8553,10 @@ where
     use std::sync::atomic::Ordering;
     let prf = <M as hmac::digest::KeyInit>::new_from_slice(password)
         .expect("HMAC accepts a key of any length");
-    for (index, block) in output.chunks_mut(<M as hmac::digest::OutputSizeUser>::output_size()).enumerate() {
+    for (index, block) in output
+        .chunks_mut(<M as hmac::digest::OutputSizeUser>::output_size())
+        .enumerate()
+    {
         if cancelled.load(Ordering::Relaxed) {
             return false;
         }
@@ -7791,7 +8589,8 @@ impl Drop for CancelPbkdf2OnDrop {
 }
 
 fn pbkdf2_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
     SLOTS.get_or_init(|| {
         let cores = std::thread::available_parallelism().map_or(1, |count| count.get());
         std::sync::Arc::new(tokio::sync::Semaphore::new((cores / 2).max(1)))
@@ -7814,14 +8613,19 @@ async fn op_subtle_pbkdf2(
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         return pbkdf2_derive_with(&hash, &password, &salt, iterations, length, &cancelled);
     }
-    let slot = pbkdf2_slots().clone().acquire_owned().await
+    let slot = pbkdf2_slots()
+        .clone()
+        .acquire_owned()
+        .await
         .map_err(|error| crypto_err(format!("PBKDF2 unavailable: {error}")))?;
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _cancel_on_drop = CancelPbkdf2OnDrop(cancelled.clone());
     tokio::task::spawn_blocking(move || {
         let _slot = slot;
         pbkdf2_derive_with(&hash, &password, &salt, iterations, length, &cancelled)
-    }).await.map_err(|error| crypto_err(format!("PBKDF2 task failed: {error}")))?
+    })
+    .await
+    .map_err(|error| crypto_err(format!("PBKDF2 task failed: {error}")))?
 }
 
 /// Generous DoS backstop on HKDF output length. HKDF itself rejects output
@@ -8546,31 +9350,31 @@ fn op_waapi_create(state: &OpState, #[string] input: &str) -> bool {
     state
         .animation_timeline
         .register_waapi(inbrowse_render::WaapiAnimation {
-        id: input.id,
-        node,
+            id: input.id,
+            node,
             keyframes: input
                 .keyframes
                 .into_iter()
                 .map(|frame| inbrowse_render::WaapiKeyframe {
-            offset: frame.offset.clamp(0.0, 1.0),
-            opacity: frame.opacity.map(|value| value.clamp(0.0, 1.0)),
-            transform: frame.transform,
+                    offset: frame.offset.clamp(0.0, 1.0),
+                    opacity: frame.opacity.map(|value| value.clamp(0.0, 1.0)),
+                    transform: frame.transform,
                 })
                 .collect(),
-        timing: inbrowse_render::AnimationTiming {
-            duration_ms: input.duration,
-            delay_ms: input.delay,
-            iteration_count: iterations,
-            direction,
-            fill_mode,
-            play_state: inbrowse_render::AnimationPlayState::Running,
-        },
-        easing: input.easing_bezier,
-        linear_easing: input.linear_easing,
-        start_time_ms,
-        hold_time_ms: None,
-        play_state: inbrowse_render::WaapiPlayState::Running,
-    });
+            timing: inbrowse_render::AnimationTiming {
+                duration_ms: input.duration,
+                delay_ms: input.delay,
+                iteration_count: iterations,
+                direction,
+                fill_mode,
+                play_state: inbrowse_render::AnimationPlayState::Running,
+            },
+            easing: input.easing_bezier,
+            linear_easing: input.linear_easing,
+            start_time_ms,
+            hold_time_ms: None,
+            play_state: inbrowse_render::WaapiPlayState::Running,
+        });
     invalidate_waapi_render(&mut state, node);
     true
 }
@@ -8812,9 +9616,12 @@ fn ensure_prepared_render_with_base_url(
 fn document_base_url_for_javascript_task(state: &InbrowseState) -> Option<String> {
     // CSSOM reads in one JS task share base resolution. Refresh next task
     // as native DomTree edits need not increment the JS activity counter.
-    if state.base_url_cache.borrow().as_ref().is_some_and(|cached| {
-        cached.task_generation != state.animation_task_generation
-    }) {
+    if state
+        .base_url_cache
+        .borrow()
+        .as_ref()
+        .is_some_and(|cached| cached.task_generation != state.animation_task_generation)
+    {
         *state.base_url_cache.borrow_mut() = None;
     }
     document_base_url_memoized(state)
@@ -8922,7 +9729,9 @@ pub(crate) fn sample_live_document_animations(state: &mut InbrowseState) {
 pub(crate) fn begin_animation_task(state: &mut InbrowseState) {
     state.animation_task_generation = state.animation_task_generation.wrapping_add(1);
     #[cfg(feature = "render")]
-    { state.style_query_cache = None; }
+    {
+        state.style_query_cache = None;
+    }
 }
 
 #[op2(fast)]
@@ -9268,22 +10077,37 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
     let _page_in_flight = PageImageInFlightGuard(page_in_flight);
 
     let parsed_url = url::Url::parse(&selected_url).ok();
-    let fetch = async { if blocked || parsed_url.is_none() {
-        None
-    } else {
-        let parsed_url = parsed_url.as_ref().unwrap();
-        #[cfg(feature = "stealth")]
-        {
-            if let Some(client) = stealth_client {
-                client
-                    .fetch_resource_with_callbacks(
-                        parsed_url,
-                        resource_request.clone(),
-                        callbacks.as_deref(),
-                    )
-                    .await
-                    .ok()
-            } else {
+    let fetch = async {
+        if blocked || parsed_url.is_none() {
+            None
+        } else {
+            let parsed_url = parsed_url.as_ref().unwrap();
+            #[cfg(feature = "stealth")]
+            {
+                if let Some(client) = stealth_client {
+                    client
+                        .fetch_resource_with_callbacks(
+                            parsed_url,
+                            resource_request.clone(),
+                            callbacks.as_deref(),
+                        )
+                        .await
+                        .ok()
+                } else {
+                    http_client
+                        .as_ref()
+                        .unwrap()
+                        .fetch_resource_with_callbacks(
+                            parsed_url,
+                            resource_request,
+                            callbacks.as_deref(),
+                        )
+                        .await
+                        .ok()
+                }
+            }
+            #[cfg(not(feature = "stealth"))]
+            {
                 http_client
                     .as_ref()
                     .unwrap()
@@ -9296,16 +10120,7 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
                     .ok()
             }
         }
-        #[cfg(not(feature = "stealth"))]
-        {
-            http_client
-                .as_ref()
-                .unwrap()
-                .fetch_resource_with_callbacks(parsed_url, resource_request, callbacks.as_deref())
-                .await
-                .ok()
-        }
-    } };
+    };
     let response = tokio::select! {
         response = fetch => response,
         _ = cancel_rx => None,
@@ -9317,7 +10132,9 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
     });
     let waiters = {
         let mut gs = shared.borrow_mut();
-        if gs.document_generation == document_generation && gs.render_image_in_flight.contains_key(&request_key) {
+        if gs.document_generation == document_generation
+            && gs.render_image_in_flight.contains_key(&request_key)
+        {
             match bytes {
                 Some(bytes) => {
                     if inbrowse_render::image_intrinsic_dimensions(&bytes).is_some() {
@@ -9364,7 +10181,10 @@ pub(crate) fn clamp_scroll_offset(state: &mut InbrowseState, requested: (f32, f3
 }
 
 #[cfg(feature = "render")]
-fn clamp_scroll_offset_for_geometry(state: &mut InbrowseState, requested: (f32, f32)) -> (f32, f32) {
+fn clamp_scroll_offset_for_geometry(
+    state: &mut InbrowseState,
+    requested: (f32, f32),
+) -> (f32, f32) {
     clamp_scroll_offset_for_consumer(state, requested, true)
 }
 
@@ -9522,13 +10342,21 @@ fn op_layout_caret(state: &OpState, x: f64, y: f64, frame_id: u32) -> String {
         let dom = gs.dom.as_ref()?;
         let (node, offset) = prepared.caret_from_point(dom, scroll, x as f32, y as f32)?;
         Some(serde_json::json!([node.raw(), offset]).to_string())
-    })).ok().flatten().unwrap_or_default()
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 #[cfg(feature = "render")]
 #[op2]
 #[string]
-fn op_layout_caret_rect(state: &OpState, #[string] nid: String, offset: u32, frame_id: u32) -> String {
+fn op_layout_caret_rect(
+    state: &OpState,
+    #[string] nid: String,
+    offset: u32,
+    frame_id: u32,
+) -> String {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let node = NodeId::new(nid.parse().ok()?);
         let shared = frame_state(state, frame_id);
@@ -9536,10 +10364,21 @@ fn op_layout_caret_rect(state: &OpState, #[string] nid: String, offset: u32, fra
         sample_live_document_animations(&mut gs);
         ensure_resolved_scroll_for_geometry(&mut gs)?;
         let (_, scroll) = gs.resolved_scroll.as_ref()?;
-        let rect = gs.prepared_render.as_ref()?.caret_rect(gs.dom.as_ref()?, scroll, node, offset as usize)?;
-        Some(serde_json::json!({"x": rect.x, "y": rect.y,
-            "width": rect.width, "height": rect.height}).to_string())
-    })).ok().flatten().unwrap_or_default()
+        let rect = gs.prepared_render.as_ref()?.caret_rect(
+            gs.dom.as_ref()?,
+            scroll,
+            node,
+            offset as usize,
+        )?;
+        Some(
+            serde_json::json!({"x": rect.x, "y": rect.y,
+            "width": rect.width, "height": rect.height})
+            .to_string(),
+        )
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 /// Measure every target in one ResizeObserver rendering opportunity.
@@ -9555,7 +10394,11 @@ fn op_layout_caret_rect(state: &OpState, #[string] nid: String, offset: u32, fra
 #[cfg(feature = "render")]
 #[op2]
 #[string]
-fn op_resize_observer_measurements(state: &OpState, #[string] nids_json: String, frame_id: u32) -> String {
+fn op_resize_observer_measurements(
+    state: &OpState,
+    #[string] nids_json: String,
+    frame_id: u32,
+) -> String {
     let nids = serde_json::from_str::<Vec<u32>>(&nids_json).unwrap_or_default();
     if nids.is_empty() {
         return "[]".to_string();
@@ -9579,8 +10422,8 @@ fn op_resize_observer_measurements(state: &OpState, #[string] nids_json: String,
 
     let style_value = |snapshot: &std::collections::HashMap<&'static str, String>,
                        name: &'static str| {
-            snapshot.get(name).cloned().unwrap_or_default()
-        };
+        snapshot.get(name).cloned().unwrap_or_default()
+    };
     let measurements = nids
         .into_iter()
         .map(|nid| {
@@ -9620,7 +10463,11 @@ fn op_resize_observer_measurements(state: &OpState, #[string] nids_json: String,
 #[cfg(feature = "render")]
 #[op2]
 #[string]
-fn op_intersection_observer_measurements(state: &OpState, #[string] nids_json: String, frame_id: u32) -> String {
+fn op_intersection_observer_measurements(
+    state: &OpState,
+    #[string] nids_json: String,
+    frame_id: u32,
+) -> String {
     let nids = serde_json::from_str::<Vec<u32>>(&nids_json).unwrap_or_default();
     if nids.is_empty() {
         return "[]".to_string();
@@ -9644,8 +10491,8 @@ fn op_intersection_observer_measurements(state: &OpState, #[string] nids_json: S
 
     let style_value = |snapshot: &std::collections::HashMap<&'static str, String>,
                        name: &'static str| {
-            snapshot.get(name).cloned().unwrap_or_default()
-        };
+        snapshot.get(name).cloned().unwrap_or_default()
+    };
     let measurements = nids
         .into_iter()
         .map(|nid| {
@@ -9703,30 +10550,46 @@ fn op_computed_style(
     }) || !gs.pending_style_mutations.is_empty();
     // An animation-only time change can resample the existing frame without
     // duplicating its style graph in the ancestor-cascade cache.
-    if pseudo.is_empty() && needs_style_resolution && gs.animation_timeline.waapi_nodes().is_empty()
+    if pseudo.is_empty()
+        && needs_style_resolution
+        && gs.animation_timeline.waapi_nodes().is_empty()
         && inbrowse_render::dom::NonGeometricStyleCache::supports(&property)
     {
         let mut cached = gs.style_query_cache.take();
-        let stylesheet_generation = gs.dom.as_ref().map_or(0, |dom| dom.external_stylesheet_generation());
+        let stylesheet_generation = gs
+            .dom
+            .as_ref()
+            .map_or(0, |dom| dom.external_stylesheet_generation());
         if !cached.as_ref().is_some_and(|cache| {
             cache.task_generation == gs.animation_task_generation
                 && cache.activity_generation == gs.activity_generation
                 && cache.stylesheet_generation == stylesheet_generation
-                && cache.viewport == gs.viewport && cache.media == gs.render_media
+                && cache.viewport == gs.viewport
+                && cache.media == gs.render_media
         }) {
-            cached = gs.dom.as_ref().and_then(|dom| {
-                inbrowse_render::dom::NonGeometricStyleCache::new(
-                    dom, gs.viewport, gs.render_media, &gs.stylesheet_cache,
-                )
-            }).map(|cascade| StyleQueryCache {
-                task_generation: gs.animation_task_generation,
-                activity_generation: gs.activity_generation,
-                stylesheet_generation, viewport: gs.viewport, media: gs.render_media, cascade,
-            });
+            cached = gs
+                .dom
+                .as_ref()
+                .and_then(|dom| {
+                    inbrowse_render::dom::NonGeometricStyleCache::new(
+                        dom,
+                        gs.viewport,
+                        gs.render_media,
+                        &gs.stylesheet_cache,
+                    )
+                })
+                .map(|cascade| StyleQueryCache {
+                    task_generation: gs.animation_task_generation,
+                    activity_generation: gs.activity_generation,
+                    stylesheet_generation,
+                    viewport: gs.viewport,
+                    media: gs.render_media,
+                    cascade,
+                });
         }
-        let snapshot = cached.as_mut().and_then(|cache| {
-            cache.cascade.resolve(gs.dom.as_ref()?, nid, &property)
-        });
+        let snapshot = cached
+            .as_mut()
+            .and_then(|cache| cache.cascade.resolve(gs.dom.as_ref()?, nid, &property));
         gs.style_query_cache = cached;
         if let Some(snapshot) = snapshot {
             return serde_json::json!([false, snapshot]).to_string();
@@ -9736,7 +10599,10 @@ fn op_computed_style(
     let Some(prepared) = ensure_prepared_render_with_base_url(&mut gs, base_url) else {
         return String::new();
     };
-    if matches!(pseudo.as_str(), ":before" | "::before" | ":after" | "::after") {
+    if matches!(
+        pseudo.as_str(),
+        ":before" | "::before" | ":after" | "::after"
+    ) {
         let Some((content, display)) =
             prepared.computed_pseudo_content(nid, pseudo.ends_with("before"))
         else {
@@ -9772,9 +10638,10 @@ fn op_computed_style(
 fn op_set_hovered(state: &OpState, nid: u32, frame_id: u32) {
     let shared = frame_state(state, frame_id);
     let mut state = shared.borrow_mut();
-    let changed = state.dom.as_ref().is_some_and(|dom| {
-        dom.set_hovered((nid != 0).then(|| NodeId::new(nid)))
-    });
+    let changed = state
+        .dom
+        .as_ref()
+        .is_some_and(|dom| dom.set_hovered((nid != 0).then(|| NodeId::new(nid))));
     if changed {
         state.activity_generation = state.activity_generation.wrapping_add(1);
         state.prepared_render = None;
@@ -9914,7 +10781,13 @@ fn op_element_scroll_metrics(state: &OpState, #[string] nid_str: String, frame_i
 #[cfg(feature = "render")]
 #[op2]
 #[string]
-fn op_element_scroll_to(state: &OpState, #[string] nid_str: String, x: f64, y: f64, frame_id: u32) -> String {
+fn op_element_scroll_to(
+    state: &OpState,
+    #[string] nid_str: String,
+    x: f64,
+    y: f64,
+    frame_id: u32,
+) -> String {
     let shared = frame_state(state, frame_id);
     let nid = NodeId::new(nid_str.parse().unwrap_or(0));
     let mut gs = shared.borrow_mut();

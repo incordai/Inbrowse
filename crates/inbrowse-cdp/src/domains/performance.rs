@@ -59,24 +59,34 @@ pub async fn handle(
                     _ => return Err(format!("Invalid timeDomain: {domain}")),
                 },
             }
-            let session = session_id.as_ref().ok_or("Performance.enable requires a page session")?;
+            let session = session_id
+                .as_ref()
+                .ok_or("Performance.enable requires a page session")?;
             ctx.get_session_page(session_id).ok_or("No page")?;
             ctx.performance_sessions.insert(session.clone());
             Ok(json!({}))
         }
         "disable" => {
-            let session = session_id.as_ref().ok_or("Performance.disable requires a page session")?;
+            let session = session_id
+                .as_ref()
+                .ok_or("Performance.disable requires a page session")?;
             ctx.performance_sessions.remove(session);
             Ok(json!({}))
         }
         "getMetrics" => {
-            let enabled = session_id.as_ref().is_some_and(|session| ctx.performance_sessions.contains(session));
+            let enabled = session_id
+                .as_ref()
+                .is_some_and(|session| ctx.performance_sessions.contains(session));
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             if !enabled {
                 return Ok(json!({"metrics": []}));
             }
             let timestamp = timestamp();
-            let measured = page.js.as_mut().ok_or("No JavaScript runtime")?.page_metrics();
+            let measured = page
+                .js
+                .as_mut()
+                .ok_or("No JavaScript runtime")?
+                .page_metrics();
             Ok(json!({"metrics": [
                 metric("Timestamp", timestamp),
                 metric("Documents", measured.documents as f64),

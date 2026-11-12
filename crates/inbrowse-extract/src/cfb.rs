@@ -42,11 +42,15 @@ fn malformed(why: &str) -> ExtractError {
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 /// A compound file's sectors and the allocation table that links them.
@@ -66,7 +70,8 @@ impl<'a> Container<'a> {
         if bytes.len() < HEADER_LEN {
             return Err(malformed("the header is cut off"));
         }
-        let shift = u16_at(bytes, SECTOR_SHIFT_AT).ok_or_else(|| malformed("the header is cut off"))?;
+        let shift =
+            u16_at(bytes, SECTOR_SHIFT_AT).ok_or_else(|| malformed("the header is cut off"))?;
         // Versions 3 and 4 allow 512 and 4096 byte sectors, nothing else.
         if shift != 9 && shift != 12 {
             return Err(malformed("unsupported sector size"));
@@ -79,13 +84,16 @@ impl<'a> Container<'a> {
             sector_count: (bytes.len() / sector_len).max(1),
         };
         for i in 0..HEADER_DIFAT_ENTRIES {
-            let id = u32_at(bytes, HEADER_DIFAT_AT + i * 4).ok_or_else(|| malformed("the header is cut off"))?;
+            let id = u32_at(bytes, HEADER_DIFAT_AT + i * 4)
+                .ok_or_else(|| malformed("the header is cut off"))?;
             if id <= MAX_REGULAR_SECTOR {
                 container.fat.push(id);
             }
         }
-        let mut difat = u32_at(bytes, FIRST_DIFAT_SECTOR_AT).ok_or_else(|| malformed("the header is cut off"))?;
-        let difat_count = u32_at(bytes, DIFAT_SECTOR_COUNT_AT).ok_or_else(|| malformed("the header is cut off"))?;
+        let mut difat = u32_at(bytes, FIRST_DIFAT_SECTOR_AT)
+            .ok_or_else(|| malformed("the header is cut off"))?;
+        let difat_count = u32_at(bytes, DIFAT_SECTOR_COUNT_AT)
+            .ok_or_else(|| malformed("the header is cut off"))?;
         let mut followed = 0usize;
         while difat <= MAX_REGULAR_SECTOR && followed < difat_count as usize {
             followed += 1;
@@ -95,12 +103,14 @@ impl<'a> Container<'a> {
             let sector = container.sector(difat)?;
             let entries = sector_len / 4 - 1;
             for i in 0..entries {
-                let id = u32_at(sector, i * 4).ok_or_else(|| malformed("a DIFAT sector is cut off"))?;
+                let id =
+                    u32_at(sector, i * 4).ok_or_else(|| malformed("a DIFAT sector is cut off"))?;
                 if id <= MAX_REGULAR_SECTOR {
                     container.fat.push(id);
                 }
             }
-            difat = u32_at(sector, entries * 4).ok_or_else(|| malformed("a DIFAT sector is cut off"))?;
+            difat = u32_at(sector, entries * 4)
+                .ok_or_else(|| malformed("a DIFAT sector is cut off"))?;
         }
         if container.fat.len() > container.sector_count {
             return Err(malformed("more FAT sectors than the file can hold"));
@@ -114,8 +124,12 @@ impl<'a> Container<'a> {
             .checked_add(1)
             .and_then(|n| n.checked_mul(self.sector_len))
             .ok_or_else(|| malformed("a sector number is out of range"))?;
-        let end = start.checked_add(self.sector_len).ok_or_else(|| malformed("a sector number is out of range"))?;
-        self.bytes.get(start..end).ok_or_else(|| malformed("a sector lies past the end of the file"))
+        let end = start
+            .checked_add(self.sector_len)
+            .ok_or_else(|| malformed("a sector number is out of range"))?;
+        self.bytes
+            .get(start..end)
+            .ok_or_else(|| malformed("a sector lies past the end of the file"))
     }
 
     /// The sector after `id` in its chain, from the FAT.
@@ -126,7 +140,8 @@ impl<'a> Container<'a> {
             .get(id as usize / per_sector)
             .ok_or_else(|| malformed("a sector has no FAT entry"))?;
         let sector = self.sector(*table)?;
-        u32_at(sector, (id as usize % per_sector) * 4).ok_or_else(|| malformed("a FAT sector is cut off"))
+        u32_at(sector, (id as usize % per_sector) * 4)
+            .ok_or_else(|| malformed("a FAT sector is cut off"))
     }
 }
 
@@ -136,7 +151,8 @@ impl<'a> Container<'a> {
 /// is [`ExtractError::TooLarge`].
 pub(crate) fn identify(bytes: &[u8], limits: &Limits) -> Result<Application, ExtractError> {
     let container = Container::open(bytes)?;
-    let mut sector = u32_at(bytes, FIRST_DIRECTORY_SECTOR_AT).ok_or_else(|| malformed("the header is cut off"))?;
+    let mut sector = u32_at(bytes, FIRST_DIRECTORY_SECTOR_AT)
+        .ok_or_else(|| malformed("the header is cut off"))?;
     let (mut excel, mut word, mut powerpoint, mut encrypted) = (false, false, false, false);
     let mut entries = 0usize;
     let mut followed = 0usize;
@@ -173,7 +189,9 @@ pub(crate) fn identify(bytes: &[u8], limits: &Limits) -> Result<Application, Ext
         sector = container.next(sector)?;
     }
     if sector != END_OF_CHAIN {
-        return Err(malformed("the directory chain ends in a marker that is not end of chain"));
+        return Err(malformed(
+            "the directory chain ends in a marker that is not end of chain",
+        ));
     }
     // An encrypted OOXML file also carries streams of its own, so it wins.
     Ok(if encrypted {

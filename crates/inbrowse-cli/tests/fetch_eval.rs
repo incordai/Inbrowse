@@ -8,7 +8,15 @@ use std::process::{Command, Output};
 
 fn cli() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_inbrowse"));
-    for name in ["INBROWSE_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+    for name in [
+        "INBROWSE_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
         command.env_remove(name);
     }
     command.env("INBROWSE_STEALTH", "0");
@@ -18,7 +26,12 @@ fn cli() -> Command {
 fn eval(expression: &str) -> Output {
     // `--eval=<source>` so a source starting with `-` is not read as a flag.
     cli()
-        .args(["fetch", "about:blank", "--quiet", &format!("--eval={expression}")])
+        .args([
+            "fetch",
+            "about:blank",
+            "--quiet",
+            &format!("--eval={expression}"),
+        ])
         .output()
         .unwrap()
 }
@@ -38,7 +51,10 @@ fn statements_return_their_completion_value() {
     assert_eq!(printed("1; 2"), "2");
     assert_eq!(printed("var a = 1; a + 1"), "2");
     assert_eq!(printed("const x = 3; x * 2"), "6");
-    assert_eq!(printed("document.title = 'renamed'; document.title"), "renamed");
+    assert_eq!(
+        printed("document.title = 'renamed'; document.title"),
+        "renamed"
+    );
 }
 
 #[test]
@@ -58,14 +74,21 @@ fn integral_numbers_print_as_integers() {
 #[test]
 fn a_returned_promise_is_awaited() {
     assert_eq!(printed("Promise.resolve(41).then((v) => v + 1)"), "42");
-    assert_eq!(printed("new Promise((r) => setTimeout(() => r('late'), 50))"), "late");
+    assert_eq!(
+        printed("new Promise((r) => setTimeout(() => r('late'), 50))"),
+        "late"
+    );
 }
 
 #[test]
 fn a_thrown_error_fails_the_command() {
     let output = eval("throw new Error('boom')");
     assert!(!output.status.success(), "a thrown error must not exit 0");
-    assert!(output.stdout.is_empty(), "nothing on stdout: {}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.stdout.is_empty(),
+        "nothing on stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("boom"), "stderr names the error: {stderr}");
 }
@@ -88,11 +111,23 @@ fn a_syntax_error_fails_the_command() {
 fn a_runaway_script_is_stopped_by_the_timeout() {
     let started = std::time::Instant::now();
     let output = cli()
-        .args(["fetch", "about:blank", "--quiet", "--timeout", "2", "--eval", "while (true) {}"])
+        .args([
+            "fetch",
+            "about:blank",
+            "--quiet",
+            "--timeout",
+            "2",
+            "--eval",
+            "while (true) {}",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(started.elapsed() < std::time::Duration::from_secs(15), "took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "took {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -102,42 +137,78 @@ fn a_runaway_page_script_is_stopped_and_reported_on_stderr() {
         .args([
             "fetch",
             "data:text/html,<script>while(true){}</script><p>ok</p>",
-            "--quiet", "--script-timeout", "1", "--dump", "text",
+            "--quiet",
+            "--script-timeout",
+            "1",
+            "--dump",
+            "text",
         ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(started.elapsed() < std::time::Duration::from_secs(15), "took {:?}", started.elapsed());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "took {:?}",
+        started.elapsed()
+    );
     assert!(String::from_utf8_lossy(&output.stdout).contains("ok"));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Warning: script") && stderr.contains("1000 ms"), "{stderr}");
+    assert!(
+        stderr.contains("Warning: script") && stderr.contains("1000 ms"),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn eval_side_effects_reach_the_dump() {
     let output = cli()
         .args([
-            "fetch", "about:blank", "--quiet", "--dump", "html",
-            "--eval", "document.body.append('SIDE_EFFECT'); 1",
+            "fetch",
+            "about:blank",
+            "--quiet",
+            "--dump",
+            "html",
+            "--eval",
+            "document.body.append('SIDE_EFFECT'); 1",
         ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stdout).contains("SIDE_EFFECT"));
 }
 
 #[test]
 fn scrape_reports_an_eval_error_per_url() {
     let output = cli()
-        .args(["scrape", "about:blank", "--quiet", "--eval", "throw new Error('scrape-boom')"])
+        .args([
+            "scrape",
+            "about:blank",
+            "--quiet",
+            "--eval",
+            "throw new Error('scrape-boom')",
+        ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let result = &report["results"][0];
     assert!(result["eval"].is_null(), "{result}");
     assert!(
-        result["error"].as_str().is_some_and(|e| e.contains("scrape-boom")),
+        result["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("scrape-boom")),
         "the eval error is reported: {result}"
     );
 }
@@ -145,10 +216,20 @@ fn scrape_reports_an_eval_error_per_url() {
 #[test]
 fn scrape_returns_completion_values_and_integers() {
     let output = cli()
-        .args(["scrape", "about:blank", "--quiet", "--eval", "var n = 41; n + 1"])
+        .args([
+            "scrape",
+            "about:blank",
+            "--quiet",
+            "--eval",
+            "var n = 41; n + 1",
+        ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let result = &report["results"][0];
     assert_eq!(result["eval"], serde_json::json!(42), "{result}");

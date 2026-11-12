@@ -35,7 +35,10 @@ impl ProxyPool {
             .into_iter()
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty())
-            .map(|url| ProxyEntry { url, healthy: AtomicBool::new(true) })
+            .map(|url| ProxyEntry {
+                url,
+                healthy: AtomicBool::new(true),
+            })
             .collect();
         ProxyPool {
             proxies,
@@ -116,15 +119,20 @@ mod tests {
     #[test]
     fn round_robins_and_skips_unhealthy() {
         let p = ProxyPool::from_list(
-            ["http://a:1", " ", "http://b:2", "http://c:3"].iter().map(|s| s.to_string()),
+            ["http://a:1", " ", "http://b:2", "http://c:3"]
+                .iter()
+                .map(|s| s.to_string()),
         );
         assert_eq!(p.len(), 3); // blank dropped
-        // round-robin over 3
+                                // round-robin over 3
         let seq: Vec<String> = (0..3).filter_map(|_| p.next()).collect();
         assert_eq!(seq, vec!["http://a:1", "http://b:2", "http://c:3"]);
         // mark one bad → it's skipped
         p.mark_bad("http://b:2");
         let after: Vec<String> = (0..3).filter_map(|_| p.next()).collect();
-        assert!(!after.contains(&"http://b:2".to_string()), "unhealthy skipped: {after:?}");
+        assert!(
+            !after.contains(&"http://b:2".to_string()),
+            "unhealthy skipped: {after:?}"
+        );
     }
 }

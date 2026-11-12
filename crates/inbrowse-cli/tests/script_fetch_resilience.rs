@@ -62,12 +62,21 @@ fn serve(slow_secs: u64) -> String {
 fn fetch(base: &str, timeout: &str) -> (String, String, Duration) {
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_inbrowse"))
-        .args(["fetch", &format!("{base}/page.html"), "--allow-private-network", "--quiet"])
+        .args([
+            "fetch",
+            &format!("{base}/page.html"),
+            "--allow-private-network",
+            "--quiet",
+        ])
         .args(["--timeout", timeout, "--wait", "0", "--eval"])
         .arg("JSON.stringify([window.fast, window.flaky, window.slow])")
         .output()
         .expect("run inbrowse fetch");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     (
         String::from_utf8_lossy(&output.stdout).trim().to_string(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -88,7 +97,10 @@ fn a_dropped_script_connection_is_retried_and_a_dead_script_is_reported() {
         stderr.contains("Warning:") && stderr.contains("/dead.js"),
         "the script that never loaded must be reported: {stderr}"
     );
-    assert!(!stderr.contains("/flaky.js"), "the retried script is not a failure: {stderr}");
+    assert!(
+        !stderr.contains("/flaky.js"),
+        "the retried script is not a failure: {stderr}"
+    );
 }
 
 #[test]
@@ -99,6 +111,12 @@ fn a_script_that_misses_the_page_budget_is_reported_by_name() {
         stderr.contains("Warning:") && stderr.contains("/slow.js"),
         "the script that missed the budget must be reported: {stderr}"
     );
-    assert!(!stderr.contains("/fast.js"), "scripts that arrived are not blamed: {stderr}");
-    assert!(elapsed < Duration::from_secs(15), "the budget bounds the wait: {elapsed:?}");
+    assert!(
+        !stderr.contains("/fast.js"),
+        "scripts that arrived are not blamed: {stderr}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "the budget bounds the wait: {elapsed:?}"
+    );
 }

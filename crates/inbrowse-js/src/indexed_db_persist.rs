@@ -32,10 +32,16 @@ impl StoredDatabase {
     /// Bytes this database charges against `MAX_BYTES`, or `None` when it
     /// breaks a limit `Inner::command` enforces on live writes.
     fn charged_bytes(&self) -> Option<usize> {
-        if self.version == 0 || self.name.len() > MAX_NAME_BYTES || self.schema.len() > MAX_HANDLES {
+        if self.version == 0 || self.name.len() > MAX_NAME_BYTES || self.schema.len() > MAX_HANDLES
+        {
             return None;
         }
-        let stores: HashSet<&str> = self.schema.iter().map(|s| text(s, "name")).collect::<Result<_, _>>().ok()?;
+        let stores: HashSet<&str> = self
+            .schema
+            .iter()
+            .map(|s| text(s, "name"))
+            .collect::<Result<_, _>>()
+            .ok()?;
         let mut bytes = serde_json::to_vec(&self.schema).ok()?.len();
         for (store, records) in &self.records {
             if !stores.contains(store.as_str()) {
@@ -70,7 +76,12 @@ fn origin_databases(inner: &Inner, origin: &str) -> Vec<StoredDatabase> {
 
 impl IndexedDbStorage {
     pub fn is_dirty(&self) -> bool {
-        !self.inner.lock().unwrap_or_else(|e| e.into_inner()).changed.is_empty()
+        !self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changed
+            .is_empty()
     }
 
     /// Hand each changed origin's committed databases to `write`; an empty
@@ -98,15 +109,20 @@ impl IndexedDbStorage {
         let mut names = HashSet::new();
         let mut bytes = 0usize;
         for db in &databases {
-            let Some(charged) = db.charged_bytes() else { return false };
+            let Some(charged) = db.charged_bytes() else {
+                return false;
+            };
             if !names.insert(db.name.as_str()) {
                 return false;
             }
             bytes = bytes.saturating_add(charged);
         }
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if databases.iter().any(|db| inner.databases.contains_key(&(origin.to_string(), db.name.clone())))
-            || inner.databases.len() + databases.len() > MAX_HANDLES
+        if databases.iter().any(|db| {
+            inner
+                .databases
+                .contains_key(&(origin.to_string(), db.name.clone()))
+        }) || inner.databases.len() + databases.len() > MAX_HANDLES
             || inner.bytes.saturating_add(bytes) > MAX_BYTES
         {
             return false;
@@ -115,7 +131,13 @@ impl IndexedDbStorage {
             let schema_bytes = serde_json::to_vec(&db.schema).map_or(0, |encoded| encoded.len());
             inner.databases.insert(
                 (origin.to_string(), db.name),
-                Database { version: db.version, schema: db.schema, records: db.records, schema_bytes, ..Default::default() },
+                Database {
+                    version: db.version,
+                    schema: db.schema,
+                    records: db.records,
+                    schema_bytes,
+                    ..Default::default()
+                },
             );
         }
         inner.bytes += bytes;
@@ -143,7 +165,11 @@ impl IndexedDbStorage {
             })
             .collect();
         Self {
-            inner: Mutex::new(Inner { bytes: inner.bytes, databases, ..Default::default() }),
+            inner: Mutex::new(Inner {
+                bytes: inner.bytes,
+                databases,
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -160,20 +186,30 @@ impl IndexedDbStorage {
             let current = current.inner.lock().unwrap_or_else(|e| e.into_inner());
             let mut origins: Vec<String> = current.changed.iter().cloned().collect();
             origins.sort();
-            origins.into_iter().map(|origin| {
-                let databases = origin_databases(&current, &origin);
-                (origin, databases)
-            }).collect()
+            origins
+                .into_iter()
+                .map(|origin| {
+                    let databases = origin_databases(&current, &origin);
+                    (origin, databases)
+                })
+                .collect()
         };
         let initial: HashMap<String, Vec<StoredDatabase>> = {
             let initial = initial.inner.lock().unwrap_or_else(|e| e.into_inner());
-            changed.iter().map(|(origin, _)| (origin.clone(), origin_databases(&initial, origin))).collect()
+            changed
+                .iter()
+                .map(|(origin, _)| (origin.clone(), origin_databases(&initial, origin)))
+                .collect()
         };
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut accepted = true;
         for (origin, current) in &changed {
             let initial = &initial[origin];
-            let mut names: Vec<&str> = current.iter().chain(initial).map(|db| db.name.as_str()).collect();
+            let mut names: Vec<&str> = current
+                .iter()
+                .chain(initial)
+                .map(|db| db.name.as_str())
+                .collect();
             names.sort_unstable();
             names.dedup();
             for name in names {
@@ -197,7 +233,11 @@ fn merge_database(
     let key = (origin.to_string(), name.to_string());
     let old_bytes = inner.databases.get(&key).map_or(0, |db| {
         db.schema_bytes
-            + db.records.values().flatten().map(|(k, v)| k.len() + v.len() + RECORD_OVERHEAD).sum::<usize>()
+            + db.records
+                .values()
+                .flatten()
+                .map(|(k, v)| k.len() + v.len() + RECORD_OVERHEAD)
+                .sum::<usize>()
     });
     let existing = inner.databases.get(&key).filter(|db| db.version > 0);
     let Some(after) = after else {
@@ -215,20 +255,30 @@ fn merge_database(
         return true;
     };
 
-    let upgraded = before.is_none_or(|before| before.version != after.version || before.schema != after.schema);
+    let upgraded = before
+        .is_none_or(|before| before.version != after.version || before.schema != after.schema);
     let (version, schema, mut records) = match existing {
         Some(db) if !upgraded => (db.version, db.schema.clone(), db.records.clone()),
         Some(db) => (after.version, after.schema.clone(), db.records.clone()),
         None => (after.version, after.schema.clone(), HashMap::new()),
     };
-    let stores: HashSet<&str> = schema.iter().filter_map(|store| store.get("name")?.as_str()).collect();
+    let stores: HashSet<&str> = schema
+        .iter()
+        .filter_map(|store| store.get("name")?.as_str())
+        .collect();
     records.retain(|store, _| stores.contains(store.as_str()));
     let empty = HashMap::new();
-    for store in after.records.keys().chain(before.iter().flat_map(|db| db.records.keys())) {
+    for store in after
+        .records
+        .keys()
+        .chain(before.iter().flat_map(|db| db.records.keys()))
+    {
         if !stores.contains(store.as_str()) {
             continue;
         }
-        let was = before.and_then(|db| db.records.get(store)).unwrap_or(&empty);
+        let was = before
+            .and_then(|db| db.records.get(store))
+            .unwrap_or(&empty);
         let now = after.records.get(store).unwrap_or(&empty);
         let target = records.entry(store.clone()).or_default();
         for (record, value) in now {
@@ -241,10 +291,21 @@ fn merge_database(
         }
     }
 
-    let merged = StoredDatabase { name: name.to_string(), version, schema, records };
-    let Some(new_bytes) = merged.charged_bytes() else { return false };
+    let merged = StoredDatabase {
+        name: name.to_string(),
+        version,
+        schema,
+        records,
+    };
+    let Some(new_bytes) = merged.charged_bytes() else {
+        return false;
+    };
     let is_new = !inner.databases.contains_key(&key);
-    if inner.bytes.saturating_sub(old_bytes).saturating_add(new_bytes) > MAX_BYTES
+    if inner
+        .bytes
+        .saturating_sub(old_bytes)
+        .saturating_add(new_bytes)
+        > MAX_BYTES
         || is_new && inner.databases.len() >= MAX_HANDLES
     {
         return false;
@@ -261,7 +322,10 @@ fn merge_database(
     db.schema = merged.schema;
     db.records = merged.records;
     db.schema_bytes = schema_bytes;
-    inner.bytes = inner.bytes.saturating_sub(old_bytes).saturating_add(new_bytes);
+    inner.bytes = inner
+        .bytes
+        .saturating_sub(old_bytes)
+        .saturating_add(new_bytes);
     inner.changed.insert(origin.to_string());
     true
 }
@@ -279,13 +343,29 @@ mod tests {
 
     /// Create database `name` at version 1 with one `items` store holding `records`.
     fn commit(owner: &IndexedDbOwner, name: &str, records: &[(&str, &str)]) {
-        let id = owner.command(ORIGIN, "begin", json!({"name":name,"mode":"versionchange","stores":["items"]}))
-            .as_u64().unwrap();
+        let id = owner
+            .command(
+                ORIGIN,
+                "begin",
+                json!({"name":name,"mode":"versionchange","stores":["items"]}),
+            )
+            .as_u64()
+            .unwrap();
         assert!(!owner.command(ORIGIN, "ready", json!({"id":id})).is_null());
         for (key, value) in records {
-            owner.command(ORIGIN, "put", json!({"id":id,"store":"items","key":key,"value":value}));
+            owner.command(
+                ORIGIN,
+                "put",
+                json!({"id":id,"store":"items","key":key,"value":value}),
+            );
         }
-        assert!(owner.command(ORIGIN, "commit", json!({"id":id,"schema":[{"name":"items"}],"version":1})).is_null());
+        assert!(owner
+            .command(
+                ORIGIN,
+                "commit",
+                json!({"id":id,"schema":[{"name":"items"}],"version":1})
+            )
+            .is_null());
     }
 
     fn flushed(storage: &IndexedDbStorage) -> Vec<(String, Vec<StoredDatabase>)> {
@@ -306,20 +386,38 @@ mod tests {
         commit(&owner, "app", &[("k", "v")]);
         assert!(storage.is_dirty());
         let mut saved = flushed(&storage);
-        assert!(!storage.is_dirty(), "a successful write marks the origin clean");
+        assert!(
+            !storage.is_dirty(),
+            "a successful write marks the origin clean"
+        );
         assert_eq!(saved.len(), 1);
         let (origin, databases) = saved.remove(0);
         assert_eq!(origin, ORIGIN);
 
         let restored = Arc::new(IndexedDbStorage::default());
         assert!(restored.load(&origin, databases));
-        assert!(!restored.is_dirty(), "restoring a profile must not schedule a rewrite");
+        assert!(
+            !restored.is_dirty(),
+            "restoring a profile must not schedule a rewrite"
+        );
         let reader = IndexedDbOwner::new(restored);
-        assert_eq!(reader.command(ORIGIN, "info", json!({"name":"app"}))["version"], json!(1));
+        assert_eq!(
+            reader.command(ORIGIN, "info", json!({"name":"app"}))["version"],
+            json!(1)
+        );
         let connection = reader.command(ORIGIN, "connect", json!({"name":"app"}));
-        let id = reader.command(ORIGIN, "begin",
-            json!({"name":"app","mode":"readonly","stores":["items"],"connection":connection})).as_u64().unwrap();
-        assert_eq!(reader.command(ORIGIN, "get", json!({"id":id,"store":"items","key":"k"})), json!("v"));
+        let id = reader
+            .command(
+                ORIGIN,
+                "begin",
+                json!({"name":"app","mode":"readonly","stores":["items"],"connection":connection}),
+            )
+            .as_u64()
+            .unwrap();
+        assert_eq!(
+            reader.command(ORIGIN, "get", json!({"id":id,"store":"items","key":"k"})),
+            json!("v")
+        );
     }
 
     #[test]
@@ -328,12 +426,21 @@ mod tests {
         let owner = IndexedDbOwner::new(storage.clone());
         commit(&owner, "app", &[("k", "v")]);
         storage.flush_changed(|_, _| false);
-        assert!(storage.is_dirty(), "a failed write must be retried on the next flush");
+        assert!(
+            storage.is_dirty(),
+            "a failed write must be retried on the next flush"
+        );
         flushed(&storage);
-        assert_eq!(owner.command(ORIGIN, "delete", json!({"name":"app"})), json!(true));
+        assert_eq!(
+            owner.command(ORIGIN, "delete", json!({"name":"app"})),
+            json!(true)
+        );
         let saved = flushed(&storage);
         assert_eq!(saved.len(), 1);
-        assert!(saved[0].1.is_empty(), "the origin's file must be removed, not kept stale");
+        assert!(
+            saved[0].1.is_empty(),
+            "the origin's file must be removed, not kept stale"
+        );
     }
 
     #[test]
@@ -342,46 +449,98 @@ mod tests {
             name: name.into(),
             version: 1,
             schema: vec![json!({"name":"items"})],
-            records: HashMap::from([(store.to_string(), HashMap::from([("k".to_string(), "v".to_string())]))]),
+            records: HashMap::from([(
+                store.to_string(),
+                HashMap::from([("k".to_string(), "v".to_string())]),
+            )]),
         };
         let storage = IndexedDbStorage::default();
-        assert!(!storage.load("null", vec![db("a", "items")]), "opaque origins have no storage");
-        assert!(!storage.load(ORIGIN, vec![db("a", "missing")]), "records outside the schema");
-        assert!(!storage.load(ORIGIN, vec![db("a", "items"), db("a", "items")]), "repeated names");
+        assert!(
+            !storage.load("null", vec![db("a", "items")]),
+            "opaque origins have no storage"
+        );
+        assert!(
+            !storage.load(ORIGIN, vec![db("a", "missing")]),
+            "records outside the schema"
+        );
+        assert!(
+            !storage.load(ORIGIN, vec![db("a", "items"), db("a", "items")]),
+            "repeated names"
+        );
         let mut unversioned = db("a", "items");
         unversioned.version = 0;
-        assert!(!storage.load(ORIGIN, vec![unversioned]), "version 0 is never committed");
+        assert!(
+            !storage.load(ORIGIN, vec![unversioned]),
+            "version 0 is never committed"
+        );
         assert!(storage.load(ORIGIN, vec![db("a", "items")]));
-        assert!(!storage.load(ORIGIN, vec![db("a", "items")]), "a loaded database is not overwritten");
+        assert!(
+            !storage.load(ORIGIN, vec![db("a", "items")]),
+            "a loaded database is not overwritten"
+        );
     }
 
     fn put(owner: &IndexedDbOwner, name: &str, records: &[(&str, Option<&str>)]) {
-        let connection = owner.command(ORIGIN, "connect", json!({"name":name})).as_u64().unwrap();
+        let connection = owner
+            .command(ORIGIN, "connect", json!({"name":name}))
+            .as_u64()
+            .unwrap();
         let id = owner
-            .command(ORIGIN, "begin", json!({"name":name,"mode":"readwrite","stores":["items"],"connection":connection}))
+            .command(
+                ORIGIN,
+                "begin",
+                json!({"name":name,"mode":"readwrite","stores":["items"],"connection":connection}),
+            )
             .as_u64()
             .unwrap();
         assert!(!owner.command(ORIGIN, "ready", json!({"id":id})).is_null());
         for (key, value) in records {
             match value {
-                Some(value) => owner.command(ORIGIN, "put", json!({"id":id,"store":"items","key":key,"value":value})),
+                Some(value) => owner.command(
+                    ORIGIN,
+                    "put",
+                    json!({"id":id,"store":"items","key":key,"value":value}),
+                ),
                 None => owner.command(ORIGIN, "remove", json!({"id":id,"store":"items","key":key})),
             };
         }
-        assert!(owner.command(ORIGIN, "commit", json!({"id":id,"schema":[{"name":"items"}]})).is_null());
-        owner.command(ORIGIN, "close", json!({"name":name,"connection":connection}));
+        assert!(owner
+            .command(
+                ORIGIN,
+                "commit",
+                json!({"id":id,"schema":[{"name":"items"}]})
+            )
+            .is_null());
+        owner.command(
+            ORIGIN,
+            "close",
+            json!({"name":name,"connection":connection}),
+        );
     }
 
     fn records(storage: &IndexedDbStorage, name: &str) -> Option<Vec<(String, String)>> {
         let inner = storage.inner.lock().unwrap();
-        let db = inner.databases.get(&(ORIGIN.to_string(), name.to_string())).filter(|db| db.version > 0)?;
-        let mut all: Vec<_> = db.records.values().flatten().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let db = inner
+            .databases
+            .get(&(ORIGIN.to_string(), name.to_string()))
+            .filter(|db| db.version > 0)?;
+        let mut all: Vec<_> = db
+            .records
+            .values()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         all.sort();
         Some(all)
     }
 
     fn pairs(entries: &[(&str, &str)]) -> Option<Vec<(String, String)>> {
-        Some(entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+        Some(
+            entries
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
     }
 
     #[test]
@@ -391,24 +550,46 @@ mod tests {
         let copy = Arc::new(profile.isolated_snapshot());
         assert_eq!(records(&copy, "app"), pairs(&[("k", "v")]));
         assert!(!copy.is_dirty(), "a snapshot has nothing to flush");
-        put(&IndexedDbOwner::new(copy.clone()), "app", &[("copy", Some("1"))]);
-        put(&IndexedDbOwner::new(profile.clone()), "app", &[("profile", Some("2"))]);
+        put(
+            &IndexedDbOwner::new(copy.clone()),
+            "app",
+            &[("copy", Some("1"))],
+        );
+        put(
+            &IndexedDbOwner::new(profile.clone()),
+            "app",
+            &[("profile", Some("2"))],
+        );
         assert_eq!(records(&copy, "app"), pairs(&[("copy", "1"), ("k", "v")]));
-        assert_eq!(records(&profile, "app"), pairs(&[("k", "v"), ("profile", "2")]));
+        assert_eq!(
+            records(&profile, "app"),
+            pairs(&[("k", "v"), ("profile", "2")])
+        );
     }
 
     #[test]
     fn merging_applies_only_what_a_copy_changed() {
         let profile = Arc::new(IndexedDbStorage::default());
         let seed = IndexedDbOwner::new(profile.clone());
-        commit(&seed, "app", &[("keep", "1"), ("edit", "old"), ("drop", "x")]);
+        commit(
+            &seed,
+            "app",
+            &[("keep", "1"), ("edit", "old"), ("drop", "x")],
+        );
         commit(&seed, "doomed", &[("k", "v")]);
         let initial = profile.isolated_snapshot();
         let a = Arc::new(profile.isolated_snapshot());
         let b = Arc::new(profile.isolated_snapshot());
-        put(&IndexedDbOwner::new(a.clone()), "app", &[("edit", Some("a")), ("drop", None), ("a", Some("A"))]);
+        put(
+            &IndexedDbOwner::new(a.clone()),
+            "app",
+            &[("edit", Some("a")), ("drop", None), ("a", Some("A"))],
+        );
         let owner_a = IndexedDbOwner::new(a.clone());
-        assert_eq!(owner_a.command(ORIGIN, "delete", json!({"name":"doomed"})), json!(true));
+        assert_eq!(
+            owner_a.command(ORIGIN, "delete", json!({"name":"doomed"})),
+            json!(true)
+        );
         commit(&owner_a, "fresh", &[("n", "new")]);
         put(&IndexedDbOwner::new(b.clone()), "app", &[("b", Some("B"))]);
 
@@ -424,7 +605,14 @@ mod tests {
         assert_eq!(records(&destination, "fresh"), pairs(&[("n", "new")]));
         let saved = flushed(&destination);
         assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].1.iter().map(|db| db.name.as_str()).collect::<Vec<_>>(), ["app", "fresh"]);
+        assert_eq!(
+            saved[0]
+                .1
+                .iter()
+                .map(|db| db.name.as_str())
+                .collect::<Vec<_>>(),
+            ["app", "fresh"]
+        );
     }
 
     #[test]

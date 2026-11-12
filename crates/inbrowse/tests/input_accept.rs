@@ -31,7 +31,8 @@ async fn input_accept_reflects_the_content_attribute() {
                 };
             })()
             "#,
-        ).unwrap(),
+        )
+        .unwrap(),
         serde_json::json!({
             "initial": "image/png,image/jpeg",
             "property": "image/webp",

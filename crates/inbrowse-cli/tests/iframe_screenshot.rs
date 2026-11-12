@@ -3,10 +3,8 @@
 use std::process::Command;
 
 fn capture(name: &str, page: &str, width: &str, height: &str) -> image::RgbaImage {
-    let path = std::env::temp_dir().join(format!(
-        "inbrowse-iframe-{name}-{}.png",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("inbrowse-iframe-{name}-{}.png", std::process::id()));
     let output = Command::new(env!("CARGO_BIN_EXE_inbrowse"))
         .args(["fetch", page, "--screenshot"])
         .arg(&path)
@@ -20,7 +18,9 @@ fn capture(name: &str, page: &str, width: &str, height: &str) -> image::RgbaImag
         "capture failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let screenshot = image::open(&path).expect("decode screenshot PNG").to_rgba8();
+    let screenshot = image::open(&path)
+        .expect("decode screenshot PNG")
+        .to_rgba8();
     std::fs::remove_file(path).expect("remove screenshot");
     screenshot
 }
@@ -72,13 +72,25 @@ fn screenshot_insets_iframe_content_by_border_and_padding() {
     let image = capture("insets", url, "100", "80");
     // Border box starts at 10; border 5 and padding 3 put the content box at 18.
     assert_eq!(image.get_pixel(12, 30).0, [0, 0, 255, 255], "border");
-    assert_eq!(image.get_pixel(16, 30).0, [255, 255, 0, 255], "padding shows its own background");
+    assert_eq!(
+        image.get_pixel(16, 30).0,
+        [255, 255, 0, 255],
+        "padding shows its own background"
+    );
     assert_eq!(image.get_pixel(18, 30).0, LIME, "first content column");
     assert_eq!(image.get_pixel(57, 30).0, LIME, "last content column");
-    assert_eq!(image.get_pixel(58, 30).0, [255, 255, 0, 255], "right padding");
+    assert_eq!(
+        image.get_pixel(58, 30).0,
+        [255, 255, 0, 255],
+        "right padding"
+    );
     assert_eq!(image.get_pixel(30, 18).0, LIME, "first content row");
     assert_eq!(image.get_pixel(30, 47).0, LIME, "last content row");
-    assert_eq!(image.get_pixel(30, 48).0, [255, 255, 0, 255], "bottom padding");
+    assert_eq!(
+        image.get_pixel(30, 48).0,
+        [255, 255, 0, 255],
+        "bottom padding"
+    );
 }
 
 #[test]
@@ -93,10 +105,26 @@ fn screenshot_clips_iframe_content_to_the_frame_and_lays_it_out_at_its_size() {
         "</body></html>"
     );
     let image = capture("clip", url, "120", "60");
-    assert_eq!(image.get_pixel(49, 14).0, RED, "100% wide row ends at the frame edge");
-    assert_eq!(image.get_pixel(50, 14).0, WHITE, "row is not wider than the frame");
-    assert_eq!(image.get_pixel(49, 24).0, LIME, "overflowing row is clipped at the edge");
-    assert_eq!(image.get_pixel(50, 24).0, WHITE, "overflowing row does not leave the frame");
+    assert_eq!(
+        image.get_pixel(49, 14).0,
+        RED,
+        "100% wide row ends at the frame edge"
+    );
+    assert_eq!(
+        image.get_pixel(50, 14).0,
+        WHITE,
+        "row is not wider than the frame"
+    );
+    assert_eq!(
+        image.get_pixel(49, 24).0,
+        LIME,
+        "overflowing row is clipped at the edge"
+    );
+    assert_eq!(
+        image.get_pixel(50, 24).0,
+        WHITE,
+        "overflowing row does not leave the frame"
+    );
     assert_eq!(image.get_pixel(30, 41).0, WHITE, "nothing below the frame");
 }
 

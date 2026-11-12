@@ -17,22 +17,35 @@ fn fetch(args: &[&str]) -> Output {
 }
 
 fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 #[test]
 fn html_is_the_matched_element() {
     let html = stdout(&fetch(&["--selector", "#dyn"]));
-    assert!(html.starts_with("<ul id=\"dyn\">") && html.ends_with("</ul>"), "{html}");
+    assert!(
+        html.starts_with("<ul id=\"dyn\">") && html.ends_with("</ul>"),
+        "{html}"
+    );
     assert!(!html.contains("Title"), "{html}");
 }
 
 #[test]
 fn text_markdown_and_links_are_the_matched_subtree() {
-    assert_eq!(stdout(&fetch(&["--selector", "#dyn", "--dump", "text"])), "One one\nTwo");
+    assert_eq!(
+        stdout(&fetch(&["--selector", "#dyn", "--dump", "text"])),
+        "One one\nTwo"
+    );
     let markdown = stdout(&fetch(&["--selector", "#dyn", "--dump", "markdown"]));
-    assert_eq!(markdown, "- One [one](https://example.test/one)\n- Two", "{markdown}");
+    assert_eq!(
+        markdown, "- One [one](https://example.test/one)\n- Two",
+        "{markdown}"
+    );
     assert_eq!(
         stdout(&fetch(&["--selector", "#dyn", "--dump", "links"])),
         "https://example.test/one\tone"
@@ -51,7 +64,10 @@ fn a_link_selector_lists_that_link() {
 fn a_selector_that_never_matches_fails() {
     let output = fetch(&["--selector", "#missing", "--wait-until", "load"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "nothing is printed for a missing match");
+    assert!(
+        output.stdout.is_empty(),
+        "nothing is printed for a missing match"
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("matched nothing"));
 }
 

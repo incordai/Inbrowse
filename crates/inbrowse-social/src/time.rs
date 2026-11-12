@@ -75,9 +75,16 @@ pub(crate) fn parse_rfc3339(s: &str) -> Option<i64> {
         None | Some(b'Z' | b'z') => Some(secs),
         Some(&sign @ (b'+' | b'-')) => {
             let h = rest.get(1..3)?.parse::<i64>().ok()?;
-            let m = rest.get(rest.len().saturating_sub(2)..)?.parse::<i64>().ok()?;
+            let m = rest
+                .get(rest.len().saturating_sub(2)..)?
+                .parse::<i64>()
+                .ok()?;
             let offset = h * 3600 + m * 60;
-            Some(if sign == b'+' { secs - offset } else { secs + offset })
+            Some(if sign == b'+' {
+                secs - offset
+            } else {
+                secs + offset
+            })
         }
         _ => None,
     }
@@ -89,9 +96,16 @@ pub(crate) fn parse_twitter(s: &str) -> Option<i64> {
     let [_, mon, day, hms, offset, year] = parts.as_slice() else {
         return None;
     };
-    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let m = months.iter().position(|x| x == mon)? as u32 + 1;
-    let iso = format!("{year}-{m:02}-{:02}T{hms}{}:{}", day.parse::<u32>().ok()?, &offset[..3], &offset[3..]);
+    let iso = format!(
+        "{year}-{m:02}-{:02}T{hms}{}:{}",
+        day.parse::<u32>().ok()?,
+        &offset[..3],
+        &offset[3..]
+    );
     parse_rfc3339(&iso)
 }
 
@@ -111,10 +125,19 @@ mod tests {
         assert_eq!(to_rfc3339(0), "1970-01-01T00:00:00Z");
         assert_eq!(to_rfc3339(1_791_887_220), "2026-10-13T10:27:00Z");
         assert_eq!(parse_rfc3339("2026-10-13T10:27:00Z"), Some(1_791_887_220));
-        assert_eq!(parse_rfc3339("2026-10-13T10:27:00.573282Z"), Some(1_791_887_220));
-        assert_eq!(parse_rfc3339("2026-10-13T12:27:00+02:00"), Some(1_791_887_220));
+        assert_eq!(
+            parse_rfc3339("2026-10-13T10:27:00.573282Z"),
+            Some(1_791_887_220)
+        );
+        assert_eq!(
+            parse_rfc3339("2026-10-13T12:27:00+02:00"),
+            Some(1_791_887_220)
+        );
         assert_eq!(parse_rfc3339("2026-10-13"), Some(1_791_849_600));
-        assert_eq!(parse_twitter("Tue Oct 13 10:27:00 +0000 2026"), Some(1_791_887_220));
+        assert_eq!(
+            parse_twitter("Tue Oct 13 10:27:00 +0000 2026"),
+            Some(1_791_887_220)
+        );
         assert_eq!(to_date(1_791_887_220), "2026-10-13");
         assert_eq!(parse_rfc3339("not a date"), None);
         for t in [-86_400 * 400, 951_782_400, 1_709_164_800, 4_102_444_800] {

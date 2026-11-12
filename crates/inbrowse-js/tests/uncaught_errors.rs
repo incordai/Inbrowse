@@ -29,20 +29,33 @@ fn exception_events(rt: &mut InbrowseJsRuntime) -> Vec<(String, bool)> {
 #[test]
 fn a_thrown_script_error_is_an_error_console_entry() {
     let mut rt = runtime(true, false);
-    assert!(rt.execute_script("page.js", "throw new Error('boom')").is_err());
+    assert!(rt
+        .execute_script("page.js", "throw new Error('boom')")
+        .is_err());
     let messages = rt.take_pending_console_messages();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].starts_with("[error] Uncaught Error: boom"), "{messages:?}");
-    assert!(messages[0].contains("page.js"), "the entry carries the location: {messages:?}");
+    assert!(
+        messages[0].starts_with("[error] Uncaught Error: boom"),
+        "{messages:?}"
+    );
+    assert!(
+        messages[0].contains("page.js"),
+        "the entry carries the location: {messages:?}"
+    );
 }
 
 #[test]
 fn a_thrown_script_error_reaches_console_and_cdp_once_each() {
     let mut rt = runtime(true, true);
-    assert!(rt.execute_script("page.js", "throw new TypeError('bad')").is_err());
+    assert!(rt
+        .execute_script("page.js", "throw new TypeError('bad')")
+        .is_err());
     let messages = rt.take_pending_console_messages();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].starts_with("[error] Uncaught TypeError: bad"), "{messages:?}");
+    assert!(
+        messages[0].starts_with("[error] Uncaught TypeError: bad"),
+        "{messages:?}"
+    );
     let events = exception_events(&mut rt);
     assert_eq!(events.len(), 1, "{events:?}");
     assert!(events[0].0.contains("TypeError: bad") && !events[0].1);
@@ -51,7 +64,9 @@ fn a_thrown_script_error_reaches_console_and_cdp_once_each() {
 #[test]
 fn nothing_is_buffered_when_console_messages_are_off() {
     let mut rt = runtime(false, true);
-    assert!(rt.execute_script("page.js", "throw new Error('boom')").is_err());
+    assert!(rt
+        .execute_script("page.js", "throw new Error('boom')")
+        .is_err());
     assert!(rt.take_pending_console_messages().is_empty());
     assert_eq!(exception_events(&mut rt).len(), 1);
 }
@@ -70,8 +85,11 @@ fn a_syntax_error_in_a_script_is_reported() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_callback_error_is_reported_once() {
     let mut rt = runtime(true, true);
-    rt.execute_script("page.js", "queueMicrotask(() => { throw new Error('in microtask'); });")
-        .unwrap();
+    rt.execute_script(
+        "page.js",
+        "queueMicrotask(() => { throw new Error('in microtask'); });",
+    )
+    .unwrap();
     rt.run_event_loop_bounded(50).await.unwrap();
     let messages = rt.take_pending_console_messages();
     assert_eq!(messages.len(), 1, "{messages:?}");
@@ -102,7 +120,10 @@ async fn an_unhandled_rejection_is_an_error_console_entry_and_an_exception() {
     rt.run_event_loop_bounded(50).await.unwrap();
     messages.extend(rt.take_pending_console_messages());
     assert_eq!(messages.len(), 2, "{messages:?}");
-    assert!(messages[0].starts_with("[error] Uncaught (in promise) Error: rejected"), "{messages:?}");
+    assert!(
+        messages[0].starts_with("[error] Uncaught (in promise) Error: rejected"),
+        "{messages:?}"
+    );
     assert_eq!(messages[1], "[error] Uncaught (in promise) plain reason");
     let events = exception_events(&mut rt);
     assert_eq!(events.len(), 2, "{events:?}");
@@ -153,7 +174,11 @@ async fn a_module_that_throws_is_reported_once() {
     // unhandled-rejection path and must not also be recorded by the loader.
     let mut rt = runtime(true, true);
     let result = rt
-        .load_inline_module("throw new Error('module boom');", "http://127.0.0.1:8765/page.html", 2_000)
+        .load_inline_module(
+            "throw new Error('module boom');",
+            "http://127.0.0.1:8765/page.html",
+            2_000,
+        )
         .await;
     assert!(result.is_err());
     rt.run_event_loop_bounded(50).await.unwrap();

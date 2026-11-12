@@ -129,7 +129,9 @@ impl std::fmt::Display for ExtractError {
             Self::Unsupported(why) => write!(f, "unsupported document: {why}"),
             Self::Encrypted(why) => write!(f, "encrypted document: {why}"),
             Self::Malformed(why) => write!(f, "could not read document: {why}"),
-            Self::Panicked => f.write_str("could not read document: the parser failed on this input"),
+            Self::Panicked => {
+                f.write_str("could not read document: the parser failed on this input")
+            }
         }
     }
 }
@@ -186,7 +188,12 @@ pub fn extract_with_limits(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    Ok(Document { format, text, sections, warnings })
+    Ok(Document {
+        format,
+        text,
+        sections,
+        warnings,
+    })
 }
 
 /// UTF-8 with any byte-order mark removed; invalid sequences are replaced.

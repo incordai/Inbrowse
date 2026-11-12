@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use inbrowse::{BrowserContext, Page, WaitUntil};
@@ -74,10 +73,18 @@ struct WorkerResponse {
 
 impl WorkerResponse {
     fn success(result: serde_json::Value) -> Self {
-        WorkerResponse { ok: true, result: Some(result), error: None }
+        WorkerResponse {
+            ok: true,
+            result: Some(result),
+            error: None,
+        }
     }
     fn error(msg: String) -> Self {
-        WorkerResponse { ok: false, result: None, error: Some(msg) }
+        WorkerResponse {
+            ok: false,
+            result: None,
+            error: Some(msg),
+        }
     }
 }
 
@@ -142,23 +149,33 @@ async fn main() {
         };
 
         let resp = match cmd {
-            WorkerCommand::Navigate { url, wait_until, settle_ms, settle_timers_ms } => {
+            WorkerCommand::Navigate {
+                url,
+                wait_until,
+                settle_ms,
+                settle_timers_ms,
+            } => {
                 match page.navigate_with_wait(&url, wait_until.into()).await {
                     Ok(()) => {
                         // Navigation clears the event list and records the main
                         // Document response before scripts and child frames.
                         // Its status is the final response after HTTP redirects.
                         // Zero denotes a blocked request, not an HTTP response.
-                        let status = page.network_events.iter()
+                        let status = page
+                            .network_events
+                            .iter()
                             .find(|event| event.resource_type == "Document")
                             .filter(|event| {
                                 event.status != 0
-                                    && (event.url.starts_with("http://") || event.url.starts_with("https://"))
+                                    && (event.url.starts_with("http://")
+                                        || event.url.starts_with("https://"))
                             })
                             .map(|event| event.status);
                         // The page `scrape --eval` reads is the settled one
                         // `fetch --eval` reads, not the page at load.
-                        page.set_settle_timer_horizon(std::time::Duration::from_millis(settle_timers_ms));
+                        page.set_settle_timer_horizon(std::time::Duration::from_millis(
+                            settle_timers_ms,
+                        ));
                         page.settle(settle_ms).await;
                         // Scripts a time limit stopped (Page::take_script_warnings);
                         // the scrape parent copies them into the URL's record.
@@ -168,7 +185,7 @@ async fn main() {
                             "status": status,
                             "warnings": page.take_script_warnings(),
                         }))
-                    },
+                    }
                     Err(e) => WorkerResponse::error(e.to_string()),
                 }
             }
@@ -183,27 +200,29 @@ async fn main() {
                     Err(error) => WorkerResponse::error(error.to_string()),
                 }
             }
-            WorkerCommand::Title => {
-                WorkerResponse::success(serde_json::json!(page.title))
-            }
+            WorkerCommand::Title => WorkerResponse::success(serde_json::json!(page.title)),
             WorkerCommand::DumpHtml => {
-                let html = page.with_dom(|dom| {
-                    if let Ok(Some(html_node)) = dom.query_selector("html") {
-                        dom.outer_html(html_node)
-                    } else {
-                        dom.inner_html(dom.document())
-                    }
-                }).unwrap_or_default();
+                let html = page
+                    .with_dom(|dom| {
+                        if let Ok(Some(html_node)) = dom.query_selector("html") {
+                            dom.outer_html(html_node)
+                        } else {
+                            dom.inner_html(dom.document())
+                        }
+                    })
+                    .unwrap_or_default();
                 WorkerResponse::success(serde_json::json!(html))
             }
             WorkerCommand::DumpText => {
-                let text = page.with_dom(|dom| {
-                    if let Ok(Some(body)) = dom.query_selector("body") {
-                        dom.text_content(body)
-                    } else {
-                        String::new()
-                    }
-                }).unwrap_or_default();
+                let text = page
+                    .with_dom(|dom| {
+                        if let Ok(Some(body)) = dom.query_selector("body") {
+                            dom.text_content(body)
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .unwrap_or_default();
                 WorkerResponse::success(serde_json::json!(text))
             }
             WorkerCommand::Shutdown => {

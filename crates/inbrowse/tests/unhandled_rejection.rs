@@ -54,7 +54,8 @@ async fn rejected_background_promise_does_not_stop_the_page_event_loop() {
         serde_json::json!(true),
     );
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-ready')").unwrap(),
+        page.evaluate("document.body.getAttribute('data-ready')")
+            .unwrap(),
         serde_json::json!("true"),
     );
 }

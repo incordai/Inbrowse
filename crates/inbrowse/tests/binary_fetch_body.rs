@@ -111,18 +111,22 @@ async fn assert_binary_fetch_body(stealth: bool) {
                 });
         })()
         "#,
-    ).unwrap();
+    )
+    .unwrap();
 
     for _ in 0..20 {
         page.settle(100).await;
-        let status = page.evaluate("document.body.getAttribute('data-binary-fetch')").unwrap();
+        let status = page
+            .evaluate("document.body.getAttribute('data-binary-fetch')")
+            .unwrap();
         if status != serde_json::json!("pending") {
             break;
         }
     }
 
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-binary-fetch')").unwrap(),
+        page.evaluate("document.body.getAttribute('data-binary-fetch')")
+            .unwrap(),
         serde_json::json!("done")
     );
     assert_eq!(

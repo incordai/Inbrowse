@@ -39,7 +39,12 @@ fn map(value: &Value, key: &str) -> Vec<(String, String)> {
         .as_object()
         .unwrap_or_else(|| panic!("{key} is not an object: {value}"))
         .iter()
-        .map(|(key, value)| (key.clone(), value.as_str().expect("string value").to_string()))
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                value.as_str().expect("string value").to_string(),
+            )
+        })
         .collect()
 }
 
@@ -55,15 +60,26 @@ fn the_page_fields() {
     assert_eq!(page["lang"], "en-GB");
     assert_eq!(page["publishedTime"], "2024-01-15T10:00:00Z");
     assert_eq!(page["content"], fetch(&url, &["--dump", "markdown"]));
-    assert!(page["content"].as_str().unwrap().starts_with("# Post"), "{}", page["content"]);
+    assert!(
+        page["content"].as_str().unwrap().starts_with("# Post"),
+        "{}",
+        page["content"]
+    );
     let whole = dump_json(&url, &["--boilerplate", "keep"]);
-    assert!(whole["content"].as_str().unwrap().starts_with("[Home]("), "{}", whole["content"]);
+    assert!(
+        whole["content"].as_str().unwrap().starts_with("[Home]("),
+        "{}",
+        whole["content"]
+    );
 }
 
 #[test]
 fn links_and_images_are_absolute_and_keyed_by_url() {
     let server = post_server();
-    let page = dump_json(&server.url("/articles/post.html"), &["--boilerplate", "keep"]);
+    let page = dump_json(
+        &server.url("/articles/post.html"),
+        &["--boilerplate", "keep"],
+    );
     let mut links = map(&page, "links");
     links.sort();
     let mut expected = vec![
@@ -79,7 +95,10 @@ fn links_and_images_are_absolute_and_keyed_by_url() {
     .map(|(url, text)| (url, text.to_string()))
     .collect::<Vec<_>>();
     expected.sort();
-    assert_eq!(links, expected, "javascript: links are left out, a repeated URL appears once");
+    assert_eq!(
+        links, expected,
+        "javascript: links are left out, a repeated URL appears once"
+    );
 
     let mut images = map(&page, "images");
     images.sort();
@@ -98,19 +117,38 @@ fn links_and_images_are_absolute_and_keyed_by_url() {
 #[test]
 fn links_keep_document_order() {
     let server = post_server();
-    let output = fetch(&server.url("/articles/post.html"), &["--dump", "json", "--boilerplate", "keep"]);
-    let positions: Vec<usize> = ["/home", "/articles/more", "https://other.test/x", "/icon", "#top", "/privacy"]
-        .iter()
-        .map(|link| output.find(&format!("{link}\"")).unwrap_or_else(|| panic!("{link} missing: {output}")))
-        .collect();
-    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{positions:?}\n{output}");
+    let output = fetch(
+        &server.url("/articles/post.html"),
+        &["--dump", "json", "--boilerplate", "keep"],
+    );
+    let positions: Vec<usize> = [
+        "/home",
+        "/articles/more",
+        "https://other.test/x",
+        "/icon",
+        "#top",
+        "/privacy",
+    ]
+    .iter()
+    .map(|link| {
+        output
+            .find(&format!("{link}\""))
+            .unwrap_or_else(|| panic!("{link} missing: {output}"))
+    })
+    .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "{positions:?}\n{output}"
+    );
 }
 
 #[test]
 fn a_base_element_sets_the_base_of_links_and_images() {
     let server = Server::start(vec![(
         "/page",
-        Response::html(r#"<base href="http://base.test/dir/"><a href="x">x</a><img src="y.png" alt="y">"#),
+        Response::html(
+            r#"<base href="http://base.test/dir/"><a href="x">x</a><img src="y.png" alt="y">"#,
+        ),
     )]);
     let page = dump_json(&server.url("/page"), &[]);
     assert_eq!(page["links"], json!({ "http://base.test/dir/x": "x" }));
@@ -122,11 +160,23 @@ fn a_selector_scopes_content_links_and_images() {
     let server = post_server();
     let url = server.url("/articles/post.html");
     let page = dump_json(&url, &["--selector", "article"]);
-    assert_eq!(page["content"], fetch(&url, &["--dump", "markdown", "--selector", "article"]));
-    let links: Vec<String> = map(&page, "links").into_iter().map(|(url, _)| url).collect();
-    assert!(!links.contains(&server.url("/home")) && !links.contains(&server.url("/privacy")), "{links:?}");
+    assert_eq!(
+        page["content"],
+        fetch(&url, &["--dump", "markdown", "--selector", "article"])
+    );
+    let links: Vec<String> = map(&page, "links")
+        .into_iter()
+        .map(|(url, _)| url)
+        .collect();
+    assert!(
+        !links.contains(&server.url("/home")) && !links.contains(&server.url("/privacy")),
+        "{links:?}"
+    );
     assert!(links.contains(&server.url("/articles/more")), "{links:?}");
-    assert_eq!(page["title"], "Post Title", "page-level fields do not narrow");
+    assert_eq!(
+        page["title"], "Post Title",
+        "page-level fields do not narrow"
+    );
     assert_eq!(page["lang"], "en-GB");
 }
 
@@ -135,7 +185,14 @@ fn a_selector_that_matches_nothing_fails() {
     let server = post_server();
     let output = fetch_output(
         &server.url("/articles/post.html"),
-        &["--dump", "json", "--selector", "#missing", "--wait-until", "load"],
+        &[
+            "--dump",
+            "json",
+            "--selector",
+            "#missing",
+            "--wait-until",
+            "load",
+        ],
     );
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -146,16 +203,30 @@ fn a_selector_that_matches_nothing_fails() {
 fn boilerplate_is_dropped_by_default_and_kept_on_request() {
     let server = post_server();
     let url = server.url("/articles/post.html");
-    for page in [dump_json(&url, &[]), dump_json(&url, &["--boilerplate", "drop"])] {
+    for page in [
+        dump_json(&url, &[]),
+        dump_json(&url, &["--boilerplate", "drop"]),
+    ] {
         let content = page["content"].as_str().unwrap();
-        assert!(!content.contains("Home") && !content.contains("Privacy"), "{content}");
-        let links: Vec<String> = map(&page, "links").into_iter().map(|(url, _)| url).collect();
-        assert!(!links.contains(&server.url("/home")) && !links.contains(&server.url("/privacy")), "{links:?}");
+        assert!(
+            !content.contains("Home") && !content.contains("Privacy"),
+            "{content}"
+        );
+        let links: Vec<String> = map(&page, "links")
+            .into_iter()
+            .map(|(url, _)| url)
+            .collect();
+        assert!(
+            !links.contains(&server.url("/home")) && !links.contains(&server.url("/privacy")),
+            "{links:?}"
+        );
         assert!(links.contains(&server.url("/articles/more")), "{links:?}");
     }
     let whole = dump_json(&url, &["--boilerplate", "keep"]);
     assert!(whole["content"].as_str().unwrap().contains("Privacy"));
-    assert!(map(&whole, "links").iter().any(|(link, _)| *link == server.url("/privacy")));
+    assert!(map(&whole, "links")
+        .iter()
+        .any(|(link, _)| *link == server.url("/privacy")));
 }
 
 #[test]
@@ -182,7 +253,10 @@ fn url_and_status_are_those_of_the_final_response() {
     let server = Server::start(vec![
         ("/old", Response::redirect("/new")),
         ("/new", Response::html("<title>New</title><p>here</p>")),
-        ("/gone", Response::html("<title>Gone</title><p>missing</p>").status(404)),
+        (
+            "/gone",
+            Response::html("<title>Gone</title><p>missing</p>").status(404),
+        ),
     ]);
     let redirected = dump_json(&server.url("/old"), &[]);
     assert_eq!(redirected["url"], server.url("/new"));
@@ -208,13 +282,24 @@ fn the_description_and_the_publication_time_have_fallbacks() {
                 r#"<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite"},{"@type":"Article","datePublished":"2022-02-03T04:05:06+00:00"}]}</script><p>x</p>"#,
             ),
         ),
-        ("/time", Response::html(r#"<time itemprop="datePublished" datetime="2021-12-31">New Year's Eve</time>"#)),
+        (
+            "/time",
+            Response::html(
+                r#"<time itemprop="datePublished" datetime="2021-12-31">New Year's Eve</time>"#,
+            ),
+        ),
     ]);
     let og = dump_json(&server.url("/og"), &[]);
     assert_eq!(og["description"], "From Open Graph");
     assert_eq!(og["publishedTime"], "2023-05-06");
-    assert_eq!(dump_json(&server.url("/ld"), &[])["publishedTime"], "2022-02-03T04:05:06+00:00");
-    assert_eq!(dump_json(&server.url("/time"), &[])["publishedTime"], "2021-12-31");
+    assert_eq!(
+        dump_json(&server.url("/ld"), &[])["publishedTime"],
+        "2022-02-03T04:05:06+00:00"
+    );
+    assert_eq!(
+        dump_json(&server.url("/time"), &[])["publishedTime"],
+        "2021-12-31"
+    );
 }
 
 #[test]
@@ -224,13 +309,22 @@ fn the_sample_article_matches_its_markdown() {
     let url = server.url("/docs/sample.html");
     let page = dump_json(&url, &[]);
     assert_eq!(page["title"], "Test Article: Web Crawling Guide");
-    assert_eq!(page["description"], "A comprehensive guide to web crawling techniques");
+    assert_eq!(
+        page["description"],
+        "A comprehensive guide to web crawling techniques"
+    );
     assert_eq!(page["publishedTime"], "2024-01-15T10:00:00Z");
     assert_eq!(page["lang"], "en");
     assert_eq!(page["content"], fetch(&url, &["--dump", "markdown"]));
     assert_eq!(
-        map(&page, "images").iter().find(|(url, _)| url.ends_with("spider.png")),
-        Some(&("https://example.com/spider.png".to_string(), "A spider crawling the web".to_string()))
+        map(&page, "images")
+            .iter()
+            .find(|(url, _)| url.ends_with("spider.png")),
+        Some(&(
+            "https://example.com/spider.png".to_string(),
+            "A spider crawling the web".to_string()
+        ))
     );
-    assert!(map(&page, "links").contains(&(server.url("/guide/advanced"), "advanced guide".to_string())));
+    assert!(map(&page, "links")
+        .contains(&(server.url("/guide/advanced"), "advanced guide".to_string())));
 }

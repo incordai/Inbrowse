@@ -34,11 +34,7 @@ const ZONE_ID_CAPACITY: usize = 128;
 // upgrade that moves ICU fails here at link time, not silently.
 unsafe extern "C" {
     fn ucal_setDefaultTimeZone_77(zone_id: *const u16, status: *mut UErrorCode);
-    fn ucal_getDefaultTimeZone_77(
-        result: *mut u16,
-        capacity: i32,
-        status: *mut UErrorCode,
-    ) -> i32;
+    fn ucal_getDefaultTimeZone_77(result: *mut u16, capacity: i32, status: *mut UErrorCode) -> i32;
     fn ucal_open_77(
         zone_id: *const u16,
         len: i32,
@@ -68,7 +64,13 @@ impl Calendar {
         // SAFETY: `units` is valid for `len` code units, a null locale selects
         // the default one, and ICU copies the id.
         let raw = unsafe {
-            ucal_open_77(units.as_ptr(), len, std::ptr::null(), UCAL_GREGORIAN, &mut status)
+            ucal_open_77(
+                units.as_ptr(),
+                len,
+                std::ptr::null(),
+                UCAL_GREGORIAN,
+                &mut status,
+            )
         };
         if status > 0 || raw.is_null() {
             return None;
@@ -82,9 +84,16 @@ impl Calendar {
         // SAFETY: `self.0` is a live calendar and `buffer` holds the capacity
         // passed.
         let len = unsafe {
-            ucal_getTimeZoneID_77(self.0, buffer.as_mut_ptr(), ZONE_ID_CAPACITY as i32, &mut status)
+            ucal_getTimeZoneID_77(
+                self.0,
+                buffer.as_mut_ptr(),
+                ZONE_ID_CAPACITY as i32,
+                &mut status,
+            )
         };
-        let len = usize::try_from(len).ok().filter(|len| status <= 0 && *len <= ZONE_ID_CAPACITY)?;
+        let len = usize::try_from(len)
+            .ok()
+            .filter(|len| status <= 0 && *len <= ZONE_ID_CAPACITY)?;
         Some(String::from_utf16_lossy(&buffer[..len]))
     }
 
@@ -144,7 +153,10 @@ pub fn process_default() -> &'static Arc<str> {
         let len = unsafe {
             ucal_getDefaultTimeZone_77(buffer.as_mut_ptr(), ZONE_ID_CAPACITY as i32, &mut status)
         };
-        match usize::try_from(len).ok().filter(|len| status <= 0 && *len <= ZONE_ID_CAPACITY) {
+        match usize::try_from(len)
+            .ok()
+            .filter(|len| status <= 0 && *len <= ZONE_ID_CAPACITY)
+        {
             Some(len) => Arc::from(String::from_utf16_lossy(&buffer[..len])),
             None => {
                 tracing::warn!("could not read the default timezone (ICU status {status})");
@@ -183,13 +195,19 @@ struct Gate {
 fn gate() -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| Gate {
-        state: Mutex::new(GateState { zone: process_default().clone(), holders: 0, waiting: 0 }),
+        state: Mutex::new(GateState {
+            zone: process_default().clone(),
+            holders: 0,
+            waiting: 0,
+        }),
         changed: Condvar::new(),
     })
 }
 
 fn locked(state: &Mutex<GateState>) -> MutexGuard<'_, GateState> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 thread_local! {
@@ -221,7 +239,10 @@ impl ZonePermit {
             if zone != *wanted {
                 tracing::error!("nested isolate entry wants zone {wanted} while {zone} is held");
             }
-            return Self { zone, _thread_bound: PhantomData };
+            return Self {
+                zone,
+                _thread_bound: PhantomData,
+            };
         }
 
         let gate = gate();
@@ -236,7 +257,10 @@ impl ZonePermit {
                 state.waiting += 1;
                 queued = true;
             }
-            state = gate.changed.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = gate
+                .changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         if queued {
             state.waiting -= 1;
@@ -253,7 +277,10 @@ impl ZonePermit {
         drop(state);
 
         HELD.with_borrow_mut(|held| *held = Some((wanted.clone(), 1)));
-        Self { zone: wanted.clone(), _thread_bound: PhantomData }
+        Self {
+            zone: wanted.clone(),
+            _thread_bound: PhantomData,
+        }
     }
 
     pub(crate) fn zone(&self) -> &Arc<str> {
@@ -331,8 +358,7 @@ impl IsolateZone {
         if applied.as_ref() == Some(permit.zone()) {
             return;
         }
-        isolate
-            .date_time_configuration_change_notification(deno_core::v8::TimeZoneDetection::Skip);
+        isolate.date_time_configuration_change_notification(deno_core::v8::TimeZoneDetection::Skip);
         *applied = Some(permit.zone().clone());
     }
 }

@@ -51,7 +51,10 @@ impl Page {
     /// Takes `&self` via interior mutability so element handles that borrow the
     /// page immutably can drive evaluation without any `unsafe` aliasing.
     pub fn evaluate(&self, expression: &str) -> Result<Value, Error> {
-        self.inner.borrow_mut().evaluate(expression).map_err(Error::JsEval)
+        self.inner
+            .borrow_mut()
+            .evaluate(expression)
+            .map_err(Error::JsEval)
     }
 
     /// Evaluate JS the way the DevTools console does and await a returned
@@ -59,7 +62,11 @@ impl Page {
     /// syntax error are [`Error::JsEval`]; running out of time is
     /// [`Error::Timeout`]. Same semantics as `inbrowse fetch --eval` and the
     /// MCP `browser_evaluate` tool (inbrowse `Page::evaluate_checked`).
-    pub async fn evaluate_awaited(&mut self, expression: &str, timeout: Duration) -> Result<Value, Error> {
+    pub async fn evaluate_awaited(
+        &mut self,
+        expression: &str,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
         self.inner
             .get_mut()
             .evaluate_checked(expression, timeout)
@@ -83,7 +90,8 @@ impl Page {
 
     /// Get page HTML content.
     pub fn content(&self) -> Result<String, Error> {
-        let val = self.evaluate("document.documentElement ? document.documentElement.outerHTML : ''")?;
+        let val =
+            self.evaluate("document.documentElement ? document.documentElement.outerHTML : ''")?;
         Ok(val.as_str().unwrap_or_default().to_string())
     }
 
@@ -96,7 +104,10 @@ impl Page {
             escaped
         );
         let val = self.evaluate(&js)?;
-        Ok(nid_from_value(&val).map(|nid| Element { node_id: nid, page: self }))
+        Ok(nid_from_value(&val).map(|nid| Element {
+            node_id: nid,
+            page: self,
+        }))
     }
 
     /// Wait for CSS selector to appear (polls every 100ms).
@@ -114,7 +125,10 @@ impl Page {
             );
             let val = self.evaluate(&js)?;
             if let Some(nid) = nid_from_value(&val) {
-                return Ok(Element { node_id: nid, page: self });
+                return Ok(Element {
+                    node_id: nid,
+                    page: self,
+                });
             }
             if start.elapsed() > timeout {
                 return Err(Error::Timeout(format!(

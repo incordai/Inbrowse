@@ -5,7 +5,9 @@ use serde_json::Value;
 use url::Url;
 
 use crate::http::{self, i, s, Req};
-use crate::{time, Comment, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort};
+use crate::{
+    time, Comment, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort,
+};
 
 const SITE: &str = "Hacker News";
 
@@ -42,7 +44,11 @@ fn story(hit: &Value) -> Option<Item> {
     let id = s(hit, "objectID")?;
     let secs = i(hit, "created_at_i");
     let link = s(hit, "url");
-    let mut text = hit.get("story_text").and_then(Value::as_str).map(strip_html).unwrap_or_default();
+    let mut text = hit
+        .get("story_text")
+        .and_then(Value::as_str)
+        .map(strip_html)
+        .unwrap_or_default();
     if let Some(link) = &link {
         if text.is_empty() {
             text = link.clone();
@@ -57,7 +63,11 @@ fn story(hit: &Value) -> Option<Item> {
         author: s(hit, "author"),
         community: None,
         published_at: secs.map(time::to_rfc3339),
-        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+        date_confidence: if secs.is_some() {
+            DateConfidence::Exact
+        } else {
+            DateConfidence::Unknown
+        },
         engagement: Engagement {
             score: i(hit, "points"),
             comments: i(hit, "num_comments"),
@@ -69,18 +79,31 @@ fn story(hit: &Value) -> Option<Item> {
     })
 }
 
-pub(crate) async fn search(session: &Session, req: &SearchRequest, from: i64, to: i64) -> Result<Vec<Item>, SocialError> {
-    let endpoint = if req.sort == Sort::Recent { "search_by_date" } else { "search" };
+pub(crate) async fn search(
+    session: &Session,
+    req: &SearchRequest,
+    from: i64,
+    to: i64,
+) -> Result<Vec<Item>, SocialError> {
+    let endpoint = if req.sort == Sort::Recent {
+        "search_by_date"
+    } else {
+        "search"
+    };
     let mut url = http::url(&format!("https://hn.algolia.com/api/v1/{endpoint}"))?;
     // Algolia ANDs every word; optionalWords lets longer queries still match.
     let words: Vec<&str> = req.query.split_whitespace().collect();
     url.query_pairs_mut()
         .append_pair("query", &req.query)
         .append_pair("tags", "story")
-        .append_pair("numericFilters", &format!("created_at_i>{from},created_at_i<{to}"))
+        .append_pair(
+            "numericFilters",
+            &format!("created_at_i>{from},created_at_i<{to}"),
+        )
         .append_pair("hitsPerPage", &(req.limit * 2).min(200).to_string());
     if words.len() > 2 {
-        url.query_pairs_mut().append_pair("optionalWords", &words.join(" "));
+        url.query_pairs_mut()
+            .append_pair("optionalWords", &words.join(" "));
     }
     let body = http::json(session, &url, Req::default(), SITE).await?;
     Ok(body
@@ -95,17 +118,31 @@ fn item_id(url: &Url) -> Result<String, SocialError> {
         .find(|(k, _)| k == "id")
         .map(|(_, v)| v.into_owned())
         .filter(|v| v.chars().all(|c| c.is_ascii_digit()) && !v.is_empty())
-        .ok_or_else(|| SocialError::Invalid("expected https://news.ycombinator.com/item?id=<number>".into()))
+        .ok_or_else(|| {
+            SocialError::Invalid("expected https://news.ycombinator.com/item?id=<number>".into())
+        })
 }
 
-pub(crate) async fn thread(session: &Session, url: &Url, comments: usize) -> Result<Item, SocialError> {
+pub(crate) async fn thread(
+    session: &Session,
+    url: &Url,
+    comments: usize,
+) -> Result<Item, SocialError> {
     let id = item_id(url)?;
-    let tree = http::json(session, &http::url(&format!("https://hn.algolia.com/api/v1/items/{id}"))?, Req::default(), SITE).await?;
+    let tree = http::json(
+        session,
+        &http::url(&format!("https://hn.algolia.com/api/v1/items/{id}"))?,
+        Req::default(),
+        SITE,
+    )
+    .await?;
     // Algolia's children are not in HN's display order; Firebase's kids are.
     let order: Vec<i64> = if comments > 0 {
         let fb = http::json(
             session,
-            &http::url(&format!("https://hacker-news.firebaseio.com/v0/item/{id}.json"))?,
+            &http::url(&format!(
+                "https://hacker-news.firebaseio.com/v0/item/{id}.json"
+            ))?,
             Req::default(),
             SITE,
         )
@@ -117,14 +154,24 @@ pub(crate) async fn thread(session: &Session, url: &Url, comments: usize) -> Res
     } else {
         Vec::new()
     };
-    let children = tree.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
+    let children = tree
+        .get("children")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut top = Vec::new();
     for kid in order {
         if top.len() >= comments {
             break;
         }
-        let Some(c) = children.iter().find(|c| i(c, "id") == Some(kid)) else { continue };
-        let text = c.get("text").and_then(Value::as_str).map(strip_html).unwrap_or_default();
+        let Some(c) = children.iter().find(|c| i(c, "id") == Some(kid)) else {
+            continue;
+        };
+        let text = c
+            .get("text")
+            .and_then(Value::as_str)
+            .map(strip_html)
+            .unwrap_or_default();
         if text.is_empty() {
             continue; // deleted or dead
         }
@@ -137,7 +184,11 @@ pub(crate) async fn thread(session: &Session, url: &Url, comments: usize) -> Res
     }
     let secs = i(&tree, "created_at_i");
     let link = s(&tree, "url");
-    let mut text = tree.get("text").and_then(Value::as_str).map(strip_html).unwrap_or_default();
+    let mut text = tree
+        .get("text")
+        .and_then(Value::as_str)
+        .map(strip_html)
+        .unwrap_or_default();
     if text.is_empty() {
         text = link.unwrap_or_default();
     }
@@ -150,7 +201,11 @@ pub(crate) async fn thread(session: &Session, url: &Url, comments: usize) -> Res
         author: s(&tree, "author"),
         community: None,
         published_at: secs.map(time::to_rfc3339),
-        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+        date_confidence: if secs.is_some() {
+            DateConfidence::Exact
+        } else {
+            DateConfidence::Unknown
+        },
         engagement: Engagement {
             score: i(&tree, "points"),
             comments: Some(children.len() as i64),

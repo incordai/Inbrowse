@@ -13,10 +13,10 @@
 
 use taffy::prelude::*;
 
+pub mod css;
 #[cfg(all(test, feature = "paint"))]
 #[path = "../../test-support/fresh_process.rs"]
 pub(crate) mod fresh_process;
-pub mod css;
 pub use css::{CssMediaType, Stylesheet, StylesheetCache};
 
 pub mod style;
@@ -99,44 +99,41 @@ mod image_capability_tests {
 #[cfg(feature = "paint")]
 mod paint;
 #[cfg(feature = "paint")]
-pub use tiny_skia::Pixmap;
-#[cfg(feature = "paint")]
 pub use paint::{
     image_intrinsic_dimensions, paint_dom, paint_dom_scrolled,
-    paint_dom_scrolled_at_animation_time,
-    paint_dom_scrolled_at_animation_time_with_surface_color_and_resources,
-    paint_dom_scrolled_at_animation_time_with_surface_color, paint_prepared,
-    paint_prepared_region_with_scroll, paint_prepared_region_with_scroll_and_surface_color,
+    paint_dom_scrolled_at_animation_time, paint_dom_scrolled_at_animation_time_with_surface_color,
+    paint_dom_scrolled_at_animation_time_with_surface_color_and_resources, paint_prepared,
+    paint_prepared_region_with_scroll,
+    paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces,
+    paint_prepared_region_with_scroll_and_surface_color,
     paint_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
     paint_prepared_with_scroll, paint_prepared_with_scroll_and_surface_color,
     paint_prepared_with_scroll_and_surface_color_and_canvas_surfaces, prepare_dom,
-    prepare_dom_at_animation_time,
-    prepare_dom_with_dynamic_fonts, prepare_dom_with_dynamic_fonts_at_animation_time,
+    prepare_dom_at_animation_time, prepare_dom_with_dynamic_fonts,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_at_animation_time,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_for_media_with_animation_state,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_with_animation_state,
-    screenshot_png, screenshot_png_scrolled, screenshot_png_scrolled_at_animation_time,
-    screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources,
+    prepare_dom_with_dynamic_fonts_at_animation_time, prepare_dom_with_retained_attribute_styles,
+    prepare_dom_with_retained_styles, prepare_dom_with_retained_styles_at_animation_time,
+    prepare_dom_with_retained_styles_with_animation_state, screenshot_png, screenshot_png_scrolled,
+    screenshot_png_scrolled_at_animation_time,
     screenshot_png_scrolled_at_animation_time_with_surface_color,
-    prepare_dom_with_retained_attribute_styles, prepare_dom_with_retained_styles,
-    prepare_dom_with_retained_styles_at_animation_time,
-    prepare_dom_with_retained_styles_with_animation_state,
-    screenshot_prepared, TextFragment,
-    screenshot_prepared_region_with_scroll,
-    screenshot_prepared_region_with_scroll_and_surface_color,
-    screenshot_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
+    screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources,
+    screenshot_prepared, screenshot_prepared_region_with_scroll,
     screenshot_prepared_region_with_scroll_and_backgrounds,
     screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces,
-    screenshot_prepared_with_scroll,
-    screenshot_prepared_with_scroll_and_surface_color,
-    screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces,
-    validate_capture_region, CaptureError, CaptureRegion, DynamicFontFace, ElementScrollMetrics,
-    paint_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces,
-    CanvasSurface, CanvasSurfaceSource, FrameRasterRequest, ImageRequestProfile, PreparedRender, RenderResourceCache, RenderResourceLoader,
-    ResolvedScrollState, SelectedImage,
+    screenshot_prepared_region_with_scroll_and_surface_color,
+    screenshot_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
+    screenshot_prepared_with_scroll, screenshot_prepared_with_scroll_and_surface_color,
+    screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces, validate_capture_region,
+    CanvasSurface, CanvasSurfaceSource, CaptureError, CaptureRegion, DynamicFontFace,
+    ElementScrollMetrics, FrameRasterRequest, ImageRequestProfile, PreparedRender,
+    RenderResourceCache, RenderResourceLoader, ResolvedScrollState, SelectedImage, TextFragment,
     MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PIXELS,
 };
+#[cfg(feature = "paint")]
+pub use tiny_skia::Pixmap;
 
 // Real inline text layout (cosmic-text) lives behind the paint feature; the
 // layout-only build keeps the lighter word-split geometry. The stub lets
@@ -175,29 +172,44 @@ pub mod inline {
         }
 
         pub(crate) fn register_native_control(
-            &mut self, width: f32, height: f32, style: &crate::LayoutStyle,
+            &mut self,
+            width: f32,
+            height: f32,
+            style: &crate::LayoutStyle,
         ) -> usize {
             let index = self.controls.len();
             let zero_min_content = matches!(style.width, crate::Dimension::Percent(_))
                 || matches!(style.max_width, crate::Dimension::Percent(_))
-                || [0, 4].into_iter().any(|index| style.size_expressions[index]
-                    .as_deref().is_some_and(|expression| expression.contains('%')));
-            self.controls.push((taffy::Size { width, height }, zero_min_content));
+                || [0, 4].into_iter().any(|index| {
+                    style.size_expressions[index]
+                        .as_deref()
+                        .is_some_and(|expression| expression.contains('%'))
+                });
+            self.controls
+                .push((taffy::Size { width, height }, zero_min_content));
             (1usize << (usize::BITS - 1)) | index
         }
 
         pub fn measure_taffy(
-            &mut self, index: usize, known: taffy::Size<Option<f32>>,
+            &mut self,
+            index: usize,
+            known: taffy::Size<Option<f32>>,
             available: taffy::Size<taffy::AvailableSpace>,
         ) -> taffy::Size<f32> {
             let bit = 1usize << (usize::BITS - 1);
-            if index & bit == 0 { return taffy::Size::ZERO; }
+            if index & bit == 0 {
+                return taffy::Size::ZERO;
+            }
             let (intrinsic, zero_min_content) = self.controls[index & !bit];
             taffy::Size {
                 width: known.width.unwrap_or_else(|| {
-                    if zero_min_content && matches!(available.width, taffy::AvailableSpace::MinContent) {
+                    if zero_min_content
+                        && matches!(available.width, taffy::AvailableSpace::MinContent)
+                    {
                         0.0
-                    } else { intrinsic.width }
+                    } else {
+                        intrinsic.width
+                    }
                 }),
                 height: known.height.unwrap_or(intrinsic.height),
             }
@@ -352,9 +364,7 @@ pub mod inline {
         let preferred_height = px(style.height);
         let min_width = px(style.min_width).unwrap_or(0.0);
         let min_height = px(style.min_height).unwrap_or(0.0);
-        let max_width = px(style.max_width)
-            .unwrap_or(f32::INFINITY)
-            .max(min_width);
+        let max_width = px(style.max_width).unwrap_or(f32::INFINITY).max(min_width);
         let max_height = px(style.max_height)
             .unwrap_or(f32::INFINITY)
             .max(min_height);
@@ -1360,8 +1370,7 @@ pub struct LayoutStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     /// Keeps the opaque `calc()` handles embedded in grid track sizing
     /// functions alive until every Taffy layout pass has completed.
-    pub(crate) grid_calc_expressions:
-        [Vec<std::sync::Arc<crate::style::GridCalcExpression>>; 4],
+    pub(crate) grid_calc_expressions: [Vec<std::sync::Arc<crate::style::GridCalcExpression>>; 4],
     /// Track sizing functions for columns created outside the explicit grid.
     /// An empty list is the CSS initial `auto` value: taffy supplies one
     /// automatic implicit track and cycles a non-empty authored list.
@@ -2167,8 +2176,7 @@ impl AnimationTimelineState {
         document_time_ms: f32,
     ) {
         if document_time_ms.is_finite() && document_time_ms >= 0.0 {
-            self.subtree_start_candidates
-                .insert(root, document_time_ms);
+            self.subtree_start_candidates.insert(root, document_time_ms);
         }
     }
 
@@ -2211,10 +2219,11 @@ impl AnimationTimelineState {
     /// Exact set of nodes currently targeted by registered Web Animations.
     /// The render preparation boundary additionally filters disconnected
     /// targets against the current DOM before producing restyle damage.
-    pub fn waapi_nodes(
-        &self,
-    ) -> std::collections::HashSet<inbrowse_dom::tree::NodeId> {
-        self.waapi.values().map(|animation| animation.node).collect()
+    pub fn waapi_nodes(&self) -> std::collections::HashSet<inbrowse_dom::tree::NodeId> {
+        self.waapi
+            .values()
+            .map(|animation| animation.node)
+            .collect()
     }
 
     /// New animation instance epochs must reach a style flush. Retained
@@ -2228,8 +2237,15 @@ impl AnimationTimelineState {
         self.waapi.remove(&id).is_some()
     }
 
-    pub fn set_waapi_current_time(&mut self, id: u64, document_time_ms: f32, local_time_ms: f32) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+    pub fn set_waapi_current_time(
+        &mut self,
+        id: u64,
+        document_time_ms: f32,
+        local_time_ms: f32,
+    ) -> bool {
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let local = local_time_ms.max(0.0);
         animation.hold_time_ms = Some(local);
         animation.start_time_ms = document_time_ms - local;
@@ -2242,7 +2258,9 @@ impl AnimationTimelineState {
         state: WaapiPlayState,
         document_time_ms: f32,
     ) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let current = animation
             .hold_time_ms
             .unwrap_or_else(|| (document_time_ms - animation.start_time_ms).max(0.0));
@@ -2260,7 +2278,9 @@ impl AnimationTimelineState {
     }
 
     pub fn finish_waapi(&mut self, id: u64) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let end = animation.timing.delay_ms
             + animation.timing.duration_ms * animation.timing.iteration_count.max(0.0);
         animation.hold_time_ms = Some(end.max(0.0));
@@ -2277,10 +2297,15 @@ impl AnimationTimelineState {
             if animation.node != node {
                 return None;
             }
-            let local = animation.hold_time_ms.unwrap_or_else(|| {
-                (document_time.milliseconds - animation.start_time_ms).max(0.0)
-            });
-            Some((animation, AnimationSampleTime { milliseconds: local }))
+            let local = animation
+                .hold_time_ms
+                .unwrap_or_else(|| (document_time.milliseconds - animation.start_time_ms).max(0.0));
+            Some((
+                animation,
+                AnimationSampleTime {
+                    milliseconds: local,
+                },
+            ))
         })
     }
 
@@ -2357,7 +2382,9 @@ impl AnimationTimelineState {
                         was_paused: paused,
                     },
                 );
-                self.instances.get_mut(&node).expect("inserted animation instance")
+                self.instances
+                    .get_mut(&node)
+                    .expect("inserted animation instance")
             }
         };
 
@@ -2378,7 +2405,11 @@ impl AnimationTimelineState {
         }
     }
 
-    pub(crate) fn clear_animation(&mut self, node: inbrowse_dom::tree::NodeId, sample: AnimationSample) {
+    pub(crate) fn clear_animation(
+        &mut self,
+        node: inbrowse_dom::tree::NodeId,
+        sample: AnimationSample,
+    ) {
         if sample.mode == AnimationSampleMode::DocumentTime {
             self.instances.remove(&node);
             self.display_suppressed.remove(&node);
@@ -2387,17 +2418,18 @@ impl AnimationTimelineState {
 
     /// CSS animations terminate below display:none. Remember the suppression
     /// so revealing an ancestor starts a new instance at the next style flush.
-    pub(crate) fn suppress_css_animation(&mut self, node: inbrowse_dom::tree::NodeId, sample: AnimationSample) {
+    pub(crate) fn suppress_css_animation(
+        &mut self,
+        node: inbrowse_dom::tree::NodeId,
+        sample: AnimationSample,
+    ) {
         if sample.mode == AnimationSampleMode::DocumentTime {
             self.instances.remove(&node);
             self.display_suppressed.insert(node);
         }
     }
 
-    pub fn retain_nodes(
-        &mut self,
-        mut keep: impl FnMut(inbrowse_dom::tree::NodeId) -> bool,
-    ) {
+    pub fn retain_nodes(&mut self, mut keep: impl FnMut(inbrowse_dom::tree::NodeId) -> bool) {
         self.display_suppressed.retain(|node| keep(*node));
         self.instances.retain(|node, _| keep(*node));
         self.start_candidates.retain(|node, _| keep(*node));
@@ -2419,11 +2451,11 @@ fn waapi_is_active(animation: &WaapiAnimation, document_time: AnimationSampleTim
     {
         return false;
     }
-    let local = animation.hold_time_ms.unwrap_or_else(|| {
-        (document_time.milliseconds - animation.start_time_ms).max(0.0)
-    });
-    let end = animation.timing.delay_ms
-        + animation.timing.duration_ms * animation.timing.iteration_count;
+    let local = animation
+        .hold_time_ms
+        .unwrap_or_else(|| (document_time.milliseconds - animation.start_time_ms).max(0.0));
+    let end =
+        animation.timing.delay_ms + animation.timing.duration_ms * animation.timing.iteration_count;
     local < end.max(0.0)
 }
 

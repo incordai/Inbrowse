@@ -28,7 +28,11 @@ async fn srcdoc_iframe_created_via_innerhtml_does_not_abort() {
     let mut rt = setup("<html><body><div id=host></div></body></html>");
     rt.evaluate(r#"host.innerHTML = '<iframe srcdoc="<p>frame</p>"></iframe>'"#)
         .unwrap();
-    pump_until(&mut rt, "host.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>frame</p>'").await;
+    pump_until(
+        &mut rt,
+        "host.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>frame</p>'",
+    )
+    .await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {
@@ -52,7 +56,11 @@ async fn srcdoc_iframe_created_via_property_then_append_does_not_abort() {
         })()"#,
     )
     .unwrap();
-    pump_until(&mut rt, "document.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>prop</p>'").await;
+    pump_until(
+        &mut rt,
+        "document.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>prop</p>'",
+    )
+    .await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {
@@ -76,7 +84,11 @@ async fn srcdoc_iframe_with_synchronous_dom_touch_does_not_abort() {
         })()"#,
     )
     .unwrap();
-    pump_until(&mut rt, "!!document.querySelector('iframe')?.contentDocument?.querySelector('span')").await;
+    pump_until(
+        &mut rt,
+        "!!document.querySelector('iframe')?.contentDocument?.querySelector('span')",
+    )
+    .await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {

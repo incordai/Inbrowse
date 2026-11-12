@@ -7,10 +7,16 @@
 use std::sync::Arc;
 
 use inbrowse_net::{CookieJar, DEFAULT_USER_AGENT};
-use inbrowse_social::{search, session, thread, Auth, Credentials, SearchRequest, Session, SocialError, Sort, Source};
+use inbrowse_social::{
+    search, session, thread, Auth, Credentials, SearchRequest, Session, SocialError, Sort, Source,
+};
 
 fn sess() -> Session {
-    session(Arc::new(CookieJar::new()), None, DEFAULT_USER_AGENT.to_string())
+    session(
+        Arc::new(CookieJar::new()),
+        None,
+        DEFAULT_USER_AGENT.to_string(),
+    )
 }
 
 fn req(source: Source, query: &str) -> SearchRequest {
@@ -26,7 +32,11 @@ fn req(source: Source, query: &str) -> SearchRequest {
 }
 
 fn assert_items(results: &inbrowse_social::Results) {
-    assert!(!results.items.is_empty(), "no items: {:?}", results.warnings);
+    assert!(
+        !results.items.is_empty(),
+        "no items: {:?}",
+        results.warnings
+    );
     for item in &results.items {
         assert!(item.url.starts_with("https://"), "{}", item.url);
         assert!(item.title.is_some() || !item.text.is_empty());
@@ -58,9 +68,15 @@ async fn hackernews_search_and_thread() {
 #[ignore]
 async fn github_search_and_thread() {
     let s = sess();
-    let results = search(&s, &req(Source::Github, "borrow checker")).await.unwrap();
+    let results = search(&s, &req(Source::Github, "borrow checker"))
+        .await
+        .unwrap();
     assert_items(&results);
-    let issue = results.items.iter().find(|i| i.engagement.comments.unwrap_or(0) > 0).expect("an issue with comments");
+    let issue = results
+        .items
+        .iter()
+        .find(|i| i.engagement.comments.unwrap_or(0) > 0)
+        .expect("an issue with comments");
     let t = thread(&s, &issue.url, 3, None).await.unwrap();
     assert!(!t.items[0].top_comments.is_empty());
 }
@@ -68,9 +84,14 @@ async fn github_search_and_thread() {
 #[tokio::test]
 #[ignore]
 async fn polymarket_search() {
-    let results = search(&sess(), &req(Source::Polymarket, "election")).await.unwrap();
+    let results = search(&sess(), &req(Source::Polymarket, "election"))
+        .await
+        .unwrap();
     assert_items(&results);
-    assert!(results.items.iter().all(|i| i.engagement.liquidity.unwrap_or(0.0) > 0.0));
+    assert!(results
+        .items
+        .iter()
+        .all(|i| i.engagement.liquidity.unwrap_or(0.0) > 0.0));
 }
 
 #[tokio::test]
@@ -93,7 +114,10 @@ async fn reddit_anonymous_is_reported_as_blocked_or_works() {
 #[tokio::test]
 #[ignore]
 async fn reddit_official_api() {
-    let (Ok(id), Ok(secret)) = (std::env::var("INBROWSE_TEST_REDDIT_ID"), std::env::var("INBROWSE_TEST_REDDIT_SECRET")) else {
+    let (Ok(id), Ok(secret)) = (
+        std::env::var("INBROWSE_TEST_REDDIT_ID"),
+        std::env::var("INBROWSE_TEST_REDDIT_SECRET"),
+    ) else {
         eprintln!("skipped: no Reddit app credentials in the environment");
         return;
     };
@@ -108,5 +132,8 @@ async fn reddit_official_api() {
     assert_eq!(results.auth, Auth::Api);
     assert_items(&results);
     let rendered = serde_json::to_string(&results).unwrap();
-    assert!(!rendered.contains(&secret), "the secret must never appear in output");
+    assert!(
+        !rendered.contains(&secret),
+        "the secret must never appear in output"
+    );
 }

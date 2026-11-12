@@ -27,7 +27,9 @@ fn spawn_server() -> String {
                     .nth(1)
                     .map(str::to_string)
                     .unwrap_or_default();
-                let (content_type, body) = if target.starts_with("/api") || target.starts_with("/deep/api") {
+                let (content_type, body) = if target.starts_with("/api")
+                    || target.starts_with("/deep/api")
+                {
                     ("application/json", format!("{{\"path\":\"{}\"}}", target))
                 } else {
                     (
@@ -111,16 +113,23 @@ async fn fetch_and_xhr_resolve_relative_urls_that_contain_double_slashes() {
 
     for _ in 0..40 {
         page.settle(250).await;
-        if page.evaluate("document.body.getAttribute('data-done')").unwrap() == serde_json::json!("1") {
+        if page
+            .evaluate("document.body.getAttribute('data-done')")
+            .unwrap()
+            == serde_json::json!("1")
+        {
             break;
         }
     }
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-done')").unwrap(),
+        page.evaluate("document.body.getAttribute('data-done')")
+            .unwrap(),
         serde_json::json!("1"),
         "probes did not finish"
     );
-    let raw = page.evaluate("document.getElementById('probe-results').textContent").unwrap();
+    let raw = page
+        .evaluate("document.getElementById('probe-results').textContent")
+        .unwrap();
     let results: serde_json::Value =
         serde_json::from_str(raw.as_str().unwrap_or("")).unwrap_or(serde_json::Value::Null);
 

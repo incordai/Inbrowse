@@ -25,7 +25,10 @@ impl DomTree {
         let mut buf = String::new();
         // An element that serializes as void has no markup of its own, even
         // when script has appended children to it.
-        if self.with_node(node_id, |n| n.as_element().is_some_and(serializes_as_void)).unwrap_or(false) {
+        if self
+            .with_node(node_id, |n| n.as_element().is_some_and(serializes_as_void))
+            .unwrap_or(false)
+        {
             return buf;
         }
         self.serialize_worklist(self.child_work(self.content_source(node_id)), &mut buf);
@@ -38,7 +41,10 @@ impl DomTree {
     // is the node itself.
     fn content_source(&self, node_id: NodeId) -> NodeId {
         self.with_node(node_id, |n| match &n.data {
-            NodeData::Element { template_contents: Some(contents), .. } => Some(*contents),
+            NodeData::Element {
+                template_contents: Some(contents),
+                ..
+            } => Some(*contents),
             _ => None,
         })
         .flatten()
@@ -60,10 +66,7 @@ impl DomTree {
         // items bound a valid walk. Exceeding it means the graph is cyclic (the
         // append_child / insert_before guards prevent that); stop rather than
         // spin forever. On a valid tree this bound is never reached.
-        let max_steps = self
-            .node_slot_count()
-            .saturating_mul(2)
-            .saturating_add(16);
+        let max_steps = self.node_slot_count().saturating_mul(2).saturating_add(16);
         let mut steps = 0usize;
 
         while let Some(work) = stack.pop() {
@@ -99,7 +102,12 @@ impl DomTree {
                     buf.push_str(name);
                     buf.push('>');
                 }
-                NodeData::Element { name, attrs, template_contents, .. } => {
+                NodeData::Element {
+                    name,
+                    attrs,
+                    template_contents,
+                    ..
+                } => {
                     let tag = name.local.as_ref();
                     if include_self {
                         buf.push('<');
@@ -131,7 +139,8 @@ impl DomTree {
                     }
                 }
                 NodeData::Text { contents } => {
-                    let parent_is_raw = node.parent
+                    let parent_is_raw = node
+                        .parent
                         .and_then(|pid| {
                             self.with_node(pid, |p| {
                                 p.as_element().is_some_and(serializes_text_literally)
@@ -243,8 +252,24 @@ fn serializes_as_void(name: &QualName) -> bool {
     name.ns == ns!(html)
         && matches!(
             name.local.as_ref(),
-            "area" | "base" | "basefont" | "bgsound" | "br" | "col" | "embed" | "frame" | "hr" | "img"
-                | "input" | "keygen" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+            "area"
+                | "base"
+                | "basefont"
+                | "bgsound"
+                | "br"
+                | "col"
+                | "embed"
+                | "frame"
+                | "hr"
+                | "img"
+                | "input"
+                | "keygen"
+                | "link"
+                | "meta"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
         )
 }
 
@@ -259,7 +284,14 @@ fn serializes_text_literally(name: &QualName) -> bool {
     name.ns == ns!(html)
         && matches!(
             name.local.as_ref(),
-            "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext" | "noscript"
+            "style"
+                | "script"
+                | "xmp"
+                | "iframe"
+                | "noembed"
+                | "noframes"
+                | "plaintext"
+                | "noscript"
         )
 }
 
@@ -322,9 +354,14 @@ mod tests {
             "<title>a &lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>\
              <textarea>b &lt;/textarea&gt;&lt;script&gt;y&lt;/script&gt; &amp;amp;</textarea>",
         );
-        assert!(out.contains("<title>a &lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>"), "{out}");
         assert!(
-            out.contains("<textarea>b &lt;/textarea&gt;&lt;script&gt;y&lt;/script&gt; &amp;amp;</textarea>"),
+            out.contains("<title>a &lt;/title&gt;&lt;script&gt;x&lt;/script&gt;</title>"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "<textarea>b &lt;/textarea&gt;&lt;script&gt;y&lt;/script&gt; &amp;amp;</textarea>"
+            ),
             "{out}"
         );
         assert!(again.query_selector("script").unwrap().is_none(), "{out}");
@@ -332,7 +369,9 @@ mod tests {
 
     #[test]
     fn raw_text_elements_keep_their_text_literal() {
-        for tag in ["script", "style", "xmp", "iframe", "noembed", "noframes", "noscript"] {
+        for tag in [
+            "script", "style", "xmp", "iframe", "noembed", "noframes", "noscript",
+        ] {
             let source = format!("<{tag}>a < b && c > d</{tag}>");
             let tree = parse_html(&source);
             let node = tree.query_selector(tag).unwrap().unwrap();
@@ -345,7 +384,11 @@ mod tests {
 
     #[test]
     fn style_and_script_text_in_foreign_content_is_escaped() {
-        for (open, close) in [("<svg><style>", "</style></svg>"), ("<svg><script>", "</script></svg>"), ("<math><style>", "</style></math>")] {
+        for (open, close) in [
+            ("<svg><style>", "</style></svg>"),
+            ("<svg><script>", "</script></svg>"),
+            ("<math><style>", "</style></math>"),
+        ] {
             let (out, again) = reparsed(&format!("{open}&lt;img src=x onerror=1&gt;{close}"));
             assert!(out.contains("&lt;img src=x onerror=1&gt;"), "{out}");
             assert!(again.query_selector("img").unwrap().is_none(), "{out}");
@@ -354,10 +397,14 @@ mod tests {
 
     #[test]
     fn attribute_values_and_text_are_escaped_as_the_standard_says() {
-        let (out, again) = reparsed("<a title='&quot;&gt;&lt;img src=x&gt; a&nbsp;b &amp;amp;'>c&nbsp;d</a>");
+        let (out, again) =
+            reparsed("<a title='&quot;&gt;&lt;img src=x&gt; a&nbsp;b &amp;amp;'>c&nbsp;d</a>");
         let link = "<a title=\"&quot;&gt;&lt;img src=x&gt; a&nbsp;b &amp;amp;\">c&nbsp;d</a>";
         assert!(out.contains(link), "{out}");
-        assert_eq!(again.outer_html(again.query_selector("a").unwrap().unwrap()), link);
+        assert_eq!(
+            again.outer_html(again.query_selector("a").unwrap().unwrap()),
+            link
+        );
     }
 
     #[test]
@@ -379,7 +426,10 @@ mod tests {
 
         let out = tree.outer_html(host);
         assert_eq!(out, "<noscript id=\"host\"><p title=\"&lt;/noscript&gt;&lt;img src=x onerror=1&gt;\"></p></noscript>");
-        assert!(parse_html(&out).query_selector("img").unwrap().is_none(), "{out}");
+        assert!(
+            parse_html(&out).query_selector("img").unwrap().is_none(),
+            "{out}"
+        );
     }
 
     #[test]
@@ -395,7 +445,11 @@ mod tests {
         assert_eq!(out, "");
     }
 
-    fn element(tree: &crate::tree::DomTree, ns: html5ever::Namespace, local: &str) -> crate::tree::NodeId {
+    fn element(
+        tree: &crate::tree::DomTree,
+        ns: html5ever::Namespace,
+        local: &str,
+    ) -> crate::tree::NodeId {
         tree.new_node(NodeData::Element {
             name: QualName::new(None, ns, LocalName::from(local)),
             attrs: Vec::new(),
@@ -408,7 +462,9 @@ mod tests {
     fn elements_that_serialize_as_void_write_no_children_and_no_end_tag() {
         let tree = parse_html("<span id=host></span>");
         let host = tree.get_element_by_id("host").unwrap();
-        for tag in ["br", "img", "basefont", "bgsound", "frame", "keygen", "param"] {
+        for tag in [
+            "br", "img", "basefont", "bgsound", "frame", "keygen", "param",
+        ] {
             let void = element(&tree, ns!(html), tag);
             let child = element(&tree, ns!(html), "b");
             tree.append_child(void, child);
@@ -416,7 +472,10 @@ mod tests {
             assert_eq!(tree.inner_html(void), "", "{tag}");
             assert_eq!(tree.outer_html(void), format!("<{tag}>"), "{tag}");
         }
-        assert_eq!(tree.inner_html(host), "<br><img><basefont><bgsound><frame><keygen><param>");
+        assert_eq!(
+            tree.inner_html(host),
+            "<br><img><basefont><bgsound><frame><keygen><param>"
+        );
     }
 
     #[test]
@@ -433,7 +492,11 @@ mod tests {
     fn namespaced_attributes_are_written_with_their_fixed_prefix() {
         let tree = parse_html("<span id=host></span>");
         let attr = |ns, prefix: Option<&str>, local: &str| crate::tree::Attribute {
-            name: QualName::new(prefix.map(html5ever::Prefix::from), ns, LocalName::from(local)),
+            name: QualName::new(
+                prefix.map(html5ever::Prefix::from),
+                ns,
+                LocalName::from(local),
+            ),
             value: "v".to_string(),
         };
         let svg = tree.new_node(NodeData::Element {
@@ -483,7 +546,9 @@ mod tests {
         for payload in payloads {
             let tree = parse_html(r#"<div id="host"></div>"#);
             let host = tree.get_element_by_id("host").unwrap();
-            let comment = tree.new_node(NodeData::Comment { contents: payload.to_string() });
+            let comment = tree.new_node(NodeData::Comment {
+                contents: payload.to_string(),
+            });
             tree.append_child(host, comment);
 
             let serialized = tree.outer_html(host);

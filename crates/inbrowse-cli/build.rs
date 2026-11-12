@@ -105,12 +105,15 @@ fn windows_resources(version: &str) {
             .unwrap_or_else(|err| panic!("{}: {err}", rc.display()));
         match embed_resource::compile_for(&rc, [bin], embed_resource::NONE) {
             embed_resource::CompilationResult::NotAttempted(why) => {
-                println!("cargo:warning=no Windows resource compiler, {bin}.exe gets no icon: {why}");
+                println!(
+                    "cargo:warning=no Windows resource compiler, {bin}.exe gets no icon: {why}"
+                );
             }
             embed_resource::CompilationResult::Failed(why) => {
                 panic!("compiling {}: {why}", rc.display());
             }
-            embed_resource::CompilationResult::Ok | embed_resource::CompilationResult::NotWindows => {}
+            embed_resource::CompilationResult::Ok
+            | embed_resource::CompilationResult::NotWindows => {}
         }
     }
 }
@@ -128,7 +131,10 @@ fn resource_script(bin: &str, description: &str, version: &str, icon: &std::path
     // `canonicalize` gives a `\\?\` verbatim path; rc.exe wants a plain one,
     // with backslashes escaped inside the string literal.
     let icon = icon.to_string_lossy();
-    let icon = icon.strip_prefix(r"\\?\").unwrap_or(&icon).replace('\\', r"\\");
+    let icon = icon
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&icon)
+        .replace('\\', r"\\");
     let text = |value: &str| value.replace('"', "\"\"");
     let (version, description) = (text(version), text(description));
     format!(

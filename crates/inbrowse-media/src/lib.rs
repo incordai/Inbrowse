@@ -180,21 +180,31 @@ pub fn new_output_dir() -> std::io::Result<PathBuf> {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     for attempt in 0..100u32 {
-        let dir = base.join(format!("inbrowse-media-{}-{stamp}-{attempt}", std::process::id()));
+        let dir = base.join(format!(
+            "inbrowse-media-{}-{stamp}-{attempt}",
+            std::process::id()
+        ));
         match std::fs::create_dir(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
     }
-    Err(std::io::Error::other("could not create a unique output folder"))
+    Err(std::io::Error::other(
+        "could not create a unique output folder",
+    ))
 }
 
 /// Read `data` and write frames and audio into `out_dir` (created if missing).
 ///
 /// `hint` (file name, extension or MIME type) is not needed for detection; it
 /// only makes the error for an unrecognised file more specific.
-pub fn extract(data: Bytes, hint: Option<&str>, out_dir: &Path, options: &Options) -> Result<Report, MediaError> {
+pub fn extract(
+    data: Bytes,
+    hint: Option<&str>,
+    out_dir: &Path,
+    options: &Options,
+) -> Result<Report, MediaError> {
     if data.len() > options.max_input_bytes {
         return Err(MediaError::TooLarge(format!(
             "{} bytes, limit {}",
@@ -202,14 +212,22 @@ pub fn extract(data: Bytes, hint: Option<&str>, out_dir: &Path, options: &Option
             options.max_input_bytes
         )));
     }
-    std::fs::create_dir_all(out_dir).map_err(|e| MediaError::Io(format!("{}: {e}", out_dir.display())))?;
-    match catch_unwind(AssertUnwindSafe(|| extract_inner(&data, hint, out_dir, options))) {
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| MediaError::Io(format!("{}: {e}", out_dir.display())))?;
+    match catch_unwind(AssertUnwindSafe(|| {
+        extract_inner(&data, hint, out_dir, options)
+    })) {
         Ok(result) => result,
         Err(_) => Err(MediaError::Panicked),
     }
 }
 
-fn extract_inner(data: &Bytes, hint: Option<&str>, out_dir: &Path, options: &Options) -> Result<Report, MediaError> {
+fn extract_inner(
+    data: &Bytes,
+    hint: Option<&str>,
+    out_dir: &Path,
+    options: &Options,
+) -> Result<Report, MediaError> {
     let mut warnings = Vec::new();
     if captions::sniff_webvtt(data) {
         return Ok(Report {
@@ -227,7 +245,9 @@ fn extract_inner(data: &Bytes, hint: Option<&str>, out_dir: &Path, options: &Opt
     } else if mkv::sniff(data) {
         mkv::read(data, &mut warnings)?
     } else if data.len() > 188 && data[0] == 0x47 && data[188] == 0x47 {
-        return Err(MediaError::Unsupported("MPEG-TS is not supported yet".into()));
+        return Err(MediaError::Unsupported(
+            "MPEG-TS is not supported yet".into(),
+        ));
     } else if data.starts_with(b"FLV") {
         return Err(MediaError::Unsupported("FLV is not supported yet".into()));
     } else {
@@ -239,7 +259,12 @@ fn extract_inner(data: &Bytes, hint: Option<&str>, out_dir: &Path, options: &Opt
     Ok(extract_with(demuxed, out_dir, options, warnings))
 }
 
-fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warnings: Vec<String>) -> Report {
+fn extract_with(
+    demuxed: Demuxed,
+    out_dir: &Path,
+    options: &Options,
+    mut warnings: Vec<String>,
+) -> Report {
     let tracks: Vec<TrackReport> = demuxed
         .tracks
         .iter()
@@ -259,7 +284,11 @@ fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warning
             Codec::Vp8 | Codec::Vp9 => "this build has no VP8/VP9 decoder".to_string(),
             _ => "only H.264, VP8 and VP9 video and AAC and Opus audio are decoded".to_string(),
         };
-        warnings.push(format!("{} {} track not decoded: {reason}", t.codec_name, t.kind.as_str()));
+        warnings.push(format!(
+            "{} {} track not decoded: {reason}",
+            t.codec_name,
+            t.kind.as_str()
+        ));
     }
 
     let max_duration_us = (options.max_duration_secs.max(0.0) * 1e6) as i64;
@@ -275,7 +304,11 @@ fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warning
         ));
     }
 
-    let frames = match demuxed.tracks.iter().find(|t| t.kind == Kind::Video && t.supported()) {
+    let frames = match demuxed
+        .tracks
+        .iter()
+        .find(|t| t.kind == Kind::Video && t.supported())
+    {
         Some(track) => {
             let frame_options = video::FrameOptions {
                 every_us: (options.every_secs.max(1.0) * 1e6) as i64,
@@ -284,7 +317,13 @@ fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warning
                 max_side: options.max_side,
                 deadline: options.deadline,
             };
-            video::extract_frames(track, duration_us.min(max_duration_us), &frame_options, out_dir, &mut warnings)
+            video::extract_frames(
+                track,
+                duration_us.min(max_duration_us),
+                &frame_options,
+                out_dir,
+                &mut warnings,
+            )
         }
         None => Vec::new(),
     };
@@ -294,7 +333,15 @@ fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warning
             .tracks
             .iter()
             .find(|t| t.kind == Kind::Audio && t.supported())
-            .and_then(|track| audio::extract_audio(track, out_dir, max_duration_us, options.deadline, &mut warnings))
+            .and_then(|track| {
+                audio::extract_audio(
+                    track,
+                    out_dir,
+                    max_duration_us,
+                    options.deadline,
+                    &mut warnings,
+                )
+            })
     } else {
         None
     };
@@ -308,7 +355,9 @@ fn extract_with(demuxed: Demuxed, out_dir: &Path, options: &Options, mut warning
 
     Report {
         container: demuxed.container,
-        duration_secs: demuxed.duration_secs.or((duration_us > 0).then(|| duration_us as f64 / 1e6)),
+        duration_secs: demuxed
+            .duration_secs
+            .or((duration_us > 0).then(|| duration_us as f64 / 1e6)),
         tracks,
         audio,
         frames,

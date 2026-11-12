@@ -34,12 +34,16 @@ pub(crate) fn extract(
             Ok(text) => {
                 let text = text.trim().to_string();
                 if text.is_empty() && page_has_images(&doc, id) {
-                    warnings.push(format!("no_text_layer: page {number} has no text layer; it may be scanned"));
+                    warnings.push(format!(
+                        "no_text_layer: page {number} has no text layer; it may be scanned"
+                    ));
                 }
                 text
             }
             Err(why) => {
-                warnings.push(format!("page_failed: page {number} could not be read ({why}); its text is missing"));
+                warnings.push(format!(
+                    "page_failed: page {number} could not be read ({why}); its text is missing"
+                ));
                 String::new()
             }
         };
@@ -60,13 +64,18 @@ pub(crate) fn extract(
 /// which finds nothing to decrypt and returns no pages.) A wrong or missing
 /// password is [`ExtractError::Encrypted`] with text that says which.
 fn load(bytes: &[u8], password: Option<&str>) -> Result<Document, ExtractError> {
-    let options = LoadOptions { password: password.map(String::from), ..LoadOptions::default() };
+    let options = LoadOptions {
+        password: password.map(String::from),
+        ..LoadOptions::default()
+    };
     let doc = Document::load_mem_with_options(bytes, options).map_err(|e| match e {
         Error::InvalidPassword => ExtractError::Encrypted("the password is incorrect".into()),
         other => ExtractError::Malformed(format!("PDF: {other}")),
     })?;
     if doc.is_encrypted() {
-        return Err(ExtractError::Encrypted("the PDF is password-protected and needs a password".into()));
+        return Err(ExtractError::Encrypted(
+            "the PDF is password-protected and needs a password".into(),
+        ));
     }
     Ok(doc)
 }
@@ -110,12 +119,21 @@ fn page_has_images(doc: &Document, page: ObjectId) -> bool {
 /// image XObject, or a form XObject whose own resources do, up to
 /// `MAX_FORM_DEPTH` forms deep. Helper of `page_has_images`.
 fn resources_have_images(doc: &Document, resources: &Object, depth: usize) -> bool {
-    let Ok((_, resources)) = doc.dereference(resources) else { return false };
-    let Ok(xobjects) = resources.as_dict().and_then(|dict| dict.get_deref(b"XObject", doc)).and_then(Object::as_dict) else {
+    let Ok((_, resources)) = doc.dereference(resources) else {
+        return false;
+    };
+    let Ok(xobjects) = resources
+        .as_dict()
+        .and_then(|dict| dict.get_deref(b"XObject", doc))
+        .and_then(Object::as_dict)
+    else {
         return false;
     };
     xobjects.iter().any(|(_, xobject)| {
-        let Ok(stream) = doc.dereference(xobject).and_then(|(_, object)| object.as_stream()) else {
+        let Ok(stream) = doc
+            .dereference(xobject)
+            .and_then(|(_, object)| object.as_stream())
+        else {
             return false;
         };
         match stream.dict.get(b"Subtype").and_then(Object::as_name) {

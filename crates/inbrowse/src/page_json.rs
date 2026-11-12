@@ -75,7 +75,11 @@ fn main_document_status(page: &Page) -> Option<u16> {
         url.set_fragment(None);
         url
     });
-    let documents = || page.network_events.iter().filter(|event| event.resource_type == "Document");
+    let documents = || {
+        page.network_events
+            .iter()
+            .filter(|event| event.resource_type == "Document")
+    };
     documents()
         .rev()
         .find(|event| {
@@ -105,8 +109,8 @@ pub fn page_json(
     if value.is_null() {
         return Ok(None);
     }
-    let collected: Collected =
-        serde_json::from_value(value).map_err(|error| format!("page JSON is malformed: {error}"))?;
+    let collected: Collected = serde_json::from_value(value)
+        .map_err(|error| format!("page JSON is malformed: {error}"))?;
     let non_empty = |text: String| Some(text).filter(|text| !text.is_empty());
     Ok(Some(PageJson {
         url: page.url_string(),

@@ -15,7 +15,10 @@ const ORANGE: [u8; 4] = [255, 128, 0, 255];
 fn png(color: [u8; 4]) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::RgbaImage::from_pixel(4, 4, image::Rgba(color))
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     bytes
 }
@@ -84,11 +87,19 @@ fn file_page_loads_its_image_stylesheet_background_and_iframe() {
     std::fs::write(dir.join("bg.png"), png([0, 0, 255, 255])).unwrap();
     std::fs::write(dir.join("style.css"), css("bg.png")).unwrap();
     std::fs::write(dir.join("child.html"), CHILD).unwrap();
-    std::fs::write(dir.join("page.html"), tiles("pic.png", "style.css", "child.html")).unwrap();
+    std::fs::write(
+        dir.join("page.html"),
+        tiles("pic.png", "style.css", "child.html"),
+    )
+    .unwrap();
 
     let shot = capture(&file_url(&dir.join("page.html")), &[]);
     assert_eq!(shot.get_pixel(20, 20).0, RED, "relative <img>");
-    assert_eq!(shot.get_pixel(60, 20).0, BLUE, "stylesheet background image");
+    assert_eq!(
+        shot.get_pixel(60, 20).0,
+        BLUE,
+        "stylesheet background image"
+    );
     assert_eq!(shot.get_pixel(100, 20).0, LIME, "linked stylesheet");
     assert_eq!(shot.get_pixel(20, 60).0, ORANGE, "file: iframe document");
     assert_eq!(shot.get_pixel(100, 70).0, WHITE, "nothing else painted");
@@ -141,9 +152,25 @@ fn network_page_never_loads_file_subresources_or_frames() {
     ]);
 
     let shot = capture(&format!("{base}/page.html"), &["--allow-private-network"]);
-    assert_ne!(shot.get_pixel(20, 20).0, RED, "file: <img> from a network page");
-    assert_ne!(shot.get_pixel(60, 20).0, BLUE, "file: css background from a network page");
-    assert_eq!(shot.get_pixel(100, 20).0, LIME, "the network stylesheet still applies");
-    assert_ne!(shot.get_pixel(20, 60).0, ORANGE, "file: iframe from a network page");
+    assert_ne!(
+        shot.get_pixel(20, 20).0,
+        RED,
+        "file: <img> from a network page"
+    );
+    assert_ne!(
+        shot.get_pixel(60, 20).0,
+        BLUE,
+        "file: css background from a network page"
+    );
+    assert_eq!(
+        shot.get_pixel(100, 20).0,
+        LIME,
+        "the network stylesheet still applies"
+    );
+    assert_ne!(
+        shot.get_pixel(20, 60).0,
+        ORANGE,
+        "file: iframe from a network page"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

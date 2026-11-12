@@ -26,7 +26,9 @@ pub fn detect(bytes: &[u8], hint: Option<&str>, limits: &Limits) -> Result<Forma
     }
     let sample = &bytes[..bytes.len().min(8192)];
     if sample.contains(&0) || std::str::from_utf8(utf8_prefix(sample)).is_err() {
-        return Err(ExtractError::Unsupported("binary data in no recognised format".into()));
+        return Err(ExtractError::Unsupported(
+            "binary data in no recognised format".into(),
+        ));
     }
     let is_csv = hint.is_some_and(|h| {
         let h = h.trim().to_ascii_lowercase();
@@ -84,7 +86,9 @@ fn detect_archive(bytes: &[u8], limits: &Limits) -> Result<Format, ExtractError>
         "application/vnd.oasis.opendocument.text" => Ok(Format::Odt),
         "application/vnd.oasis.opendocument.presentation" => Ok(Format::Odp),
         "application/vnd.oasis.opendocument.spreadsheet" => Ok(Format::Ods),
-        _ => Err(ExtractError::Unsupported("zip archive that is not an Office or OpenDocument file".into())),
+        _ => Err(ExtractError::Unsupported(
+            "zip archive that is not an Office or OpenDocument file".into(),
+        )),
     }
 }
 

@@ -223,7 +223,10 @@ fn page_slices(
         .filter(|(top, bottom)| top.is_finite() && bottom.is_finite() && bottom > top)
         .collect();
     lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let tallest = lines.iter().map(|(top, bottom)| bottom - top).fold(0.0f32, f32::max);
+    let tallest = lines
+        .iter()
+        .map(|(top, bottom)| bottom - top)
+        .fold(0.0f32, f32::max);
     let mut slices = Vec::new();
     let mut top = 0.0f32;
     while top < content_height - 0.5 {
@@ -395,7 +398,8 @@ impl Page {
         );
         let previous_viewport = js.swap_render_viewport(print_viewport);
         let previous_media = js.set_render_media(
-            inbrowse_js::CssMediaType::Print.with_reduced_motion(js.prefers_reduced_motion())
+            inbrowse_js::CssMediaType::Print
+                .with_reduced_motion(js.prefers_reduced_motion())
                 .with_dark_color_scheme(js.prefers_dark_color_scheme()),
         );
         let header_footer = options.display_header_footer.then(|| {
@@ -431,8 +435,7 @@ impl Page {
                 1.0,
             )?;
             let fragments = js.prepared_text_fragments().unwrap_or_default();
-            let lines: Vec<(f32, f32)> =
-                fragments.iter().map(|f| (f.y, f.y + f.height)).collect();
+            let lines: Vec<(f32, f32)> = fragments.iter().map(|f| (f.y, f.y + f.height)).collect();
             let slices = page_slices(content_height, plan.css_page_height, &lines)?;
             let selected_pages = selected_page_indices(slices.len(), &options.page_ranges)?;
             let requested_scale = if self.device_scale_factor.is_finite() {
@@ -466,7 +469,13 @@ impl Page {
                 Vec::new()
             };
             let total_pages = selected_pages.len();
-            let geometry = PageGeometry { page_width, page_height, left, bottom, printable_height };
+            let geometry = PageGeometry {
+                page_width,
+                page_height,
+                left,
+                bottom,
+                printable_height,
+            };
 
             encode_pdf_pages(total_pages, geometry, &outline, |output_page_index| {
                 let page_index = selected_pages[output_page_index];
@@ -600,7 +609,13 @@ fn encode_pdf_pages(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     )?;
 
-    let PageGeometry { page_width, page_height, left, bottom, printable_height } = geometry;
+    let PageGeometry {
+        page_width,
+        page_height,
+        left,
+        bottom,
+        printable_height,
+    } = geometry;
     for index in 0..page_count {
         let page = page_source(index)?;
         let page_id = page_object(index);
@@ -669,7 +684,9 @@ fn write_text_layer_font(writer: &mut PdfWriter) -> Result<(), RasterPdfError> {
     // Each code maps to the same UTF-16 unit. A bfrange may only vary the
     // last byte, so emit one range per high byte, 100 ranges per block,
     // skipping the surrogate block.
-    let highs: Vec<u32> = (0u32..=0xFF).filter(|high| !(0xD8..=0xDF).contains(high)).collect();
+    let highs: Vec<u32> = (0u32..=0xFF)
+        .filter(|high| !(0xD8..=0xDF).contains(high))
+        .collect();
     for block in highs.chunks(100) {
         cmap.push_str(&format!("{} beginbfrange\n", block.len()));
         for high in block {
@@ -704,7 +721,13 @@ fn text_layer_ops(
         let units: Vec<u16> = fragment
             .text
             .chars()
-            .map(|c| if (c as u32) <= 0xFFFF { c as u32 as u16 } else { 0xFFFD })
+            .map(|c| {
+                if (c as u32) <= 0xFFFF {
+                    c as u32 as u16
+                } else {
+                    0xFFFD
+                }
+            })
             .filter(|unit| !(0xD800..=0xDFFF).contains(unit))
             .collect();
         if units.is_empty() || fragment.font_size <= 0.0 || !fragment.font_size.is_finite() {
@@ -750,7 +773,9 @@ fn outline_entries(
                 .iter()
                 .position(|&(top, bottom)| y >= top && y < bottom)
                 .unwrap_or(slices.len().saturating_sub(1));
-            let page = selected_pages.iter().position(|&selected| selected == document_page)?;
+            let page = selected_pages
+                .iter()
+                .position(|&selected| selected == document_page)?;
             let offset = y - slices[document_page].0;
             Some(OutlineEntry {
                 level: *level,
@@ -775,14 +800,19 @@ fn write_outline(
     let mut parents: Vec<Option<usize>> = Vec::with_capacity(entries.len());
     let mut stack: Vec<usize> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        while stack.last().is_some_and(|&open| entries[open].level >= entry.level) {
+        while stack
+            .last()
+            .is_some_and(|&open| entries[open].level >= entry.level)
+        {
             stack.pop();
         }
         parents.push(stack.last().copied());
         stack.push(index);
     }
     let children = |parent: Option<usize>| -> Vec<usize> {
-        (0..entries.len()).filter(|&index| parents[index] == parent).collect()
+        (0..entries.len())
+            .filter(|&index| parents[index] == parent)
+            .collect()
     };
     let descendants = |index: usize| -> usize {
         let mut count = 0;
@@ -808,7 +838,10 @@ fn write_outline(
     )?;
     for (index, entry) in entries.iter().enumerate() {
         let siblings = children(parents[index]);
-        let position = siblings.iter().position(|&sibling| sibling == index).unwrap_or(0);
+        let position = siblings
+            .iter()
+            .position(|&sibling| sibling == index)
+            .unwrap_or(0);
         let mut dictionary = format!(
             "<< /Title {} /Parent {} 0 R /Dest [{} 0 R /XYZ null {:.3} null]",
             pdf_text_string(&entry.title),
@@ -878,11 +911,20 @@ impl HeaderFooter {
             ("pageNumber", page_number.to_string()),
             ("totalPages", total_pages.to_string()),
         ];
-        let header = if self.header.trim().is_empty() { DEFAULT_HEADER_TEMPLATE } else { &self.header };
-        let footer = if self.footer.trim().is_empty() { DEFAULT_FOOTER_TEMPLATE } else { &self.footer };
+        let header = if self.header.trim().is_empty() {
+            DEFAULT_HEADER_TEMPLATE
+        } else {
+            &self.header
+        };
+        let footer = if self.footer.trim().is_empty() {
+            DEFAULT_FOOTER_TEMPLATE
+        } else {
+            &self.footer
+        };
         let content_left = geometry.left;
         let content_right = geometry.page_width
-            - (geometry.page_width - geometry.left
+            - (geometry.page_width
+                - geometry.left
                 - (geometry.page_width - 2.0 * geometry.left).max(0.0))
             .max(geometry.left);
         let mut ops = String::new();
@@ -890,7 +932,9 @@ impl HeaderFooter {
             (header, geometry.page_height, margin_top),
             (footer, margin_bottom, margin_bottom),
         ] {
-            let Some(line) = render_template(template, &values) else { continue };
+            let Some(line) = render_template(template, &values) else {
+                continue;
+            };
             let size_pt = line.font_size_px * 0.75;
             if band_height <= size_pt {
                 continue;
@@ -962,7 +1006,10 @@ fn render_template(template: &str, values: &[(&str, String)]) -> Option<Template
                 out.push_str(value);
                 continue;
             }
-            if let Some(text) = dom.with_node(node, |n| n.text_content_of_text_node().map(str::to_string)).flatten() {
+            if let Some(text) = dom
+                .with_node(node, |n| n.text_content_of_text_node().map(str::to_string))
+                .flatten()
+            {
                 out.push_str(&text);
                 continue;
             }
@@ -972,15 +1019,33 @@ fn render_template(template: &str, values: &[(&str, String)]) -> Option<Template
         }
         out.split_whitespace().collect::<Vec<_>>().join(" ")
     };
-    let is_element = |id: inbrowse_dom::NodeId| dom.with_node(id, |n| n.is_element()).unwrap_or(false);
-    let top: Vec<_> = dom.children(body).into_iter().filter(|&id| is_element(id) || !text_of(id).is_empty()).collect();
+    let is_element =
+        |id: inbrowse_dom::NodeId| dom.with_node(id, |n| n.is_element()).unwrap_or(false);
+    let top: Vec<_> = dom
+        .children(body)
+        .into_iter()
+        .filter(|&id| is_element(id) || !text_of(id).is_empty())
+        .collect();
     // A flex row lays its children out as separate columns; anything else is
     // one run of text.
     let (container, parts_nodes, flex_row) = match top.as_slice() {
         [single] if is_element(*single) => {
-            let flex = css_declaration(&style_of(*single), "display").is_some_and(|d| d.contains("flex"));
-            let kids: Vec<_> = dom.children(*single).into_iter().filter(|&id| !text_of(id).is_empty()).collect();
-            (Some(*single), if flex && kids.len() > 1 { kids } else { vec![*single] }, flex)
+            let flex =
+                css_declaration(&style_of(*single), "display").is_some_and(|d| d.contains("flex"));
+            let kids: Vec<_> = dom
+                .children(*single)
+                .into_iter()
+                .filter(|&id| !text_of(id).is_empty())
+                .collect();
+            (
+                Some(*single),
+                if flex && kids.len() > 1 {
+                    kids
+                } else {
+                    vec![*single]
+                },
+                flex,
+            )
         }
         _ => (None, vec![body], false),
     };
@@ -1004,7 +1069,10 @@ fn render_template(template: &str, values: &[(&str, String)]) -> Option<Template
         };
         parts.push((text, align));
     }
-    (!parts.is_empty()).then_some(TemplateLine { font_size_px, parts })
+    (!parts.is_empty()).then_some(TemplateLine {
+        font_size_px,
+        parts,
+    })
 }
 
 fn css_declaration(style: &str, name: &str) -> Option<String> {
@@ -1017,7 +1085,9 @@ fn css_declaration(style: &str, name: &str) -> Option<String> {
 /// A CSS length in CSS pixels (px, pt, pc, in, cm, mm, em as 16px).
 fn css_length_px(value: &str) -> Option<f32> {
     let value = value.trim();
-    let split = value.find(|c: char| c.is_ascii_alphabetic() || c == '%').unwrap_or(value.len());
+    let split = value
+        .find(|c: char| c.is_ascii_alphabetic() || c == '%')
+        .unwrap_or(value.len());
     let number: f32 = value[..split].trim().parse().ok()?;
     let px = match value[split..].trim() {
         "" | "px" => number,
@@ -1038,7 +1108,9 @@ fn page_size_from_css(css: &str) -> Option<(f32, f32)> {
     let mut rest = lower.as_str();
     while let Some(at) = rest.find("@page") {
         let block_start = rest[at..].find('{')? + at + 1;
-        let block_end = rest[block_start..].find('}').map_or(rest.len(), |end| block_start + end);
+        let block_end = rest[block_start..]
+            .find('}')
+            .map_or(rest.len(), |end| block_start + end);
         let block = &rest[block_start..block_end];
         if let Some(value) = css_declaration(&block.replace('\n', " "), "size") {
             if let Some(size) = parse_page_size(&value) {
@@ -1134,7 +1206,8 @@ fn print_utc_offset_seconds(page: &crate::Page, now: std::time::SystemTime) -> i
     let epoch_ms = now
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |since| since.as_secs_f64() * 1000.0);
-    page.utc_offset_ms_at(epoch_ms).map_or(0, |ms| ms.div_euclid(1000))
+    page.utc_offset_ms_at(epoch_ms)
+        .map_or(0, |ms| ms.div_euclid(1000))
 }
 
 /// Chrome's header date format, e.g. `9/26/26, 3:05 PM`, in the zone that is
@@ -1164,7 +1237,10 @@ fn format_print_date(now: std::time::SystemTime, utc_offset_seconds: i64) -> Str
         12 => (12, "PM"),
         _ => (hour - 12, "PM"),
     };
-    format!("{month}/{day}/{:02}, {hour12}:{minute:02} {meridiem}", year % 100)
+    format!(
+        "{month}/{day}/{:02}, {hour12}:{minute:02} {meridiem}",
+        year % 100
+    )
 }
 
 struct PdfWriter {
@@ -1317,7 +1393,9 @@ mod tests {
             let stream_start = digits_end
                 + find_bytes(&pdf[digits_end..], b"stream\n").expect("image stream")
                 + b"stream\n".len();
-            let stream_end = stream_start.checked_add(length).expect("bounded stream end");
+            let stream_end = stream_start
+                .checked_add(length)
+                .expect("bounded stream end");
             let raster = image::load_from_memory_with_format(
                 &pdf[stream_start..stream_end],
                 image::ImageFormat::Jpeg,
@@ -1365,8 +1443,13 @@ mod tests {
 
         let oversized_page =
             pagination_plan(5_000.0, 5_000.0, printable_width, printable_height, 1.0).unwrap();
-        let oversized_page_selection =
-            selected_page_indices(page_slices(5_000.0, oversized_page.css_page_height, &[]).unwrap().len(), &[]).unwrap();
+        let oversized_page_selection = selected_page_indices(
+            page_slices(5_000.0, oversized_page.css_page_height, &[])
+                .unwrap()
+                .len(),
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             validate_selected_raster_work(
                 5_000.0,
@@ -1381,8 +1464,13 @@ mod tests {
 
         let too_much_total =
             pagination_plan(1_000.0, 70_000.0, printable_width, printable_height, 1.0).unwrap();
-        let too_much_total_selection =
-            selected_page_indices(page_slices(70_000.0, too_much_total.css_page_height, &[]).unwrap().len(), &[]).unwrap();
+        let too_much_total_selection = selected_page_indices(
+            page_slices(70_000.0, too_much_total.css_page_height, &[])
+                .unwrap()
+                .len(),
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             validate_selected_raster_work(
                 1_000.0,
@@ -1398,7 +1486,13 @@ mod tests {
         let too_many =
             pagination_plan(1_000.0, 400_000.0, printable_width, printable_height, 1.0).unwrap();
         assert_eq!(
-            selected_page_indices(page_slices(400_000.0, too_many.css_page_height, &[]).unwrap().len(), &[]).unwrap_err(),
+            selected_page_indices(
+                page_slices(400_000.0, too_many.css_page_height, &[])
+                    .unwrap()
+                    .len(),
+                &[]
+            )
+            .unwrap_err(),
             RasterPdfError::TooManyPages(MAX_PDF_PAGES),
         );
     }
@@ -1435,8 +1529,7 @@ mod tests {
 
         let base = pagination_plan(800.0, 2_000.0, printable_width, printable_height, 1.0)
             .expect("base geometry");
-        let impossible_height =
-            base.css_page_height * (MAX_PDF_DOCUMENT_PAGES as f32 + 16.0);
+        let impossible_height = base.css_page_height * (MAX_PDF_DOCUMENT_PAGES as f32 + 16.0);
         assert_eq!(
             pagination_plan(
                 800.0,
@@ -1464,12 +1557,15 @@ mod tests {
         );
         assert_eq!(enlarged.css_page_height, normal.css_page_height / 2.0);
         assert!(
-            page_slices(2_000.0, enlarged.css_page_height, &[]).unwrap().len()
-                >= page_slices(2_000.0, normal.css_page_height, &[]).unwrap().len()
+            page_slices(2_000.0, enlarged.css_page_height, &[])
+                .unwrap()
+                .len()
+                >= page_slices(2_000.0, normal.css_page_height, &[])
+                    .unwrap()
+                    .len()
         );
         assert_eq!(
-            pagination_plan(800.0, 2_000.0, printable_width, printable_height, 0.09,)
-                .unwrap_err(),
+            pagination_plan(800.0, 2_000.0, printable_width, printable_height, 0.09,).unwrap_err(),
             RasterPdfError::InvalidScale
         );
     }
@@ -1705,7 +1801,9 @@ mod tests {
     fn page_breaks_move_above_lines_they_would_cut() {
         // A 100px page over lines 20px tall starting at 0, 20, ... 180 and
         // one starting at 95: the first break (100) cuts the line at 95.
-        let mut lines: Vec<(f32, f32)> = (0..10).map(|i| (i as f32 * 20.0, i as f32 * 20.0 + 20.0)).collect();
+        let mut lines: Vec<(f32, f32)> = (0..10)
+            .map(|i| (i as f32 * 20.0, i as f32 * 20.0 + 20.0))
+            .collect();
         lines.push((95.0, 115.0));
         let slices = page_slices(200.0, 100.0, &lines).unwrap();
         assert_eq!(slices[0], (0.0, 95.0));
@@ -1736,16 +1834,36 @@ mod tests {
         };
         let pdf = page.raster_pdf(options).expect("PDF");
         let raw = String::from_utf8_lossy(&pdf);
-        assert!(raw.contains("/ToUnicode"), "text layer font carries a ToUnicode map");
+        assert!(
+            raw.contains("/ToUnicode"),
+            "text layer font carries a ToUnicode map"
+        );
         assert!(raw.contains("3 Tr"), "text layer is invisible");
-        let hex = |s: &str| s.encode_utf16().map(|u| format!("{u:04X}")).collect::<String>();
-        assert!(raw.contains(&hex("Searchable")), "the words are in the text layer");
-        assert!(raw.contains(&hex("caf\u{e9}")), "non-ASCII text keeps its code points");
+        let hex = |s: &str| {
+            s.encode_utf16()
+                .map(|u| format!("{u:04X}"))
+                .collect::<String>()
+        };
+        assert!(
+            raw.contains(&hex("Searchable")),
+            "the words are in the text layer"
+        );
+        assert!(
+            raw.contains(&hex("caf\u{e9}")),
+            "non-ASCII text keeps its code points"
+        );
         let lines = raw.matches(" Tj\n").count();
         // About 430px of text: one line on a 1280px screen, two on the paper.
-        assert!(lines >= 2, "the paragraph wrapped at the 200px paper width into {lines} lines");
+        assert!(
+            lines >= 2,
+            "the paragraph wrapped at the 200px paper width into {lines} lines"
+        );
         let rasters = pdf_page_rasters(&pdf);
-        assert_eq!(rasters[0].width(), 200, "the raster spans the print layout width");
+        assert_eq!(
+            rasters[0].width(),
+            200,
+            "the raster spans the print layout width"
+        );
     }
 
     #[test]
@@ -1763,7 +1881,10 @@ mod tests {
         };
         let pdf = page.raster_pdf(options).expect("PDF");
         let raw = String::from_utf8_lossy(&pdf);
-        assert!(raw.contains("(Page 1 of 1) Tj"), "footer template with page values");
+        assert!(
+            raw.contains("(Page 1 of 1) Tj"),
+            "footer template with page values"
+        );
         assert!(raw.contains("/Outlines"));
         assert!(raw.contains(&pdf_text_string("Intro")));
         assert!(raw.contains(&pdf_text_string("Details")));
@@ -1784,7 +1905,10 @@ mod tests {
         assert_eq!(line.font_size_px, 8.0);
         assert_eq!(
             line.parts,
-            vec![("https://u.test/".to_string(), Align::Left), ("2/5".to_string(), Align::Right)]
+            vec![
+                ("https://u.test/".to_string(), Align::Left),
+                ("2/5".to_string(), Align::Right)
+            ]
         );
         let line = render_template(
             "<p style='font-size:12pt;text-align:right'>Page <b class='pageNumber'></b></p>",
@@ -1798,19 +1922,35 @@ mod tests {
 
     #[test]
     fn css_page_sizes_parse() {
-        assert_eq!(page_size_from_css("@page { size: A4 }"), Some((8.27, 11.69)));
-        assert_eq!(page_size_from_css("@page{margin:0;size:letter landscape}"), Some((11.0, 8.5)));
-        assert_eq!(page_size_from_css("@page :first { size: 5in 7in; }"), Some((5.0, 7.0)));
-        assert_eq!(page_size_from_css("@page { size: 210mm }").map(|(w, _)| (w * 100.0).round()), Some(827.0));
+        assert_eq!(
+            page_size_from_css("@page { size: A4 }"),
+            Some((8.27, 11.69))
+        );
+        assert_eq!(
+            page_size_from_css("@page{margin:0;size:letter landscape}"),
+            Some((11.0, 8.5))
+        );
+        assert_eq!(
+            page_size_from_css("@page :first { size: 5in 7in; }"),
+            Some((5.0, 7.0))
+        );
+        assert_eq!(
+            page_size_from_css("@page { size: 210mm }").map(|(w, _)| (w * 100.0).round()),
+            Some(827.0)
+        );
         assert_eq!(page_size_from_css("p { size: a4 }"), None);
         assert_eq!(page_size_from_css("@page { margin: 1in }"), None);
     }
 
     #[test]
     fn print_date_matches_chrome_format() {
-        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_380_800 + 15 * 3600 + 5 * 60);
+        let when = std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(1_790_380_800 + 15 * 3600 + 5 * 60);
         assert_eq!(format_print_date(when, 0), "9/26/26, 3:05 PM");
-        assert_eq!(format_print_date(std::time::UNIX_EPOCH, 0), "1/1/70, 12:00 AM");
+        assert_eq!(
+            format_print_date(std::time::UNIX_EPOCH, 0),
+            "1/1/70, 12:00 AM"
+        );
     }
 
     #[test]
@@ -1819,11 +1959,18 @@ mod tests {
         let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_277_140);
         assert_eq!(format_print_date(when, 0), "11/10/26, 2:19 AM");
         assert_eq!(format_print_date(when, -6 * 3600), "11/9/26, 8:19 PM");
-        assert_eq!(format_print_date(when, 5 * 3600 + 30 * 60), "11/10/26, 7:49 AM");
-        let new_year = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_798_761_600 + 30 * 60);
+        assert_eq!(
+            format_print_date(when, 5 * 3600 + 30 * 60),
+            "11/10/26, 7:49 AM"
+        );
+        let new_year =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_798_761_600 + 30 * 60);
         assert_eq!(format_print_date(new_year, 0), "1/1/27, 12:30 AM");
         assert_eq!(format_print_date(new_year, -3600), "12/31/26, 11:30 PM");
-        assert_eq!(format_print_date(std::time::UNIX_EPOCH, -3600), "12/31/69, 11:00 PM");
+        assert_eq!(
+            format_print_date(std::time::UNIX_EPOCH, -3600),
+            "12/31/69, 11:00 PM"
+        );
     }
 
     #[test]
@@ -1832,14 +1979,16 @@ mod tests {
         let mut page = crate::Page::new("pdf-color-page".into(), context);
         page.set_viewport((100.0, 80.0));
         let mut runtime = inbrowse_js::runtime::InbrowseJsRuntime::new();
-        runtime.set_dom(inbrowse_dom::parse_html(r#"<!doctype html><style>
+        runtime.set_dom(inbrowse_dom::parse_html(
+            r#"<!doctype html><style>
             html,body { margin:0 }
             #probe { width:100px;height:80px;background:#ffffff }
             @media (prefers-color-scheme:dark) { #probe { background:#e02020 } }
             @media print and (prefers-color-scheme:dark) and (prefers-reduced-motion:reduce) {
                 #probe { background:#2050e0 }
             }
-        </style><body><div id="probe"></div></body>"#));
+        </style><body><div id="probe"></div></body>"#,
+        ));
         runtime.set_url("https://example.test/pdf-color");
         page.url = Some(url::Url::parse("https://example.test/pdf-color").unwrap());
         runtime.set_viewport(100.0, 80.0);
@@ -1857,28 +2006,45 @@ mod tests {
             print_background: true,
             paper_width_in: 100.0 / POINTS_PER_INCH,
             paper_height_in: 80.0 / POINTS_PER_INCH,
-            margin_top_in: 0.0, margin_bottom_in: 0.0,
-            margin_left_in: 0.0, margin_right_in: 0.0,
+            margin_top_in: 0.0,
+            margin_bottom_in: 0.0,
+            margin_left_in: 0.0,
+            margin_right_in: 0.0,
             ..RasterPdfOptions::default()
         };
         let pages = pdf_page_rasters(&page.raster_pdf(options).unwrap());
         assert_eq!(pages.len(), 1);
         assert!(channel_near(*pages[0].get_pixel(50, 60), [32, 80, 224]));
         assert_eq!(page.screenshot((100.0, 80.0)).unwrap(), before);
-        assert_eq!(page.evaluate("return matchMedia('(prefers-color-scheme:dark)').matches;").unwrap(), serde_json::json!(true));
+        assert_eq!(
+            page.evaluate("return matchMedia('(prefers-color-scheme:dark)').matches;")
+                .unwrap(),
+            serde_json::json!(true)
+        );
     }
 
     #[test]
     fn writer_emits_xref_and_one_image_per_page() {
-        let pdf = encode_pdf_pages(1, PageGeometry { page_width: 612.0, page_height: 792.0, left: 36.0, bottom: 36.0, printable_height: 720.0 }, &[], |_| {
-            Ok(RasterPage {
-                rgb: image::RgbImage::from_pixel(2, 3, image::Rgb([10, 20, 30])),
-                draw_width_pt: 100.0,
-                draw_height_pt: 150.0,
-                overlay: String::new(),
-                _lifetime_probe: None,
-            })
-        })
+        let pdf = encode_pdf_pages(
+            1,
+            PageGeometry {
+                page_width: 612.0,
+                page_height: 792.0,
+                left: 36.0,
+                bottom: 36.0,
+                printable_height: 720.0,
+            },
+            &[],
+            |_| {
+                Ok(RasterPage {
+                    rgb: image::RgbImage::from_pixel(2, 3, image::Rgb([10, 20, 30])),
+                    draw_width_pt: 100.0,
+                    draw_height_pt: 150.0,
+                    overlay: String::new(),
+                    _lifetime_probe: None,
+                })
+            },
+        )
         .unwrap();
         assert!(pdf.starts_with(b"%PDF-1.4"));
         assert!(pdf.ends_with(b"%%EOF\n"));
@@ -1913,23 +2079,34 @@ mod tests {
     #[test]
     fn page_rasters_are_released_before_capturing_the_next_page() {
         let previous = std::cell::RefCell::new(None::<std::rc::Weak<()>>);
-        let pdf = encode_pdf_pages(4, PageGeometry { page_width: 612.0, page_height: 792.0, left: 36.0, bottom: 36.0, printable_height: 720.0 }, &[], |index| {
-            if let Some(previous) = previous.borrow().as_ref() {
-                assert!(
-                    previous.upgrade().is_none(),
-                    "page {index} was requested while the prior raster was still retained"
-                );
-            }
-            let probe = std::rc::Rc::new(());
-            *previous.borrow_mut() = Some(std::rc::Rc::downgrade(&probe));
-            Ok(RasterPage {
-                rgb: image::RgbImage::from_pixel(8, 8, image::Rgb([index as u8, 0, 0])),
-                draw_width_pt: 100.0,
-                draw_height_pt: 100.0,
-                overlay: String::new(),
-                _lifetime_probe: Some(probe),
-            })
-        })
+        let pdf = encode_pdf_pages(
+            4,
+            PageGeometry {
+                page_width: 612.0,
+                page_height: 792.0,
+                left: 36.0,
+                bottom: 36.0,
+                printable_height: 720.0,
+            },
+            &[],
+            |index| {
+                if let Some(previous) = previous.borrow().as_ref() {
+                    assert!(
+                        previous.upgrade().is_none(),
+                        "page {index} was requested while the prior raster was still retained"
+                    );
+                }
+                let probe = std::rc::Rc::new(());
+                *previous.borrow_mut() = Some(std::rc::Rc::downgrade(&probe));
+                Ok(RasterPage {
+                    rgb: image::RgbImage::from_pixel(8, 8, image::Rgb([index as u8, 0, 0])),
+                    draw_width_pt: 100.0,
+                    draw_height_pt: 100.0,
+                    overlay: String::new(),
+                    _lifetime_probe: Some(probe),
+                })
+            },
+        )
         .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&pdf)

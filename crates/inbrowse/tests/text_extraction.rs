@@ -24,7 +24,14 @@ fn serve(body: &'static str) -> String {
 
 async fn page_for(body: &'static str) -> Page {
     std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
-    let ctx = Arc::new(BrowserContext::with_storage_and_network("text".into(), None, false, None, None, true));
+    let ctx = Arc::new(BrowserContext::with_storage_and_network(
+        "text".into(),
+        None,
+        false,
+        None,
+        None,
+        true,
+    ));
     let mut page = Page::new("text-page".into(), ctx);
     page.navigate(&serve(body)).await.unwrap();
     page
@@ -47,8 +54,16 @@ async fn inner_text_follows_rendered_text_rules() {
         json!("Title\n\nPara with spaces\n\nA bold word\none\ntwo\na\tb\nc\td\n  keep\n  this\nend\nline")
     );
     // An element that is not rendered reports its text content.
-    assert_eq!(page.evaluate("document.querySelector('script').innerText").unwrap(), json!("var secret = 1;"));
-    assert_eq!(page.evaluate("document.querySelector('h1').outerText").unwrap(), json!("Title"));
+    assert_eq!(
+        page.evaluate("document.querySelector('script').innerText")
+            .unwrap(),
+        json!("var secret = 1;")
+    );
+    assert_eq!(
+        page.evaluate("document.querySelector('h1').outerText")
+            .unwrap(),
+        json!("Title")
+    );
     // Setting innerText turns line breaks into <br>.
     assert_eq!(
         page.evaluate("(function(){ const d = document.createElement('div'); d.innerText = 'x\\ny'; return d.innerHTML; })()").unwrap(),
@@ -66,7 +81,10 @@ async fn inner_text_skips_elements_hidden_by_stylesheets() {
         "<div style=\"white-space:pre\">a  b</div></body></html>"
     ))
     .await;
-    assert_eq!(page.evaluate("document.body.innerText").unwrap(), json!("shown\na  b"));
+    assert_eq!(
+        page.evaluate("document.body.innerText").unwrap(),
+        json!("shown\na  b")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -85,7 +103,10 @@ async fn markdown_tables_are_valid_gfm() {
         json!("| Item | Qty |\n|---|---|\n| Apples \\| red | 3 |\n| wide |  |\n\nTable 1: totals\n\nafter")
     );
 
-    let mut page = page_for("<html><body><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></body></html>").await;
+    let mut page = page_for(
+        "<html><body><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></body></html>",
+    )
+    .await;
     // No header row: the first row becomes the header, short rows are padded.
     assert_eq!(
         page.evaluate(inbrowse::HTML_TO_MARKDOWN_JS).unwrap(),

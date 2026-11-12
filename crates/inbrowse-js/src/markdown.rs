@@ -473,7 +473,10 @@ fn converter_script(selector: Option<&str>, drop_boilerplate: bool, result: &str
 /// JS expression that walks `document.body` and returns a markdown string
 /// without the page's navigation, header, footer and sidebars. Must be
 /// evaluated against a Page that has a fully-bootstrapped JS runtime.
-pub const HTML_TO_MARKDOWN_JS: &str = concat!(markdown_function!(), "(null, {dropBoilerplate: true}).content\n");
+pub const HTML_TO_MARKDOWN_JS: &str = concat!(
+    markdown_function!(),
+    "(null, {dropBoilerplate: true}).content\n"
+);
 
 /// [`HTML_TO_MARKDOWN_JS`] for the subtree of the first element matching
 /// `selector` (`fetch --selector`), or the whole body without one. Unless

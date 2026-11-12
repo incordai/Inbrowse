@@ -11,12 +11,13 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 
 /// A `data:` PNG URL of a 4x4 tile whose left half is red and right half blue.
 fn tile_url() -> String {
-    let image = image::RgbaImage::from_fn(4, 4, |x, _| {
-        image::Rgba(if x < 2 { RED } else { BLUE })
-    });
+    let image = image::RgbaImage::from_fn(4, 4, |x, _| image::Rgba(if x < 2 { RED } else { BLUE }));
     let mut bytes = Vec::new();
     image
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     format!(
         "data:image/png;base64,{}",
@@ -55,19 +56,28 @@ fn small_image_tiles_in_both_directions_by_default() {
 
 #[test]
 fn repeat_x_and_repeat_y_tile_one_axis() {
-    let across = paint(&format!("background:url({}) repeat-x", tile_url()), (40.0, 30.0));
+    let across = paint(
+        &format!("background:url({}) repeat-x", tile_url()),
+        (40.0, 30.0),
+    );
     assert_eq!(pixel(&across, 4, 0), RED);
     assert_eq!(pixel(&across, 16, 3), RED);
     assert_eq!(pixel(&across, 0, 4), WHITE, "no second row");
 
-    let down = paint(&format!("background:url({}) repeat-y", tile_url()), (40.0, 30.0));
+    let down = paint(
+        &format!("background:url({}) repeat-y", tile_url()),
+        (40.0, 30.0),
+    );
     assert_eq!(pixel(&down, 0, 8), RED);
     assert_eq!(pixel(&down, 4, 0), WHITE, "no second column");
 }
 
 #[test]
 fn no_repeat_paints_one_tile() {
-    let pixmap = paint(&format!("background:url({}) no-repeat", tile_url()), (40.0, 30.0));
+    let pixmap = paint(
+        &format!("background:url({}) no-repeat", tile_url()),
+        (40.0, 30.0),
+    );
     assert_eq!(pixel(&pixmap, 0, 0), RED);
     assert_eq!(pixel(&pixmap, 3, 3), BLUE);
     assert_eq!(pixel(&pixmap, 4, 0), WHITE);
@@ -165,9 +175,21 @@ fn origin_and_clip_boxes_position_and_bound_the_tiling() {
         (60.0, 40.0),
     );
     assert_eq!(pixel(&content_clip, 4, 4), RED);
-    assert_eq!(pixel(&content_clip, 8, 4), RED, "second tile inside the content box");
-    assert_eq!(pixel(&content_clip, 2, 2), WHITE, "padding is outside the clip");
-    assert_eq!(pixel(&content_clip, 25, 6), WHITE, "right padding is outside the clip");
+    assert_eq!(
+        pixel(&content_clip, 8, 4),
+        RED,
+        "second tile inside the content box"
+    );
+    assert_eq!(
+        pixel(&content_clip, 2, 2),
+        WHITE,
+        "padding is outside the clip"
+    );
+    assert_eq!(
+        pixel(&content_clip, 25, 6),
+        WHITE,
+        "right padding is outside the clip"
+    );
 }
 
 fn svg_url(svg: &str) -> String {
@@ -211,7 +233,10 @@ fn one_pixel_tile_covers_a_large_area() {
     let image = image::RgbaImage::from_pixel(1, 1, image::Rgba(RED));
     let mut bytes = Vec::new();
     image
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     let url = format!(
         "data:image/png;base64,{}",

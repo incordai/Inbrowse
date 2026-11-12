@@ -50,20 +50,41 @@ async fn spawn_ws_server() -> u16 {
             tokio::spawn(async move {
                 let mut seen = String::new();
                 let callback = |req: &Request, mut resp: Response| {
-                    let h = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-                    seen = format!("cookie={};origin={};ua={}", h("cookie"), h("origin"), !h("user-agent").is_empty());
-                    if let Some(first) = h("sec-websocket-protocol").split(',').next().filter(|s| !s.is_empty()) {
-                        resp.headers_mut().insert("sec-websocket-protocol", first.trim().parse().unwrap());
+                    let h = |n: &str| {
+                        req.headers()
+                            .get(n)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string()
+                    };
+                    seen = format!(
+                        "cookie={};origin={};ua={}",
+                        h("cookie"),
+                        h("origin"),
+                        !h("user-agent").is_empty()
+                    );
+                    if let Some(first) = h("sec-websocket-protocol")
+                        .split(',')
+                        .next()
+                        .filter(|s| !s.is_empty())
+                    {
+                        resp.headers_mut()
+                            .insert("sec-websocket-protocol", first.trim().parse().unwrap());
                     }
                     Ok(resp)
                 };
-                let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback).await.unwrap();
+                let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
+                    .await
+                    .unwrap();
                 ws.send(Message::text(seen)).await.unwrap();
                 while let Some(Ok(msg)) = ws.next().await {
                     match msg {
                         Message::Text(t) if t.as_str() == "bye" => {
                             let _ = ws
-                                .close(Some(CloseFrame { code: CloseCode::from(4001), reason: "done".into() }))
+                                .close(Some(CloseFrame {
+                                    code: CloseCode::from(4001),
+                                    reason: "done".into(),
+                                }))
                                 .await;
                         }
                         Message::Text(_) | Message::Binary(_) => {
@@ -105,7 +126,14 @@ async fn round_trip(stealth: bool) {
     std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
     let page_url = spawn_page_server();
     let ws_port = spawn_ws_server().await;
-    let ctx = Arc::new(BrowserContext::with_storage_and_network("ws".into(), None, stealth, None, None, true));
+    let ctx = Arc::new(BrowserContext::with_storage_and_network(
+        "ws".into(),
+        None,
+        stealth,
+        None,
+        None,
+        true,
+    ));
     let mut page = Page::new("ws-page".into(), ctx);
     page.navigate(&format!("{page_url}/")).await.unwrap();
 
@@ -131,7 +159,10 @@ async fn round_trip(stealth: bool) {
         }})()"#
     )).unwrap();
 
-    assert_eq!(wait_for(&mut page, "window.done === true").await, json!(true));
+    assert_eq!(
+        wait_for(&mut page, "window.done === true").await,
+        json!(true)
+    );
     let log = page.evaluate("log.join(' | ')").unwrap();
     let log = log.as_str().unwrap();
     assert_eq!(
@@ -162,18 +193,33 @@ async fn round_trip(stealth: bool) {
             .filter(|(m, _)| m == method)
             .map(|(_, p)| {
                 let r = &p["response"];
-                (r["opcode"].as_u64().unwrap(), r["payloadData"].as_str().unwrap().to_string())
+                (
+                    r["opcode"].as_u64().unwrap(),
+                    r["payloadData"].as_str().unwrap().to_string(),
+                )
             })
             .collect()
     };
     assert_eq!(
         frames("Network.webSocketFrameSent"),
-        [(1, "hello".into()), (2, "BwgJ".into()), (2, "ZnJvbS1ibG9i".into()), (1, "bye".into())]
+        [
+            (1, "hello".into()),
+            (2, "BwgJ".into()),
+            (2, "ZnJvbS1ibG9i".into()),
+            (1, "bye".into())
+        ]
     );
     let received = frames("Network.webSocketFrameReceived");
     assert_eq!(received.len(), 4);
     assert!(received[0].1.starts_with("cookie=sid=abc"));
-    assert_eq!(received[1..], [(1, "hello".into()), (2, "BwgJ".into()), (2, "ZnJvbS1ibG9i".into())]);
+    assert_eq!(
+        received[1..],
+        [
+            (1, "hello".into()),
+            (2, "BwgJ".into()),
+            (2, "ZnJvbS1ibG9i".into())
+        ]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -181,8 +227,19 @@ async fn failed_connection_fires_error_then_close_1006() {
     std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
     let page_url = spawn_page_server();
     // Bind then drop so nothing listens on the port.
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let ctx = Arc::new(BrowserContext::with_storage_and_network("ws-fail".into(), None, false, None, None, true));
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let ctx = Arc::new(BrowserContext::with_storage_and_network(
+        "ws-fail".into(),
+        None,
+        false,
+        None,
+        None,
+        true,
+    ));
     let mut page = Page::new("ws-fail-page".into(), ctx);
     page.navigate(&format!("{page_url}/")).await.unwrap();
     page.evaluate(&format!(
@@ -195,19 +252,33 @@ async fn failed_connection_fires_error_then_close_1006() {
             return 1;
         }})()"#
     )).unwrap();
-    assert_eq!(wait_for(&mut page, "window.done === true").await, json!(true));
-    assert_eq!(page.evaluate("log.join(',')").unwrap(), json!("error:3,close:1006:false"));
+    assert_eq!(
+        wait_for(&mut page, "window.done === true").await,
+        json!(true)
+    );
+    assert_eq!(
+        page.evaluate("log.join(',')").unwrap(),
+        json!("error:3,close:1006:false")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn constructor_and_close_validate_like_chrome() {
     let page_url = spawn_page_server();
     std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
-    let ctx = Arc::new(BrowserContext::with_storage_and_network("ws-validate".into(), None, false, None, None, true));
+    let ctx = Arc::new(BrowserContext::with_storage_and_network(
+        "ws-validate".into(),
+        None,
+        false,
+        None,
+        None,
+        true,
+    ));
     let mut page = Page::new("ws-validate-page".into(), ctx);
     page.navigate(&format!("{page_url}/")).await.unwrap();
-    let result = page.evaluate(
-        r#"(function() {
+    let result = page
+        .evaluate(
+            r#"(function() {
             const out = [];
             const t = (f) => { try { f(); out.push('ok'); } catch (e) { out.push(e.name); } };
             t(() => new WebSocket('ftp://x.test/'));
@@ -221,7 +292,8 @@ async fn constructor_and_close_validate_like_chrome() {
             ws.close();
             return out.join(',');
         })()"#,
-    ).unwrap();
+        )
+        .unwrap();
     assert_eq!(
         result,
         json!("SyntaxError,SyntaxError,SyntaxError,true,InvalidStateError,InvalidAccessError,1,3,[object WebSocket]")

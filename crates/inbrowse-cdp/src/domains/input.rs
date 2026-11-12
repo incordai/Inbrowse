@@ -165,14 +165,23 @@ pub async fn handle(
             let event_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let x = params.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let y = params.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let button = params.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let button = params
+                .get("button")
+                .and_then(|v| v.as_str())
+                .unwrap_or("left");
             let button_code = mouse_button_code(button);
             let buttons = params
                 .get("buttons")
                 .and_then(|v| v.as_u64())
                 .unwrap_or_else(|| mouse_button_mask(button));
-            let click_count = params.get("clickCount").and_then(|v| v.as_u64()).unwrap_or(1);
-            let modifiers = params.get("modifiers").and_then(|v| v.as_u64()).unwrap_or(0);
+            let click_count = params
+                .get("clickCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
+            let modifiers = params
+                .get("modifiers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let (alt_key, ctrl_key, meta_key, shift_key) = modifier_flags(modifiers);
             // Set when a touch tap drives this press/release: the touch path
             // already fired the touch-type pointer events.
@@ -185,7 +194,10 @@ pub async fn handle(
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
                     let point = frames::frame_at_point(page, x, y)?;
                     let (x, y) = (point.x, point.y);
-                    let mut page = InFrame { page, frame: point.frame };
+                    let mut page = InFrame {
+                        page,
+                        frame: point.frame,
+                    };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || document.body;\
@@ -216,7 +228,10 @@ pub async fn handle(
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
                     let point = frames::frame_at_point(page, x, y)?;
                     let (x, y) = (point.x, point.y);
-                    let mut page = InFrame { page, frame: point.frame };
+                    let mut page = InFrame {
+                        page,
+                        frame: point.frame,
+                    };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || globalThis.__inbrowse_click_target || document.activeElement || document.body;\
@@ -272,7 +287,10 @@ pub async fn handle(
                 let moved_frame = if let Some(page) = ctx.get_session_page_mut(session_id) {
                     let point = frames::frame_at_point(page, x, y)?;
                     let (x, y) = (point.x, point.y);
-                    let mut page = InFrame { page, frame: point.frame };
+                    let mut page = InFrame {
+                        page,
+                        frame: point.frame,
+                    };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || globalThis.__inbrowse_click_target || document.activeElement || document.body;\
@@ -383,7 +401,9 @@ pub async fn handle(
                     None
                 };
                 if let Some((frame_id, url)) = moved_frame {
-                    crate::domains::page::emit_same_document_navigation(ctx, session_id, &frame_id, &url);
+                    crate::domains::page::emit_same_document_navigation(
+                        ctx, session_id, &frame_id, &url,
+                    );
                 }
             } else if event_type == "mouseWheel" {
                 let delta_x = params.get("deltaX").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -391,7 +411,10 @@ pub async fn handle(
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
                     let point = frames::frame_at_point(page, x, y)?;
                     let (x, y) = (point.x, point.y);
-                    let mut page = InFrame { page, frame: point.frame };
+                    let mut page = InFrame {
+                        page,
+                        frame: point.frame,
+                    };
                     let code = format!(
                         "(function() {{\
                             var target = (document.elementFromPoint && document.elementFromPoint({x},{y})) || document.body || document.documentElement;\
@@ -456,7 +479,10 @@ pub async fn handle(
         }
         "dispatchKeyEvent" => {
             let event_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let modifiers = params.get("modifiers").and_then(|v| v.as_u64()).unwrap_or(0);
+            let modifiers = params
+                .get("modifiers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let (alt_key, ctrl_key, meta_key, shift_key) = modifier_flags(modifiers);
             let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let code = params.get("code").and_then(|v| v.as_str()).unwrap_or("");
@@ -496,13 +522,17 @@ pub async fn handle(
                         let selects_all = params
                             .get("commands")
                             .and_then(|v| v.as_array())
-                            .is_some_and(|commands| commands.iter().any(|c| c.as_str() == Some("selectAll")))
+                            .is_some_and(|commands| {
+                                commands.iter().any(|c| c.as_str() == Some("selectAll"))
+                            })
                             || ((ctrl_key || meta_key)
                                 && !alt_key
                                 && !shift_key
                                 && (key.eq_ignore_ascii_case("a") || code == "KeyA"));
                         if selects_all {
-                            page.evaluate("globalThis.__inbrowse_selectAll(document.activeElement)")?;
+                            page.evaluate(
+                                "globalThis.__inbrowse_selectAll(document.activeElement)",
+                            )?;
                         }
 
                         // A Ctrl/Cmd shortcut types nothing, even if the client
@@ -574,8 +604,14 @@ pub async fn handle(
         }
         "dispatchTouchEvent" => {
             let event_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let points = params.get("touchPoints").cloned().unwrap_or_else(|| json!([]));
-            let modifiers = params.get("modifiers").and_then(|v| v.as_u64()).unwrap_or(0);
+            let points = params
+                .get("touchPoints")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let modifiers = params
+                .get("modifiers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let taps = match ctx.get_session_page_mut(session_id) {
                 Some(page) => page.evaluate(&format!(
                     "JSON.stringify(globalThis.__inbrowse_dispatchTouch({}, {}, {}))",
@@ -610,7 +646,10 @@ pub async fn handle(
             let x = params.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let y = params.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let data = params.get("data").cloned().unwrap_or_else(|| json!({}));
-            let modifiers = params.get("modifiers").and_then(|v| v.as_u64()).unwrap_or(0);
+            let modifiers = params
+                .get("modifiers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if let Some(page) = ctx.get_session_page_mut(session_id) {
                 page.evaluate(&format!(
                     "globalThis.__inbrowse_dispatchDrag({}, {}, {}, {}, {})",
@@ -644,8 +683,7 @@ mod tests {
             "control characters must be escaped, not left raw: {lit:?}"
         );
         // The result must be a valid JS/JSON string literal that round-trips.
-        let decoded: String =
-            serde_json::from_str(&lit).expect("the literal must be valid JSON");
+        let decoded: String = serde_json::from_str(&lit).expect("the literal must be valid JSON");
         assert_eq!(decoded, "a\nb\r\t'c\\d\"e");
     }
 }

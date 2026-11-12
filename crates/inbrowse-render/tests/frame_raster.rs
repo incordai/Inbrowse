@@ -31,10 +31,7 @@ impl CanvasSurfaceSource for SolidFrames {
 
     fn frame_raster(&self, request: FrameRasterRequest) -> Option<Pixmap> {
         self.requests.borrow_mut().push(request);
-        let mut raster = Pixmap::new(
-            request.visible.width as u32,
-            request.visible.height as u32,
-        )?;
+        let mut raster = Pixmap::new(request.visible.width as u32, request.visible.height as u32)?;
         raster.fill(Color::from_rgba8(
             self.color[0],
             self.color[1],
@@ -171,6 +168,10 @@ fn print_economy_capture_tells_the_frame_to_skip_backgrounds() {
 #[test]
 fn page_without_iframes_asks_for_no_frame_rasters() {
     let frames = SolidFrames::new([255, 0, 0, 255]);
-    paint("<div style='width:20px;height:20px'></div>", &frames, (40.0, 40.0));
+    paint(
+        "<div style='width:20px;height:20px'></div>",
+        &frames,
+        (40.0, 40.0),
+    );
     assert!(frames.requests.borrow().is_empty());
 }

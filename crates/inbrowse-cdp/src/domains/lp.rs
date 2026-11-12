@@ -16,7 +16,11 @@ pub async fn handle(
             let drop_boilerplate = match params.get("boilerplate").and_then(Value::as_str) {
                 None | Some("drop") => true,
                 Some("keep") => false,
-                Some(other) => return Err(format!("boilerplate must be \"keep\" or \"drop\", not \"{other}\"")),
+                Some(other) => {
+                    return Err(format!(
+                        "boilerplate must be \"keep\" or \"drop\", not \"{other}\""
+                    ))
+                }
             };
             let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             let result = if drop_boilerplate {

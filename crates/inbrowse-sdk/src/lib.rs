@@ -28,5 +28,5 @@ pub use error::Error;
 pub use page::Page;
 
 // Request/response interception types (issue #306).
-pub use inbrowse::{InterceptedRequest, InterceptResolution};
+pub use inbrowse::{InterceptResolution, InterceptedRequest};
 pub use inbrowse_net::{RequestCallback, RequestInfo, ResourceType, Response, ResponseCallback};

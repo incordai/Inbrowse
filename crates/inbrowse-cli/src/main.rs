@@ -134,7 +134,6 @@ enum Command {
         #[arg(long)]
         allow_file_access: bool,
 
-
         #[arg(long)]
         storage_dir: Option<std::path::PathBuf>,
 
@@ -687,7 +686,10 @@ async fn run_cli() -> anyhow::Result<()> {
         if !pool.trim().is_empty() {
             std::env::set_var("INBROWSE_PROXIES", pool);
             let count = pool.split(',').filter(|s| !s.trim().is_empty()).count();
-            tracing::info!(proxies = count, "proxy pool configured (per-context rotation)");
+            tracing::info!(
+                proxies = count,
+                "proxy pool configured (per-context rotation)"
+            );
         }
     }
 
@@ -816,7 +818,9 @@ async fn run_cli() -> anyhow::Result<()> {
                     anyhow::bail!("Pass URLs via a positional argument or --file, not both.");
                 }
                 if screenshot.is_some() {
-                    anyhow::bail!("--screenshot is only supported for a single URL, not --file batch mode.");
+                    anyhow::bail!(
+                        "--screenshot is only supported for a single URL, not --file batch mode."
+                    );
                 }
                 // Batch mode is raw HTTP only. Rendering each URL through the
                 // browser/JS stack is what `scrape` is for.
@@ -835,7 +839,7 @@ async fn run_cli() -> anyhow::Result<()> {
                     global_proxy,
                     output,
                     quiet,
-                    stealth
+                    stealth,
                 )
                 .await?;
             } else {
@@ -919,7 +923,8 @@ async fn run_cli() -> anyhow::Result<()> {
                 }
             }
             if http {
-                inbrowse_mcp::http::run(host, port, mcp_proxy, user_agent, stealth, idle_close).await?;
+                inbrowse_mcp::http::run(host, port, mcp_proxy, user_agent, stealth, idle_close)
+                    .await?;
             } else {
                 inbrowse_mcp::run(mcp_proxy, user_agent, stealth, idle_close).await?;
             }
@@ -937,11 +942,26 @@ async fn run_cli() -> anyhow::Result<()> {
                 options: inbrowse_extract::Options { password },
                 timeout_secs: timeout,
             };
-            run_extract(&target, choices, global_user_agent.clone(), global_proxy, stealth, output).await?;
+            run_extract(
+                &target,
+                choices,
+                global_user_agent.clone(),
+                global_proxy,
+                stealth,
+                output,
+            )
+            .await?;
         }
         #[cfg(feature = "social")]
         Some(Command::Social { action }) => {
-            run_social(action, global_user_agent.clone(), global_proxy, stealth, global_storage_dir.clone()).await?;
+            run_social(
+                action,
+                global_user_agent.clone(),
+                global_proxy,
+                stealth,
+                global_storage_dir.clone(),
+            )
+            .await?;
         }
         #[cfg(feature = "media")]
         Some(Command::Media {
@@ -967,12 +987,34 @@ async fn run_cli() -> anyhow::Result<()> {
             };
             #[cfg(not(feature = "ocr"))]
             let ocr = false;
-            run_media(&target, out_dir, options, ocr, timeout, global_user_agent.clone(), global_proxy, stealth, output)
-                .await?;
+            run_media(
+                &target,
+                out_dir,
+                options,
+                ocr,
+                timeout,
+                global_user_agent.clone(),
+                global_proxy,
+                stealth,
+                output,
+            )
+            .await?;
         }
         #[cfg(feature = "ocr")]
-        Some(Command::Ocr { target, timeout, output }) => {
-            run_ocr(&target, timeout, global_user_agent.clone(), global_proxy, stealth, output).await?;
+        Some(Command::Ocr {
+            target,
+            timeout,
+            output,
+        }) => {
+            run_ocr(
+                &target,
+                timeout,
+                global_user_agent.clone(),
+                global_proxy,
+                stealth,
+                output,
+            )
+            .await?;
         }
         None => {
             print_banner(args.port);
@@ -1010,7 +1052,9 @@ async fn wait_for_serve_worker(
 const RECYCLE_POLL: Duration = Duration::from_secs(2);
 
 fn free_port() -> std::io::Result<u16> {
-    Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
+    Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?
+        .local_addr()?
+        .port())
 }
 
 type WorkerCommand = Arc<dyn Fn(u16) -> TokioCommand + Send + Sync>;
@@ -1140,13 +1184,19 @@ async fn supervise_worker(
         };
         // Bound concurrent replacement startups (not draining); if no permit
         // is free, retry on the next tick and keep serving meanwhile.
-        let Ok(permit) = recycles.clone().try_acquire_owned() else { continue };
+        let Ok(permit) = recycles.clone().try_acquire_owned() else {
+            continue;
+        };
         let started = Instant::now();
         let spawned = free_port().and_then(|port| make_cmd(port).spawn().map(|c| (port, c)));
         let (port, mut next) = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
-                tracing::warn!("recycle of worker on port {} failed to spawn: {}", worker.port, error);
+                tracing::warn!(
+                    "recycle of worker on port {} failed to spawn: {}",
+                    worker.port,
+                    error
+                );
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
@@ -1155,13 +1205,18 @@ async fn supervise_worker(
         if let Err(error) = wait_for_serve_worker(&mut next, port, deadline).await {
             tracing::warn!(
                 "recycle of worker on port {} aborted, replacement failed: {}",
-                worker.port, error
+                worker.port,
+                error
             );
             let _ = next.kill().await;
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         }
-        let old = slot.replace(pool::Worker::new(port, policy.max_connections, slot.wake.clone()));
+        let old = slot.replace(pool::Worker::new(
+            port,
+            policy.max_connections,
+            slot.wake.clone(),
+        ));
         tracing::info!(
             "recycling worker on port {} (pid {:?}, served {}, live {}, age {}s): {}; replacement on port {} ready in {} ms",
             old.port, child.id(), old.served(), old.active(), old.born.elapsed().as_secs(),
@@ -1212,7 +1267,8 @@ async fn run_multi_worker_serve(
         cmd.arg("serve").arg("--port").arg(worker_port.to_string());
         // Same limit per worker, not split: connections are not spread evenly,
         // so a split would refuse clients while other workers have room.
-        cmd.arg("--max-connections").arg(max_connections.to_string());
+        cmd.arg("--max-connections")
+            .arg(max_connections.to_string());
         // Workers receive the client-facing Host header through the TCP
         // load balancer. Let their CDP security gate accept that public port
         // while it continues to reject foreign hosts and browser origins.
@@ -1285,7 +1341,11 @@ async fn run_multi_worker_serve(
     // and are only reached by the balancer.
     tracing::info!("Load balancer on {}:{}, {} workers", host, port, workers);
     if policy.enabled() {
-        tracing::info!("Worker recycling: {:?}, drain timeout {}s", policy, drain_timeout.as_secs());
+        tracing::info!(
+            "Worker recycling: {:?}, drain timeout {}s",
+            policy,
+            drain_timeout.as_secs()
+        );
     }
 
     let mut next_worker = 0usize;
@@ -1301,7 +1361,9 @@ async fn run_multi_worker_serve(
         let Some(conn) = pool::pick(&slots, &mut next_worker) else {
             tokio::spawn(async move {
                 let mut client = client_stream;
-                let _ = client.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n").await;
+                let _ = client
+                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
+                    .await;
                 let _ = client.shutdown().await;
             });
             continue;
@@ -1336,11 +1398,7 @@ async fn run_multi_worker_serve(
                 match tokio::net::TcpStream::connect(&worker_addr).await {
                     Ok(mut worker_stream) => {
                         if let Err(error) = worker_stream.set_nodelay(true) {
-                            tracing::warn!(
-                                "worker {} TCP_NODELAY failed: {}",
-                                worker_addr,
-                                error
-                            );
+                            tracing::warn!("worker {} TCP_NODELAY failed: {}", worker_addr, error);
                         }
                         tokio::spawn(async move {
                             // Held while proxying so a draining worker waits for it.
@@ -1464,7 +1522,9 @@ async fn stop_worker(child: &mut tokio::process::Child) {
 /// reach the end of a longer `--settle-timers` horizon.
 fn adaptive_settle_secs(settle_timers_ms: Option<u64>) -> u64 {
     const DEFAULT_SETTLE_SECS: u64 = 5;
-    settle_timers_ms.map_or(DEFAULT_SETTLE_SECS, |ms| DEFAULT_SETTLE_SECS.max(ms.div_ceil(1000)))
+    settle_timers_ms.map_or(DEFAULT_SETTLE_SECS, |ms| {
+        DEFAULT_SETTLE_SECS.max(ms.div_ceil(1000))
+    })
 }
 
 /// Settle the page. A fixed `--wait` runs the whole delay. The adaptive
@@ -1537,7 +1597,10 @@ async fn run_fetch(
     let dump_specified = dump.is_some();
     let dump = dump.unwrap_or(DumpFormat::Html);
     if selector.is_some()
-        && matches!(dump, DumpFormat::Original | DumpFormat::Assets | DumpFormat::Cookies)
+        && matches!(
+            dump,
+            DumpFormat::Original | DumpFormat::Assets | DumpFormat::Cookies
+        )
     {
         let name = clap::ValueEnum::to_possible_value(&dump)
             .map(|value| value.get_name().to_string())
@@ -1546,7 +1609,12 @@ async fn run_fetch(
             "--selector narrows html, text, markdown, json and links output; --dump {name} has no element to narrow to"
         );
     }
-    if boilerplate.is_some() && !matches!(dump, DumpFormat::Text | DumpFormat::Markdown | DumpFormat::Json) {
+    if boilerplate.is_some()
+        && !matches!(
+            dump,
+            DumpFormat::Text | DumpFormat::Markdown | DumpFormat::Json
+        )
+    {
         anyhow::bail!("--boilerplate applies to --dump text, markdown and json only");
     }
     let drop_boilerplate = boilerplate != Some(Boilerplate::Keep);
@@ -1556,14 +1624,8 @@ async fn run_fetch(
     // payloads (images, fonts, …) and any non-HTML resource where parsing the
     // body through the DOM/JS layer would corrupt or discard data.
     if dump == DumpFormat::Original {
-        let bytes = fetch_original_bytes(
-            url_str,
-            proxy,
-            user_agent.clone(),
-            timeout_secs,
-            stealth,
-        )
-        .await?;
+        let bytes =
+            fetch_original_bytes(url_str, proxy, user_agent.clone(), timeout_secs, stealth).await?;
         write_or_print_bytes(&bytes, output.as_ref()).await?;
         return Ok(());
     }
@@ -1708,9 +1770,13 @@ async fn run_fetch(
     )
     .await
     {
-        Ok(result) => {
-            result.map_err(|e| anyhow::anyhow!("Failed to navigate to {}: {}", url_str, operator_network_error(e)))?
-        }
+        Ok(result) => result.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to navigate to {}: {}",
+                url_str,
+                operator_network_error(e)
+            )
+        })?,
         Err(_) => anyhow::bail!(
             "Timed out navigating to {} after {}s",
             url_str,
@@ -1737,9 +1803,11 @@ async fn run_fetch(
     #[cfg(feature = "render")]
     let mut deferred_eval_output = None;
     let initial_controlled_scroll = if eval_at_capture_boundary {
-        controlled_scroll_request.as_ref().map(|(x, requested_y)| {
-            page.evaluate(&format!(
-                "(()=>{{\
+        controlled_scroll_request
+            .as_ref()
+            .map(|(x, requested_y)| {
+                page.evaluate(&format!(
+                    "(()=>{{\
                  const requestedX={x},requestedY={requested_y};\
                  const preInitial={{x:window.scrollX,y:window.scrollY}};\
                  window.scrollTo(requestedX,requestedY);\
@@ -1749,10 +1817,10 @@ async fn run_fetch(
                  initialBehavior:'authored',\
                  initialPhase:'before-controlled-scroll-settle'}}\
                  }})()"
-            ))
-        })
-        .transpose()
-        .map_err(|error| anyhow::anyhow!("capture scroll setup failed: {error}"))?
+                ))
+            })
+            .transpose()
+            .map_err(|error| anyhow::anyhow!("capture scroll setup failed: {error}"))?
     } else {
         None
     };
@@ -1802,7 +1870,8 @@ async fn run_fetch(
             if !wait_for_selector(&mut page, sel, wait_secs).await {
                 anyhow::bail!("--selector '{sel}' matched nothing within {wait_secs}s");
             }
-            page.with_dom(|dom| dom.query_selector(sel).ok().flatten()).flatten()
+            page.with_dom(|dom| dom.query_selector(sel).ok().flatten())
+                .flatten()
         }
         None => None,
     };
@@ -2074,7 +2143,9 @@ async fn fetch_original_response(
             .with_user_agent(user_agent);
             return match timeout(Duration::from_secs(timeout_secs), client.fetch(&url)).await {
                 Ok(Ok(resp)) => Ok(resp),
-                Ok(Err(e)) => anyhow::bail!("Failed to fetch {}: {}", url_str, operator_network_error(e)),
+                Ok(Err(e)) => {
+                    anyhow::bail!("Failed to fetch {}: {}", url_str, operator_network_error(e))
+                }
                 Err(_) => anyhow::bail!("Timed out fetching {} after {}s", url_str, timeout_secs),
             };
         }
@@ -2135,27 +2206,41 @@ async fn run_extract(
     stealth: bool,
     output: Option<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
-    let ExtractChoices { hint, options, timeout_secs } = choices;
+    let ExtractChoices {
+        hint,
+        options,
+        timeout_secs,
+    } = choices;
     // Backstop as in run_fetch: a parser stuck in native code on a hostile
     // document cannot be cancelled by the timeout below.
     let hard = Duration::from_secs(timeout_secs.saturating_add(5));
     std::thread::spawn(move || {
         std::thread::sleep(hard);
-        eprintln!("inbrowse: hard timeout exceeded ({}s); forcing exit", hard.as_secs());
+        eprintln!(
+            "inbrowse: hard timeout exceeded ({}s); forcing exit",
+            hard.as_secs()
+        );
         std::process::exit(124);
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
     // A Windows path such as C:\a.pdf parses as a URL with scheme "c".
-    let is_url = url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+    let is_url =
+        url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
     let (bytes, hint) = if is_url {
-        let resp = fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
+        let resp =
+            fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
         if resp.status >= 400 {
             anyhow::bail!("{} returned HTTP {}", target, resp.status);
         }
         let hint = hint
             .or_else(|| resp.headers.get("content-type").cloned())
-            .or_else(|| resp.url.path_segments().and_then(|mut s| s.next_back()).map(String::from));
+            .or_else(|| {
+                resp.url
+                    .path_segments()
+                    .and_then(|mut s| s.next_back())
+                    .map(String::from)
+            });
         (resp.body, hint)
     } else {
         let path = std::path::Path::new(target);
@@ -2165,7 +2250,12 @@ async fn run_extract(
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
             .len();
         if len > limit {
-            anyhow::bail!("{} is {} bytes; the limit is {}", path.display(), len, limit);
+            anyhow::bail!(
+                "{} is {} bytes; the limit is {}",
+                path.display(),
+                len,
+                limit
+            );
         }
         let bytes = tokio::fs::read(path)
             .await
@@ -2176,7 +2266,12 @@ async fn run_extract(
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     let work = tokio::task::spawn_blocking(move || {
-        inbrowse_extract::extract_with_limits(&bytes, hint.as_deref(), &inbrowse_extract::Limits::default(), &options)
+        inbrowse_extract::extract_with_limits(
+            &bytes,
+            hint.as_deref(),
+            &inbrowse_extract::Limits::default(),
+            &options,
+        )
     });
     let document = match timeout(remaining, work).await {
         Ok(joined) => joined.map_err(|e| anyhow::anyhow!("extraction task failed: {}", e))??,
@@ -2193,7 +2288,11 @@ async fn run_extract(
 fn social_credentials(source: &str) -> Option<serde_json::Value> {
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
     let (provider, key, secret) = match source {
-        "reddit" => ("reddit", var("INBROWSE_REDDIT_CLIENT_ID")?, var("INBROWSE_REDDIT_CLIENT_SECRET")),
+        "reddit" => (
+            "reddit",
+            var("INBROWSE_REDDIT_CLIENT_ID")?,
+            var("INBROWSE_REDDIT_CLIENT_SECRET"),
+        ),
         "x" | "twitter" => ("x", var("INBROWSE_X_BEARER_TOKEN")?, None),
         "github" => ("github", var("INBROWSE_GITHUB_TOKEN")?, None),
         _ => return None,
@@ -2273,10 +2372,9 @@ async fn run_social(
         false,
     );
     if let Some(path) = cookies {
-        let count = context
-            .cookie_jar
-            .load_from_file(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read cookies from {}: {}", path.display(), e))?;
+        let count = context.cookie_jar.load_from_file(&path).map_err(|e| {
+            anyhow::anyhow!("Failed to read cookies from {}: {}", path.display(), e)
+        })?;
         if count == 0 {
             anyhow::bail!("{} holds no cookies", path.display());
         }
@@ -2313,14 +2411,19 @@ async fn run_media(
     let hard = Duration::from_secs(timeout_secs.saturating_add(5));
     std::thread::spawn(move || {
         std::thread::sleep(hard);
-        eprintln!("inbrowse: hard timeout exceeded ({}s); forcing exit", hard.as_secs());
+        eprintln!(
+            "inbrowse: hard timeout exceeded ({}s); forcing exit",
+            hard.as_secs()
+        );
         std::process::exit(124);
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
-    let is_url = url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+    let is_url =
+        url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
     let (bytes, hint) = if is_url {
-        let resp = fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
+        let resp =
+            fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
         if resp.status >= 400 {
             anyhow::bail!("{} returned HTTP {}", target, resp.status);
         }
@@ -2337,12 +2440,20 @@ async fn run_media(
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
             .len();
         if len > options.max_input_bytes as u64 {
-            anyhow::bail!("{} is {} bytes; the limit is {}", path.display(), len, options.max_input_bytes);
+            anyhow::bail!(
+                "{} is {} bytes; the limit is {}",
+                path.display(),
+                len,
+                options.max_input_bytes
+            );
         }
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-        (bytes, path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        (
+            bytes,
+            path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        )
     };
 
     let out_dir = match out_dir {
@@ -2355,14 +2466,18 @@ async fn run_media(
         inbrowse_media::extract(bytes.into(), hint.as_deref(), &dir, &options)
     });
     // Decoding stops itself at the deadline; the margin lets it write what it has.
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now()) + Duration::from_secs(3);
+    let remaining =
+        deadline.saturating_duration_since(std::time::Instant::now()) + Duration::from_secs(3);
     let report = match timeout(remaining, work).await {
         Ok(joined) => joined.map_err(|e| anyhow::anyhow!("media task failed: {}", e))??,
         Err(_) => anyhow::bail!("Timed out reading {} after {}s", target, timeout_secs),
     };
     let mut value = serde_json::to_value(&report)?;
     if let Some(map) = value.as_object_mut() {
-        map.insert("out_dir".into(), serde_json::Value::String(out_dir.to_string_lossy().into_owned()));
+        map.insert(
+            "out_dir".into(),
+            serde_json::Value::String(out_dir.to_string_lossy().into_owned()),
+        );
     }
     // Same code path as the MCP `media_extract` tool's `ocr` option.
     #[cfg(feature = "ocr")]
@@ -2392,15 +2507,20 @@ async fn run_ocr(
     let hard = Duration::from_secs(timeout_secs.saturating_add(5));
     std::thread::spawn(move || {
         std::thread::sleep(hard);
-        eprintln!("inbrowse: hard timeout exceeded ({}s); forcing exit", hard.as_secs());
+        eprintln!(
+            "inbrowse: hard timeout exceeded ({}s); forcing exit",
+            hard.as_secs()
+        );
         std::process::exit(124);
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     let limit = inbrowse_mcp::ocr::MAX_INPUT_BYTES;
 
-    let is_url = url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+    let is_url =
+        url::Url::parse(target).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
     let bytes = if is_url {
-        let resp = fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
+        let resp =
+            fetch_original_response(target, proxy, user_agent, timeout_secs, stealth).await?;
         if resp.status >= 400 {
             anyhow::bail!("{} returned HTTP {}", target, resp.status);
         }
@@ -2412,7 +2532,12 @@ async fn run_ocr(
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?
             .len();
         if len > limit {
-            anyhow::bail!("{} is {} bytes; the limit is {}", path.display(), len, limit);
+            anyhow::bail!(
+                "{} is {} bytes; the limit is {}",
+                path.display(),
+                len,
+                limit
+            );
         }
         tokio::fs::read(path)
             .await
@@ -2693,25 +2818,38 @@ fn dump_html(page: &Page, scope: Option<inbrowse_dom::NodeId>) -> String {
 /// style cascade has nothing to add to markup (`hidden`).
 #[cfg(feature = "render")]
 fn has_author_styles(dom: &inbrowse_dom::DomTree) -> bool {
-    dom.descendants(dom.document()).into_iter().filter_map(|id| dom.get_node(id)).any(|node| {
-        node.get_attribute("style").is_some()
-            || node.as_element().is_some_and(|name| match name.local.as_ref() {
-                "style" | "dialog" => true,
-                "link" => node
-                    .get_attribute("rel")
-                    .is_some_and(|rel| rel.split_ascii_whitespace().any(|kind| kind.eq_ignore_ascii_case("stylesheet"))),
-                _ => false,
-            })
-    })
+    dom.descendants(dom.document())
+        .into_iter()
+        .filter_map(|id| dom.get_node(id))
+        .any(|node| {
+            node.get_attribute("style").is_some()
+                || node
+                    .as_element()
+                    .is_some_and(|name| match name.local.as_ref() {
+                        "style" | "dialog" => true,
+                        "link" => node.get_attribute("rel").is_some_and(|rel| {
+                            rel.split_ascii_whitespace()
+                                .any(|kind| kind.eq_ignore_ascii_case("stylesheet"))
+                        }),
+                        _ => false,
+                    })
+        })
 }
 
 /// The body's readable text, or with `scope` (`--selector`) that element's.
-fn dump_text(page: &mut Page, scope: Option<inbrowse_dom::NodeId>, drop_boilerplate: bool) -> String {
+fn dump_text(
+    page: &mut Page,
+    scope: Option<inbrowse_dom::NodeId>,
+    drop_boilerplate: bool,
+) -> String {
     // Render builds cascade the page's styles to find what it hides, unless
     // nothing could style it; others hide by markup (`hidden`) only.
     #[cfg(feature = "render")]
     let styles = if page.with_dom(has_author_styles).unwrap_or(false) {
-        page.js.as_ref().map(|js| js.accessibility_styles()).unwrap_or_default()
+        page.js
+            .as_ref()
+            .map(|js| js.accessibility_styles())
+            .unwrap_or_default()
     } else {
         Default::default()
     };
@@ -2719,8 +2857,12 @@ fn dump_text(page: &mut Page, scope: Option<inbrowse_dom::NodeId>, drop_boilerpl
     let styles = std::collections::HashMap::new();
     page.with_dom(|dom| {
         let root = scope.or_else(|| dom.query_selector("body").ok().flatten());
-        root.map(|root| extract_readable_text(dom, root, drop_boilerplate, &styles).trim().to_string())
-            .unwrap_or_default()
+        root.map(|root| {
+            extract_readable_text(dom, root, drop_boilerplate, &styles)
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
     })
     .unwrap_or_default()
 }
@@ -2749,7 +2891,11 @@ async fn evaluate_user_expression(
 }
 
 /// The page as one JSON object (`--dump json`), pretty-printed.
-fn dump_json(page: &mut Page, selector: Option<&str>, drop_boilerplate: bool) -> anyhow::Result<String> {
+fn dump_json(
+    page: &mut Page,
+    selector: Option<&str>,
+    drop_boilerplate: bool,
+) -> anyhow::Result<String> {
     let json = inbrowse::page_json::page_json(page, selector, drop_boilerplate, Page::evaluate)
         .map_err(|error| anyhow::anyhow!("page JSON failed: {error}"))?
         .ok_or_else(|| anyhow::anyhow!("--selector matched nothing"))?;
@@ -2757,7 +2903,11 @@ fn dump_json(page: &mut Page, selector: Option<&str>, drop_boilerplate: bool) ->
 }
 
 /// The body as markdown, or with `selector` (`--selector`) its first match.
-fn dump_markdown(page: &mut Page, selector: Option<&str>, drop_boilerplate: bool) -> anyhow::Result<String> {
+fn dump_markdown(
+    page: &mut Page,
+    selector: Option<&str>,
+    drop_boilerplate: bool,
+) -> anyhow::Result<String> {
     let script = inbrowse_js::markdown::html_to_markdown_js(selector, drop_boilerplate);
     let result = page
         .evaluate(&script)
@@ -2821,7 +2971,11 @@ impl ReadableText {
         let tab = self.pending_tab;
         let space = self.pending_space || begins_with_space;
         self.flush_separators();
-        if !breaks && !tab && space && !self.out.is_empty() && !self.out.ends_with(char::is_whitespace)
+        if !breaks
+            && !tab
+            && space
+            && !self.out.is_empty()
+            && !self.out.ends_with(char::is_whitespace)
         {
             self.out.push(' ');
         }
@@ -2882,7 +3036,10 @@ fn extract_readable_text(
     dom: &inbrowse_dom::DomTree,
     node_id: inbrowse_dom::NodeId,
     drop_boilerplate: bool,
-    styles: &std::collections::HashMap<inbrowse_dom::NodeId, inbrowse_js::runtime::AccessibilityStyle>,
+    styles: &std::collections::HashMap<
+        inbrowse_dom::NodeId,
+        inbrowse_js::runtime::AccessibilityStyle,
+    >,
 ) -> String {
     use inbrowse_dom::NodeData;
 
@@ -2985,7 +3142,10 @@ fn extract_readable_text(
                 let style = styles.get(&id).copied().unwrap_or_default();
                 if node.get_attribute("hidden").is_some()
                     || style.display_none
-                    || matches!(tag, "script" | "style" | "template" | "noscript" | "head" | "title")
+                    || matches!(
+                        tag,
+                        "script" | "style" | "template" | "noscript" | "head" | "title"
+                    )
                     || (drop_boilerplate
                         && id != node_id
                         && is_boilerplate(tag, role, in_article > 0, in_section > 0))
@@ -3036,10 +3196,10 @@ fn extract_readable_text(
                     }
                     "td" | "th" => stack.push(Work::LeaveCell),
                     "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "hr"
-                    | "blockquote" | "section" | "article" | "main" | "figure"
-                    | "figcaption" | "table" | "caption" | "thead" | "tbody" | "tfoot"
-                    | "dl" | "dt" | "dd" | "ul" | "ol" | "form" | "fieldset" | "legend"
-                    | "address" | "details" | "summary" | "body" => {
+                    | "blockquote" | "section" | "article" | "main" | "figure" | "figcaption"
+                    | "table" | "caption" | "thead" | "tbody" | "tfoot" | "dl" | "dt" | "dd"
+                    | "ul" | "ol" | "form" | "fieldset" | "legend" | "address" | "details"
+                    | "summary" | "body" => {
                         text.request_breaks(1);
                         stack.push(Work::LeaveBlock(1));
                     }
@@ -3062,18 +3222,28 @@ fn extract_readable_text(
 
 /// The option a `<select>` shows: the last one with the `selected` attribute,
 /// else the first one that is not disabled. `innerText` renders only that.
-fn selected_option(dom: &inbrowse_dom::DomTree, select: inbrowse_dom::NodeId) -> Option<inbrowse_dom::NodeId> {
+fn selected_option(
+    dom: &inbrowse_dom::DomTree,
+    select: inbrowse_dom::NodeId,
+) -> Option<inbrowse_dom::NodeId> {
     let options: Vec<_> = dom
         .descendants(select)
         .into_iter()
         .filter_map(|id| dom.get_node(id))
-        .filter(|node| node.as_element().is_some_and(|name| name.local.as_ref() == "option"))
+        .filter(|node| {
+            node.as_element()
+                .is_some_and(|name| name.local.as_ref() == "option")
+        })
         .collect();
     options
         .iter()
         .rev()
         .find(|node| node.get_attribute("selected").is_some())
-        .or_else(|| options.iter().find(|node| node.get_attribute("disabled").is_none()))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|node| node.get_attribute("disabled").is_none())
+        })
         .map(|node| node.id)
 }
 
@@ -3238,8 +3408,10 @@ async fn run_parallel_scrape(
                         let mut resp_line = String::new();
                         match timeout(read_timeout, reader.read_line(&mut resp_line)).await {
                             Ok(Ok(bytes)) if bytes > 0 => {
-                                let resp: serde_json::Value = serde_json::from_str(resp_line.trim())
-                                    .map_err(|error| format!("Invalid worker response: {error}"))?;
+                                let resp: serde_json::Value =
+                                    serde_json::from_str(resp_line.trim()).map_err(|error| {
+                                        format!("Invalid worker response: {error}")
+                                    })?;
                                 if resp["ok"].as_bool() == Some(true) {
                                     (resp["result"].clone(), None)
                                 } else {
@@ -3274,7 +3446,10 @@ async fn run_parallel_scrape(
                     if let Some(error) = eval_error {
                         record["error"] = serde_json::Value::String(error);
                     }
-                    if script_warnings.as_array().is_some_and(|warnings| !warnings.is_empty()) {
+                    if script_warnings
+                        .as_array()
+                        .is_some_and(|warnings| !warnings.is_empty())
+                    {
                         record["warnings"] = script_warnings;
                     }
                     Ok(record)
@@ -3527,11 +3702,11 @@ fn dump_assets(page: &Page) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        configure_fetch_navigation_timeout, effective_v8_flags, extract_assets, scrape_url_list,
+        configure_fetch_navigation_timeout, effective_v8_flags, extract_assets,
         extract_readable_text, fetch_original_bytes, is_quiet_command, link_kind_from_rel,
         merge_proxy, merge_user_agent, normalize_v8_flags, read_urls_from_file, resolve_asset_url,
-        select_log_filter, write_or_print, write_or_print_bytes, Args, Command, DumpFormat,
-        DEFAULT_V8_FLAGS,
+        scrape_url_list, select_log_filter, write_or_print, write_or_print_bytes, Args, Command,
+        DumpFormat, DEFAULT_V8_FLAGS,
     };
     use clap::Parser;
     use inbrowse_dom::parse_html;
@@ -3673,22 +3848,39 @@ mod tests {
             merge_user_agent(Some("G".to_string()), Some("C".to_string())),
             Some("C".to_string())
         );
-        assert_eq!(merge_user_agent(Some("G".to_string()), None), Some("G".to_string()));
-        assert_eq!(merge_user_agent(None, Some("C".to_string())), Some("C".to_string()));
+        assert_eq!(
+            merge_user_agent(Some("G".to_string()), None),
+            Some("G".to_string())
+        );
+        assert_eq!(
+            merge_user_agent(None, Some("C".to_string())),
+            Some("C".to_string())
+        );
         assert_eq!(merge_user_agent(None, None), None);
     }
 
     #[test]
     fn scrape_url_list_keeps_positional_order_and_appends_the_file_list() {
-        let path = std::env::temp_dir().join(format!("inbrowse_scrape_list_{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("inbrowse_scrape_list_{}.txt", std::process::id()));
         std::fs::write(&path, "https://c.example/\n# skip\n\n").unwrap();
         let urls = scrape_url_list(
-            vec!["https://a.example/".to_string(), "https://b.example/".to_string()],
+            vec![
+                "https://a.example/".to_string(),
+                "https://b.example/".to_string(),
+            ],
             Some(&path),
         )
         .unwrap();
         std::fs::remove_file(&path).ok();
-        assert_eq!(urls, ["https://a.example/", "https://b.example/", "https://c.example/"]);
+        assert_eq!(
+            urls,
+            [
+                "https://a.example/",
+                "https://b.example/",
+                "https://c.example/"
+            ]
+        );
         let twice = scrape_url_list(vec!["-".to_string()], Some(std::path::Path::new("-")));
         assert!(twice.unwrap_err().to_string().contains("stdin"));
     }
@@ -3779,7 +3971,10 @@ mod tests {
 
         let _ = tokio::fs::remove_file(&path).await;
 
-        assert_eq!(bytes, PNG_BYTES, "stealth=true must not change file:// handling");
+        assert_eq!(
+            bytes, PNG_BYTES,
+            "stealth=true must not change file:// handling"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3894,13 +4089,21 @@ mod tests {
     #[test]
     fn parsed_mcp_accepts_repeated_font_directories() {
         let args = Args::try_parse_from([
-            "inbrowse", "mcp", "--font-dir", "/fonts/cjk", "--font-dir", "/fonts/brand",
+            "inbrowse",
+            "mcp",
+            "--font-dir",
+            "/fonts/cjk",
+            "--font-dir",
+            "/fonts/brand",
         ])
         .expect("clap should accept MCP font directories");
         match args.command {
             Some(Command::Mcp { font_dirs, .. }) => assert_eq!(
                 font_dirs,
-                [std::path::PathBuf::from("/fonts/cjk"), std::path::PathBuf::from("/fonts/brand")]
+                [
+                    std::path::PathBuf::from("/fonts/cjk"),
+                    std::path::PathBuf::from("/fonts/brand")
+                ]
             ),
             _ => panic!("expected Mcp command"),
         }
@@ -4047,14 +4250,9 @@ mod tests {
 
     #[test]
     fn fetch_screenshot_has_a_short_alias_and_rejects_batch_mode() {
-        let args = Args::try_parse_from([
-            "inbrowse",
-            "fetch",
-            "https://example.com",
-            "-s",
-            "page.png",
-        ])
-        .unwrap();
+        let args =
+            Args::try_parse_from(["inbrowse", "fetch", "https://example.com", "-s", "page.png"])
+                .unwrap();
         match args.command {
             Some(Command::Fetch { screenshot, .. }) => {
                 assert_eq!(screenshot, Some(std::path::PathBuf::from("page.png")));
@@ -4078,16 +4276,14 @@ mod tests {
             Some(Command::Fetch { timeout, .. }) => timeout,
             _ => panic!("expected Fetch command"),
         };
-        let context = std::sync::Arc::new(
-            inbrowse::BrowserContext::with_storage_and_network(
-                "cli-timeout-test".to_string(),
-                None,
-                false,
-                None,
-                None,
-                true,
-            ),
-        );
+        let context = std::sync::Arc::new(inbrowse::BrowserContext::with_storage_and_network(
+            "cli-timeout-test".to_string(),
+            None,
+            false,
+            None,
+            None,
+            true,
+        ));
         let mut page = inbrowse::Page::new("cli-timeout-test".to_string(), context);
         configure_fetch_navigation_timeout(&mut page, timeout);
         page.navigation_timeout()
@@ -4159,7 +4355,11 @@ mod tests {
 
     fn layout_text(html: &str) -> String {
         let dom = parse_html(html);
-        let body = dom.query_selector("body").ok().flatten().expect("body must exist");
+        let body = dom
+            .query_selector("body")
+            .ok()
+            .flatten()
+            .expect("body must exist");
         extract_readable_text(&dom, body, true, &Default::default())
     }
 
@@ -4174,7 +4374,9 @@ mod tests {
     #[test]
     fn empty_blocks_do_not_add_blank_lines() {
         assert_eq!(
-            layout_text("<p>One</p><div></div><div><div></div></div>\n  \n<div>Two</div><p>Three</p>"),
+            layout_text(
+                "<p>One</p><div></div><div><div></div></div>\n  \n<div>Two</div><p>Three</p>"
+            ),
             "One\n\nTwo\n\nThree",
         );
     }
@@ -4185,18 +4387,27 @@ mod tests {
             layout_text("<form><select><option>a</option><option selected>b</option></select> <button>Go</button></form>"),
             "b Go",
         );
-        assert_eq!(layout_text("<select><option disabled>x</option><option>y</option></select>"), "y");
+        assert_eq!(
+            layout_text("<select><option disabled>x</option><option>y</option></select>"),
+            "y"
+        );
     }
 
     #[test]
     fn br_and_pre_keep_their_line_structure() {
         assert_eq!(layout_text("a<br>b"), "a\nb");
-        assert_eq!(layout_text("<p>x</p><pre>  keep\n    this</pre><p>y</p>"), "x\n\n  keep\n    this\n\ny");
+        assert_eq!(
+            layout_text("<p>x</p><pre>  keep\n    this</pre><p>y</p>"),
+            "x\n\n  keep\n    this\n\ny"
+        );
     }
 
     #[test]
     fn hidden_and_template_content_is_not_text() {
-        assert_eq!(layout_text("<p>shown</p><p hidden>secret</p><template>tmpl</template>"), "shown");
+        assert_eq!(
+            layout_text("<p>shown</p><p hidden>secret</p><template>tmpl</template>"),
+            "shown"
+        );
     }
 
     #[test]

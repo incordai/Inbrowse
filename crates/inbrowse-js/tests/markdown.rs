@@ -9,7 +9,11 @@ fn markdown(html: &str) -> String {
     let mut rt = InbrowseJsRuntime::new();
     rt.set_dom(inbrowse_dom::parse_html(html));
     rt.run_page_init();
-    rt.evaluate(HTML_TO_MARKDOWN_JS).unwrap().as_str().unwrap().to_string()
+    rt.evaluate(HTML_TO_MARKDOWN_JS)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -30,9 +34,13 @@ fn ordered_lists_number_their_items_from_start() {
 
 #[test]
 fn source_indentation_leaves_no_whitespace_only_lines() {
-    let md = markdown("<div>\n    <p>First</p>\n    \n    <div>\n      <p>Second</p>\n    </div>\n</div>");
+    let md = markdown(
+        "<div>\n    <p>First</p>\n    \n    <div>\n      <p>Second</p>\n    </div>\n</div>",
+    );
     assert_eq!(md, "First\n\nSecond");
-    assert!(!md.lines().any(|line| !line.is_empty() && line.trim().is_empty()));
+    assert!(!md
+        .lines()
+        .any(|line| !line.is_empty() && line.trim().is_empty()));
 }
 
 #[test]
@@ -72,7 +80,11 @@ fn markdown_of_built_page(build: &str) -> String {
             rt.set_dom(inbrowse_dom::parse_html("<html><body></body></html>"));
             rt.run_page_init();
             rt.evaluate(&build).unwrap();
-            rt.evaluate(HTML_TO_MARKDOWN_JS).unwrap().as_str().unwrap().to_string()
+            rt.evaluate(HTML_TO_MARKDOWN_JS)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
         })
         .unwrap()
         .join()

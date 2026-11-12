@@ -18,7 +18,9 @@ fn string_array(v: &Value, key: &str) -> Vec<String> {
 }
 
 fn market_line(m: &Value) -> Option<String> {
-    if m.get("closed").and_then(Value::as_bool) == Some(true) || m.get("active").and_then(Value::as_bool) == Some(false) {
+    if m.get("closed").and_then(Value::as_bool) == Some(true)
+        || m.get("active").and_then(Value::as_bool) == Some(false)
+    {
         return None;
     }
     let question = s(m, "question")?;
@@ -27,13 +29,23 @@ fn market_line(m: &Value) -> Option<String> {
     let odds: Vec<String> = outcomes
         .iter()
         .zip(&prices)
-        .filter_map(|(o, p)| p.parse::<f64>().ok().map(|p| format!("{o} {:.0}%", p * 100.0)))
+        .filter_map(|(o, p)| {
+            p.parse::<f64>()
+                .ok()
+                .map(|p| format!("{o} {:.0}%", p * 100.0))
+        })
         .collect();
-    Some(if odds.is_empty() { question } else { format!("{question} ({})", odds.join(", ")) })
+    Some(if odds.is_empty() {
+        question
+    } else {
+        format!("{question} ({})", odds.join(", "))
+    })
 }
 
 fn event_item(e: &Value) -> Option<Item> {
-    if e.get("closed").and_then(Value::as_bool) == Some(true) || e.get("active").and_then(Value::as_bool) == Some(false) {
+    if e.get("closed").and_then(Value::as_bool) == Some(true)
+        || e.get("active").and_then(Value::as_bool) == Some(false)
+    {
         return None;
     }
     let liquidity = f(e, "liquidity");
@@ -81,7 +93,16 @@ pub(crate) async fn search(
         .append_pair("events_status", "active")
         .append_pair("keep_closed_markets", "0")
         .append_pair("limit_per_type", &req.limit.min(50).to_string());
-    let body = http::json(session, &url, Req { cookies: false, ..Req::default() }, SITE).await?;
+    let body = http::json(
+        session,
+        &url,
+        Req {
+            cookies: false,
+            ..Req::default()
+        },
+        SITE,
+    )
+    .await?;
     Ok(body
         .get("events")
         .and_then(Value::as_array)

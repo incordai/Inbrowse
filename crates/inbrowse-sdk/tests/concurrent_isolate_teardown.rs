@@ -86,7 +86,10 @@ async fn two_pages_on_one_browser_drop_cleanly() {
     let mut two = browser.new_page().await.unwrap();
     two.goto(&base).await.unwrap();
     drop(one);
-    assert_eq!(two.evaluate("document.title").unwrap(), serde_json::json!("fixture"));
+    assert_eq!(
+        two.evaluate("document.title").unwrap(),
+        serde_json::json!("fixture")
+    );
 }
 
 /// Dropping from the *middle* of the stack, which needs the isolates entered

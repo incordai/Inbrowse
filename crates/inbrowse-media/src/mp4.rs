@@ -8,7 +8,9 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use mp4_atom::{Atom, Codec as Mp4Codec, Decode, Elst, FixedPoint, FourCC, Moof, Moov, StszSamples, Trak};
+use mp4_atom::{
+    Atom, Codec as Mp4Codec, Decode, Elst, FixedPoint, FourCC, Moof, Moov, StszSamples, Trak,
+};
 
 use crate::demux::{language, opus_head, Codec, Demuxed, Kind, Sample, TextFormat, Track};
 use crate::MediaError;
@@ -63,7 +65,9 @@ impl Placement {
         };
         let id = trak.tkhd.track_id;
         if movie_timescale == 0 {
-            warnings.push(format!("track {id}: the movie timescale is 0, so its edit list is ignored"));
+            warnings.push(format!(
+                "track {id}: the movie timescale is 0, so its edit list is ignored"
+            ));
             return Self::default();
         }
         let mut delay_ticks = 0i128;
@@ -85,7 +89,11 @@ impl Placement {
             ));
         }
         let one = FixedPoint::<i16>::from(1);
-        if elst.entries.iter().any(|e| e.media_time.is_some() && e.media_rate != one) {
+        if elst
+            .entries
+            .iter()
+            .any(|e| e.media_time.is_some() && e.media_rate != one)
+        {
             warnings.push(format!(
                 "track {id}: the edit list changes the playback rate; the rate is ignored"
             ));
@@ -133,7 +141,10 @@ fn children(data: &[u8], body: usize, end: usize) -> Vec<Child> {
             1 if at.saturating_add(16) <= end => {
                 let mut big = [0u8; 8];
                 big.copy_from_slice(&data[at + 8..at + 16]);
-                (16, usize::try_from(u64::from_be_bytes(big)).unwrap_or(usize::MAX))
+                (
+                    16,
+                    usize::try_from(u64::from_be_bytes(big)).unwrap_or(usize::MAX),
+                )
             }
             1 => break,
             n => (8, n as usize),
@@ -141,7 +152,12 @@ fn children(data: &[u8], body: usize, end: usize) -> Vec<Child> {
         if len < header || len > end - at {
             break;
         }
-        out.push(Child { kind, at, body: at + header, end: at + len });
+        out.push(Child {
+            kind,
+            at,
+            body: at + header,
+            end: at + len,
+        });
         at += len;
     }
     out
@@ -153,7 +169,12 @@ fn children(data: &[u8], body: usize, end: usize) -> Vec<Child> {
 /// would fail the file over timing data; its track then simply has no edit
 /// list. Warns once with the count. Called by [`read`] before decoding `moov`.
 fn hide_unreadable_edit_lists<'a>(moov: &'a [u8], warnings: &mut Vec<String>) -> Cow<'a, [u8]> {
-    let mut found = vec![Child { kind: [0; 4], at: 0, body: 0, end: moov.len() }];
+    let mut found = vec![Child {
+        kind: [0; 4],
+        at: 0,
+        body: 0,
+        end: moov.len(),
+    }];
     for kind in [b"moov", b"trak", b"edts", b"elst"] {
         let next: Vec<Child> = found
             .iter()
@@ -219,7 +240,9 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
     let mut pos = 0usize;
     while pos + 8 <= data.len() {
         let (kind, len) = box_header(&data[pos..])?;
-        let mut end = pos.checked_add(len).ok_or_else(|| malformed("box too large"))?;
+        let mut end = pos
+            .checked_add(len)
+            .ok_or_else(|| malformed("box too large"))?;
         if end > data.len() {
             if &kind == b"mdat" {
                 warnings.push("the file is truncated; samples past the end are skipped".into());
@@ -254,12 +277,17 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
         };
         let timescale = trak.mdia.mdhd.timescale;
         if timescale == 0 {
-            warnings.push(format!("{} track has timescale 0; skipped", track.codec_name));
+            warnings.push(format!(
+                "{} track has timescale 0; skipped",
+                track.codec_name
+            ));
             continue;
         }
         let placement = Placement::of(trak, moov.mvhd.timescale, warnings);
         track.start_us = placement.delay_us;
-        track.samples = progressive(trak, timescale, placement, track.kind, data, &mut total, warnings)?;
+        track.samples = progressive(
+            trak, timescale, placement, track.kind, data, &mut total, warnings,
+        )?;
         let next_dts = trak
             .mdia
             .minf
@@ -290,7 +318,9 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                 .and_then(|m| m.trex.iter().find(|t| t.track_id == state.id));
             let track = &mut tracks[state.index];
             let base = match traf.tfhd.base_data_offset {
-                Some(b) => usize::try_from(b).map_err(|_| malformed("base_data_offset too large"))?,
+                Some(b) => {
+                    usize::try_from(b).map_err(|_| malformed("base_data_offset too large"))?
+                }
                 None => *moof_pos,
             };
             if let Some(tfdt) = &traf.tfdt {
@@ -300,7 +330,8 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
             for trun in &traf.trun {
                 if let Some(offset) = trun.data_offset {
                     let p = base as i64 + i64::from(offset);
-                    data_pos = usize::try_from(p).map_err(|_| malformed("negative trun data offset"))?;
+                    data_pos =
+                        usize::try_from(p).map_err(|_| malformed("negative trun data offset"))?;
                 }
                 for entry in &trun.entries {
                     let duration = entry
@@ -324,7 +355,9 @@ pub(crate) fn read(data: &Bytes, warnings: &mut Vec<String>) -> Result<Demuxed, 
                     if end <= data.len() {
                         total += 1;
                         if total > MAX_SAMPLES {
-                            return Err(MediaError::TooLarge(format!("more than {MAX_SAMPLES} samples")));
+                            return Err(MediaError::TooLarge(format!(
+                                "more than {MAX_SAMPLES} samples"
+                            )));
                         }
                         track.samples.push(Sample {
                             pts_us: state.placement.pts_us(pts, state.timescale),
@@ -393,17 +426,43 @@ fn track_from(trak: &Trak, warnings: &mut Vec<String>) -> Option<Track> {
                 warnings.push("H.264 track has an unreadable avcC; skipped".into());
                 Track::new(kind, Codec::Other, "h264")
             } else {
-                let mut t = Track::new(kind, Codec::H264 { avcc: Bytes::from(avcc) }, "h264");
+                let mut t = Track::new(
+                    kind,
+                    Codec::H264 {
+                        avcc: Bytes::from(avcc),
+                    },
+                    "h264",
+                );
                 t.width = Some(u32::from(avc1.visual.width));
                 t.height = Some(u32::from(avc1.visual.height));
                 t
             }
         }
-        Some(Mp4Codec::Hev1(v)) => sized(Track::new(kind, Codec::Other, "h265"), v.visual.width, v.visual.height),
-        Some(Mp4Codec::Hvc1(v)) => sized(Track::new(kind, Codec::Other, "h265"), v.visual.width, v.visual.height),
-        Some(Mp4Codec::Vp08(v)) => sized(Track::new(kind, Codec::Vp8, "vp8"), v.visual.width, v.visual.height),
-        Some(Mp4Codec::Vp09(v)) => sized(Track::new(kind, Codec::Vp9, "vp9"), v.visual.width, v.visual.height),
-        Some(Mp4Codec::Av01(v)) => sized(Track::new(kind, Codec::Other, "av1"), v.visual.width, v.visual.height),
+        Some(Mp4Codec::Hev1(v)) => sized(
+            Track::new(kind, Codec::Other, "h265"),
+            v.visual.width,
+            v.visual.height,
+        ),
+        Some(Mp4Codec::Hvc1(v)) => sized(
+            Track::new(kind, Codec::Other, "h265"),
+            v.visual.width,
+            v.visual.height,
+        ),
+        Some(Mp4Codec::Vp08(v)) => sized(
+            Track::new(kind, Codec::Vp8, "vp8"),
+            v.visual.width,
+            v.visual.height,
+        ),
+        Some(Mp4Codec::Vp09(v)) => sized(
+            Track::new(kind, Codec::Vp9, "vp9"),
+            v.visual.width,
+            v.visual.height,
+        ),
+        Some(Mp4Codec::Av01(v)) => sized(
+            Track::new(kind, Codec::Other, "av1"),
+            v.visual.width,
+            v.visual.height,
+        ),
         Some(Mp4Codec::Mp4a(mp4a)) => {
             let config = &mp4a.esds.es_desc.dec_config;
             let mut t = match (&config.dec_specific, config.object_type_indication) {
@@ -426,7 +485,12 @@ fn track_from(trak: &Trak, warnings: &mut Vec<String>) -> Option<Track> {
             let mut t = Track::new(
                 kind,
                 Codec::Opus {
-                    head: Some(opus_head(d.output_channel_count, d.pre_skip, d.input_sample_rate, d.output_gain)),
+                    head: Some(opus_head(
+                        d.output_channel_count,
+                        d.pre_skip,
+                        d.input_sample_rate,
+                        d.output_gain,
+                    )),
                 },
                 "opus",
             );
@@ -434,8 +498,12 @@ fn track_from(trak: &Trak, warnings: &mut Vec<String>) -> Option<Track> {
             t.channels = Some(u32::from(d.output_channel_count));
             t
         }
-        Some(Mp4Codec::Wvtt(_)) => Track::new(Kind::Subtitle, Codec::Text(TextFormat::WebVttMp4), "webvtt"),
-        Some(Mp4Codec::Tx3g(_)) => Track::new(Kind::Subtitle, Codec::Text(TextFormat::Tx3g), "tx3g"),
+        Some(Mp4Codec::Wvtt(_)) => {
+            Track::new(Kind::Subtitle, Codec::Text(TextFormat::WebVttMp4), "webvtt")
+        }
+        Some(Mp4Codec::Tx3g(_)) => {
+            Track::new(Kind::Subtitle, Codec::Text(TextFormat::Tx3g), "tx3g")
+        }
         Some(Mp4Codec::Flac(_)) => Track::new(kind, Codec::Other, "flac"),
         Some(Mp4Codec::Unknown(fourcc)) => Track::new(kind, Codec::Other, fourcc.to_string()),
         Some(_) => Track::new(kind, Codec::Other, "other"),
@@ -472,7 +540,9 @@ fn progressive(
     }
     *total += count;
     if *total > MAX_SAMPLES {
-        return Err(MediaError::TooLarge(format!("more than {MAX_SAMPLES} samples")));
+        return Err(MediaError::TooLarge(format!(
+            "more than {MAX_SAMPLES} samples"
+        )));
     }
     let size_of = |i: usize| -> usize {
         if sizes.is_empty() {
@@ -498,7 +568,8 @@ fn progressive(
             entry += 1;
         }
         let per_chunk = stsc.get(entry).map(|e| e.samples_per_chunk).unwrap_or(0);
-        let mut offset = usize::try_from(chunk_offset).map_err(|_| malformed("chunk offset too large"))?;
+        let mut offset =
+            usize::try_from(chunk_offset).map_err(|_| malformed("chunk offset too large"))?;
         for _ in 0..per_chunk {
             if ranges.len() >= count {
                 break 'chunks;
@@ -576,7 +647,9 @@ pub(crate) mod tests {
     /// tests/fixtures/README.md.
     #[test]
     fn negative_offsets_in_a_version_0_ctts_are_signed() {
-        let data = Bytes::from_static(include_bytes!("../tests/fixtures/h264_ctts_v0_negative.mp4"));
+        let data = Bytes::from_static(include_bytes!(
+            "../tests/fixtures/h264_ctts_v0_negative.mp4"
+        ));
         let mut warnings = Vec::new();
         let demuxed = read(&data, &mut warnings).unwrap();
         let mut pts: Vec<i64> = demuxed.tracks[0].samples.iter().map(|s| s.pts_us).collect();
@@ -608,11 +681,17 @@ pub(crate) mod tests {
     }
 
     fn edit(segment_duration: u64, media_time: Option<u64>) -> mp4_atom::ElstEntry {
-        mp4_atom::ElstEntry { segment_duration, media_time, media_rate: 1.into() }
+        mp4_atom::ElstEntry {
+            segment_duration,
+            media_time,
+            media_rate: 1.into(),
+        }
     }
 
     fn set_edits(trak: &mut Trak, entries: Vec<mp4_atom::ElstEntry>) {
-        trak.edts = Some(mp4_atom::Edts { elst: Some(Elst { entries }) });
+        trak.edts = Some(mp4_atom::Edts {
+            elst: Some(Elst { entries }),
+        });
     }
 
     fn sorted_pts(track: &crate::demux::Track) -> Vec<i64> {
@@ -645,7 +724,11 @@ pub(crate) mod tests {
         };
         let mut warnings = Vec::new();
         let without = read(&shifted(None), &mut warnings).unwrap();
-        assert_eq!(sorted_pts(&without.tracks[0]), at_100_ms(200_000), "no edit list: the offset stays");
+        assert_eq!(
+            sorted_pts(&without.tracks[0]),
+            at_100_ms(200_000),
+            "no edit list: the offset stays"
+        );
 
         let with = read(&shifted(Some(vec![edit(2000, Some(2048))])), &mut warnings).unwrap();
         assert_eq!(sorted_pts(&with.tracks[0]), at_100_ms(0), "{warnings:?}");
@@ -656,11 +739,18 @@ pub(crate) mod tests {
     fn leading_empty_edit_delays_the_track() {
         // 500 ms of nothing (movie timescale 1000), then the media from its start.
         let data = rewrite_moov(CTTS_V0, |moov| {
-            set_edits(&mut moov.trak[0], vec![edit(500, None), edit(2000, Some(0))]);
+            set_edits(
+                &mut moov.trak[0],
+                vec![edit(500, None), edit(2000, Some(0))],
+            );
         });
         let mut warnings = Vec::new();
         let demuxed = read(&data, &mut warnings).unwrap();
-        assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(500_000), "{warnings:?}");
+        assert_eq!(
+            sorted_pts(&demuxed.tracks[0]),
+            at_100_ms(500_000),
+            "{warnings:?}"
+        );
         assert_eq!(demuxed.tracks[0].start_us, 500_000);
         assert!(warnings.is_empty(), "{warnings:?}");
     }
@@ -670,7 +760,10 @@ pub(crate) mod tests {
     #[test]
     fn delay_does_not_bring_cut_off_media_into_view() {
         let data = rewrite_moov(CTTS_V0, |moov| {
-            set_edits(&mut moov.trak[0], vec![edit(500, None), edit(2000, Some(2048))]);
+            set_edits(
+                &mut moov.trak[0],
+                vec![edit(500, None), edit(2000, Some(2048))],
+            );
         });
         let demuxed = read(&data, &mut Vec::new()).unwrap();
         let mut expected = vec![-200_000, -100_000];
@@ -683,7 +776,9 @@ pub(crate) mod tests {
     /// callers clamp.
     #[test]
     fn samples_before_the_edit_start_get_negative_times() {
-        let data = rewrite_moov(CTTS_V0, |moov| set_edits(&mut moov.trak[0], vec![edit(2000, Some(2048))]));
+        let data = rewrite_moov(CTTS_V0, |moov| {
+            set_edits(&mut moov.trak[0], vec![edit(2000, Some(2048))])
+        });
         let mut warnings = Vec::new();
         let demuxed = read(&data, &mut warnings).unwrap();
         assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(-200_000));
@@ -699,8 +794,16 @@ pub(crate) mod tests {
         let mut warnings = Vec::new();
         let demuxed = read(&data, &mut warnings).unwrap();
         assert_eq!(sorted_pts(&demuxed.tracks[0]), at_100_ms(-200_000));
-        assert!(warnings.iter().any(|w| w.contains("2 segments") && w.contains("only the first")), "{warnings:?}");
-        assert!(warnings.iter().any(|w| w.contains("playback rate")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("2 segments") && w.contains("only the first")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("playback rate")),
+            "{warnings:?}"
+        );
     }
 
     /// The first audio edit of `h264_aac.mp4` is AAC's 1024-sample encoder
@@ -721,16 +824,33 @@ pub(crate) mod tests {
     fn unreadable_edit_list_is_ignored_with_a_warning() {
         let mut data = H264_AAC.to_vec();
         // The second `elst` is the audio track's: media_time sits 16 bytes in.
-        let audio_elst = data.windows(4).enumerate().filter(|(_, w)| *w == b"elst").nth(1).unwrap().0;
+        let audio_elst = data
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == b"elst")
+            .nth(1)
+            .unwrap()
+            .0;
         data[audio_elst + 16..audio_elst + 20].copy_from_slice(&(-2i32).to_be_bytes());
-        assert!(Moov::decode(&mut &data[9067..]).is_err(), "the premise: mp4-atom refuses it");
+        assert!(
+            Moov::decode(&mut &data[9067..]).is_err(),
+            "the premise: mp4-atom refuses it"
+        );
 
         let mut warnings = Vec::new();
         let demuxed = read(&Bytes::from(data), &mut warnings).unwrap();
         assert_eq!(demuxed.tracks.len(), 2);
-        assert_eq!(demuxed.tracks[1].samples[0].pts_us, 0, "the audio edit list is dropped");
+        assert_eq!(
+            demuxed.tracks[1].samples[0].pts_us, 0,
+            "the audio edit list is dropped"
+        );
         assert_eq!(demuxed.tracks[0].samples[0].pts_us, 0);
-        assert!(warnings.iter().any(|w| w.contains("1 unreadable edit list")), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("1 unreadable edit list")),
+            "{warnings:?}"
+        );
     }
 
     /// Fragmented files keep their edit list in the initial `moov` and place
@@ -745,11 +865,17 @@ pub(crate) mod tests {
 
         let data = rewrite_moov(FRAGMENTED, |moov| {
             set_edits(&mut moov.trak[0], vec![edit(1900, Some(ticks as u64))]);
-            set_edits(&mut moov.trak[1], vec![edit(500, None), edit(1900, Some(0))]);
+            set_edits(
+                &mut moov.trak[1],
+                vec![edit(500, None), edit(1900, Some(0))],
+            );
         });
         let edited = read(&data, &mut warnings).unwrap();
         assert_eq!(sorted_pts(&edited.tracks[0])[0], 0, "{warnings:?}");
-        assert_eq!(edited.tracks[0].samples.len(), plain.tracks[0].samples.len());
+        assert_eq!(
+            edited.tracks[0].samples.len(),
+            plain.tracks[0].samples.len()
+        );
         let audio_first = plain.tracks[1].samples[0].pts_us;
         assert_eq!(edited.tracks[1].samples[0].pts_us, audio_first + 500_000);
         assert!(warnings.is_empty(), "{warnings:?}");

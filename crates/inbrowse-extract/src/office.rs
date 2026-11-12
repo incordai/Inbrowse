@@ -31,7 +31,10 @@ const MAX_CELL_REPEAT: usize = 1024;
 /// plain text of the cell they are in.
 const MAX_TABLE_DEPTH: usize = 32;
 
-pub(crate) fn open_archive<'a>(bytes: &'a [u8], limits: &Limits) -> Result<Archive<'a>, ExtractError> {
+pub(crate) fn open_archive<'a>(
+    bytes: &'a [u8],
+    limits: &Limits,
+) -> Result<Archive<'a>, ExtractError> {
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| ExtractError::Malformed(format!("zip archive: {e}")))?;
     if archive.len() > limits.max_archive_entries {
@@ -82,7 +85,9 @@ impl Package<'_> {
             .map_err(|e| ExtractError::Malformed(format!("{name}: {e}")))?;
         let read = raw.len() as u64;
         if read > self.unpacked.0 {
-            return Err(ExtractError::TooLarge("archive unpacks past the size limit".into()));
+            return Err(ExtractError::TooLarge(
+                "archive unpacks past the size limit".into(),
+            ));
         }
         self.unpacked.0 -= read;
         String::from_utf8(raw).map_err(|_| ExtractError::Malformed(format!("{name} is not UTF-8")))
@@ -95,11 +100,10 @@ impl Package<'_> {
             ExtractError::Malformed(why) => ExtractError::Malformed(format!("{name}: {why}")),
             other => other,
         })?;
-        self.text.0 = self
-            .text
-            .0
-            .checked_sub(text.len() as u64)
-            .ok_or_else(|| ExtractError::TooLarge("extracted text passes the size limit".into()))?;
+        self.text.0 =
+            self.text.0.checked_sub(text.len() as u64).ok_or_else(|| {
+                ExtractError::TooLarge("extracted text passes the size limit".into())
+            })?;
         Ok(text)
     }
 
@@ -113,7 +117,9 @@ impl Package<'_> {
         warnings: &mut Vec<String>,
     ) -> Result<Option<String>, ExtractError> {
         if self.archive.index_for_name(name).is_none() {
-            warnings.push(format!("part_missing: {name} is listed by the package but is not in the file"));
+            warnings.push(format!(
+                "part_missing: {name} is listed by the package but is not in the file"
+            ));
             return Ok(None);
         }
         let result = self.read(name).and_then(|xml| self.text(name, &xml, rules));
@@ -122,7 +128,11 @@ impl Package<'_> {
 
     /// A raw part that may legitimately be absent (`None`, silently); one that
     /// is present but unreadable is a warning and `None`.
-    fn read_optional(&mut self, name: &str, warnings: &mut Vec<String>) -> Result<Option<String>, ExtractError> {
+    fn read_optional(
+        &mut self,
+        name: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<Option<String>, ExtractError> {
         if self.archive.index_for_name(name).is_none() {
             return Ok(None);
         }
@@ -131,7 +141,11 @@ impl Package<'_> {
 
     /// The relationships `part` lists in its `.rels` file. No such file means no
     /// relationships; an unreadable one is a warning and none.
-    fn relationships(&mut self, part: &str, warnings: &mut Vec<String>) -> Result<Vec<Relationship>, ExtractError> {
+    fn relationships(
+        &mut self,
+        part: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<Vec<Relationship>, ExtractError> {
         let rels = rels_path(part);
         let Some(xml) = self.read_optional(&rels, warnings)? else {
             return Ok(Vec::new());
@@ -139,9 +153,12 @@ impl Package<'_> {
         let mut found = Vec::new();
         let parsed = for_each_element(&xml, "Relationship", |e| {
             let external = attribute(e, "TargetMode").is_some_and(|mode| mode == "External");
-            if let (Some(id), Some(kind), Some(target), false) =
-                (attribute(e, "Id"), attribute(e, "Type"), attribute(e, "Target"), external)
-            {
+            if let (Some(id), Some(kind), Some(target), false) = (
+                attribute(e, "Id"),
+                attribute(e, "Type"),
+                attribute(e, "Target"),
+                external,
+            ) {
                 found.push(Relationship {
                     id,
                     kind: kind.rsplit('/').next().unwrap_or_default().to_string(),
@@ -153,13 +170,18 @@ impl Package<'_> {
             ExtractError::Malformed(why) => ExtractError::Malformed(format!("{rels}: {why}")),
             other => other,
         });
-        Ok(tolerate(parsed, warnings)?.map(|()| found).unwrap_or_default())
+        Ok(tolerate(parsed, warnings)?
+            .map(|()| found)
+            .unwrap_or_default())
     }
 }
 
 /// Turn a malformed part into a warning, so one bad header or notes page does
 /// not cost the whole document. Limit and other errors still propagate.
-fn tolerate<T>(result: Result<T, ExtractError>, warnings: &mut Vec<String>) -> Result<Option<T>, ExtractError> {
+fn tolerate<T>(
+    result: Result<T, ExtractError>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<T>, ExtractError> {
     match result {
         Ok(value) => Ok(Some(value)),
         Err(ExtractError::Malformed(why)) => {
@@ -229,7 +251,11 @@ pub(crate) fn extract(
 }
 
 fn body(text: String) -> Section {
-    Section { kind: SectionKind::Body, name: None, text }
+    Section {
+        kind: SectionKind::Body,
+        name: None,
+        text,
+    }
 }
 
 /// The parts a Word document points at, as (relationship type, section kind,
@@ -246,7 +272,10 @@ const DOCX_EXTRA_PARTS: [(&str, SectionKind, &str); 5] = [
 /// headers or footers with different text are numbered; identical ones (the
 /// same header repeated for each section of the document) and empty ones are
 /// dropped. Sibling of `pptx` and the ODF branches in `extract`.
-fn docx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Section>, ExtractError> {
+fn docx(
+    package: &mut Package<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Section>, ExtractError> {
     const DOCUMENT: &str = "word/document.xml";
     let xml = package.read(DOCUMENT)?;
     let mut sections = vec![body(package.text(DOCUMENT, &xml, &OOXML_WORD)?)];
@@ -267,7 +296,11 @@ fn docx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Sec
         let numbered = texts.len() > 1;
         sections.extend(texts.into_iter().enumerate().map(|(i, text)| Section {
             kind,
-            name: Some(if numbered { format!("{label} {}", i + 1) } else { label.to_string() }),
+            name: Some(if numbered {
+                format!("{label} {}", i + 1)
+            } else {
+                label.to_string()
+            }),
             text,
         }));
     }
@@ -276,12 +309,19 @@ fn docx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Sec
 
 /// Each slide in presentation order, followed by its notes when it has any.
 /// Sibling of `docx`.
-fn pptx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Section>, ExtractError> {
+fn pptx(
+    package: &mut Package<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Section>, ExtractError> {
     let mut sections = Vec::new();
     for (name, part) in slide_parts(package, warnings)? {
         let xml = package.read(&part)?;
         let text = package.text(&part, &xml, &OOXML_DRAWING)?;
-        sections.push(Section { kind: SectionKind::Slide, name: Some(name.clone()), text });
+        sections.push(Section {
+            kind: SectionKind::Slide,
+            name: Some(name.clone()),
+            text,
+        });
         let notes = package
             .relationships(&part, warnings)?
             .into_iter()
@@ -289,7 +329,11 @@ fn pptx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Sec
         if let Some(notes) = notes {
             let text = package.extra_text(&notes.target, &OOXML_DRAWING, warnings)?;
             if let Some(text) = text.filter(|text| !text.is_empty()) {
-                sections.push(Section { kind: SectionKind::Notes, name: Some(format!("{name} notes")), text });
+                sections.push(Section {
+                    kind: SectionKind::Notes,
+                    name: Some(format!("{name} notes")),
+                    text,
+                });
             }
         }
     }
@@ -300,7 +344,10 @@ fn pptx(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<Sec
 /// `ppt/presentation.xml`, which is what PowerPoint shows and need not follow
 /// the file numbers; slides are then named by their position in it. A package
 /// with no usable slide list falls back to the file numbers, and names by them.
-fn slide_parts(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<Vec<(String, String)>, ExtractError> {
+fn slide_parts(
+    package: &mut Package<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<(String, String)>, ExtractError> {
     if let Some(listed) = listed_slides(package, warnings)? {
         return Ok(listed);
     }
@@ -309,7 +356,11 @@ fn slide_parts(package: &mut Package<'_>, warnings: &mut Vec<String>) -> Result<
         .file_names()
         .filter_map(|name| {
             let name = name.ok()?;
-            let number = name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse().ok()?;
+            let number = name
+                .strip_prefix("ppt/slides/slide")?
+                .strip_suffix(".xml")?
+                .parse()
+                .ok()?;
             Some((number, name.into_owned()))
         })
         .collect();
@@ -332,10 +383,13 @@ fn listed_slides(
         return Ok(None);
     };
     let mut ids = Vec::new();
-    let parsed = for_each_element(&xml, "sldId", |e| ids.extend(relationship_id(e))).map_err(|e| match e {
-        ExtractError::Malformed(why) => ExtractError::Malformed(format!("{PRESENTATION}: {why}")),
-        other => other,
-    });
+    let parsed =
+        for_each_element(&xml, "sldId", |e| ids.extend(relationship_id(e))).map_err(|e| match e {
+            ExtractError::Malformed(why) => {
+                ExtractError::Malformed(format!("{PRESENTATION}: {why}"))
+            }
+            other => other,
+        });
     if tolerate(parsed, warnings)?.is_none() || ids.is_empty() {
         return Ok(None);
     }
@@ -343,7 +397,10 @@ fn listed_slides(
     let mut slides = Vec::new();
     for (index, id) in ids.iter().enumerate() {
         let number = index + 1;
-        match relationships.iter().find(|r| r.kind == "slide" && &r.id == id) {
+        match relationships
+            .iter()
+            .find(|r| r.kind == "slide" && &r.id == id)
+        {
             Some(slide) if package.archive.index_for_name(&slide.target).is_some() => {
                 slides.push((format!("Slide {number}"), slide.target.clone()));
             }
@@ -361,12 +418,16 @@ fn listed_slides(
 
 /// Call `visit` for every element whose local name is `local`, start or empty
 /// tag alike. Used for relationship lists and the slide list.
-fn for_each_element(xml: &str, local: &str, mut visit: impl FnMut(&BytesStart<'_>)) -> Result<(), ExtractError> {
+fn for_each_element(
+    xml: &str,
+    local: &str,
+    mut visit: impl FnMut(&BytesStart<'_>),
+) -> Result<(), ExtractError> {
     let mut reader = Reader::from_str(xml);
     loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| ExtractError::Malformed(format!("XML at byte {}: {e}", reader.error_position())))?;
+        let event = reader.read_event().map_err(|e| {
+            ExtractError::Malformed(format!("XML at byte {}: {e}", reader.error_position()))
+        })?;
         match event {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == local => visit(&e),
             Event::Eof => return Ok(()),
@@ -566,7 +627,11 @@ impl Writer {
             }
         } else if rules.cells.contains(&name) {
             if let Some(table) = self.tables.last_mut() {
-                table.cell = Some(OpenCell { text: String::new(), repeat, padding: 0 });
+                table.cell = Some(OpenCell {
+                    text: String::new(),
+                    repeat,
+                    padding: 0,
+                });
             }
         }
     }
@@ -589,12 +654,22 @@ impl Writer {
                 self.too_deep -= 1;
             }
         } else if rules.cells.contains(&name) {
-            let Some(table) = self.tables.last_mut() else { return Ok(()) };
-            let Some(cell) = table.cell.take() else { return Ok(()) };
+            let Some(table) = self.tables.last_mut() else {
+                return Ok(());
+            };
+            let Some(cell) = table.cell.take() else {
+                return Ok(());
+            };
             let row = table.row.get_or_insert_with(Vec::new);
-            row.push(Cell { text: flatten_cell(&cell.text), repeat: cell.repeat });
+            row.push(Cell {
+                text: flatten_cell(&cell.text),
+                repeat: cell.repeat,
+            });
             if cell.padding > 0 {
-                row.push(Cell { text: String::new(), repeat: cell.padding });
+                row.push(Cell {
+                    text: String::new(),
+                    repeat: cell.padding,
+                });
             }
         } else if name == rules.row {
             if let Some(table) = self.tables.last_mut() {
@@ -603,7 +678,9 @@ impl Writer {
                 }
             }
         } else if name == rules.table {
-            let Some(mut table) = self.tables.pop() else { return Ok(()) };
+            let Some(mut table) = self.tables.pop() else {
+                return Ok(());
+            };
             table.rows.extend(table.row.take());
             let rendered = render(&table.rows, limit.saturating_sub(self.out.len() as u64))?;
             if rendered.is_empty() {
@@ -688,7 +765,9 @@ fn attr_skip(
     }
     for rule in rules.skip_by_attr.iter().filter(|rule| rule.marker == name) {
         if attribute(e, rule.attr).is_some_and(|value| rule.values.contains(&value.as_str())) {
-            if let Some((scope_depth, _)) = scopes.iter().rev().find(|(_, scope)| *scope == rule.scope) {
+            if let Some((scope_depth, _)) =
+                scopes.iter().rev().find(|(_, scope)| *scope == rule.scope)
+            {
                 return Some(*scope_depth);
             }
         }
@@ -700,7 +779,10 @@ fn attr_skip(
 /// closes. Scopes are pushed in depth order, so this only pops: nesting a
 /// million `footnote` elements must not make every close scan them all.
 fn close_scopes(scopes: &mut Vec<(usize, &'static str)>, depth: usize) {
-    while scopes.last().is_some_and(|(scope_depth, _)| *scope_depth >= depth) {
+    while scopes
+        .last()
+        .is_some_and(|(scope_depth, _)| *scope_depth >= depth)
+    {
         scopes.pop();
     }
 }
@@ -717,9 +799,9 @@ fn xml_text(xml: &str, rules: &Rules, limit: u64) -> Result<String, ExtractError
     let mut skip_from: Option<usize> = None;
     let mut scopes: Vec<(usize, &'static str)> = Vec::new();
     loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| ExtractError::Malformed(format!("XML at byte {}: {e}", reader.error_position())))?;
+        let event = reader.read_event().map_err(|e| {
+            ExtractError::Malformed(format!("XML at byte {}: {e}", reader.error_position()))
+        })?;
         if let Some(from) = skip_from {
             match event {
                 Event::Start(_) => depth += 1,
@@ -799,7 +881,9 @@ fn xml_text(xml: &str, rules: &Rules, limit: u64) -> Result<String, ExtractError
 /// row or cell it is, and note a Word cell's `gridSpan`. Called by `xml_text`.
 fn open_table_element(writer: &mut Writer, table: &TableRules, e: &BytesStart<'_>, name: &str) {
     if table.grid_span == Some(name) {
-        let span = attribute(e, "val").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1);
+        let span = attribute(e, "val")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1);
         writer.span(span);
         return;
     }
@@ -821,7 +905,9 @@ fn push_empty(out: &mut String, e: &BytesStart<'_>, rules: &Rules) {
     } else if rules.line_break.contains(&name) || rules.paragraph.contains(&name) {
         out.push('\n');
     } else if rules.spaces == Some(name) {
-        let count = attribute(e, "c").and_then(|c| c.parse::<usize>().ok()).unwrap_or(1);
+        let count = attribute(e, "c")
+            .and_then(|c| c.parse::<usize>().ok())
+            .unwrap_or(1);
         // `text:c` is attacker-controlled; a page of spaces is plenty.
         out.extend(std::iter::repeat_n(' ', count.min(4096)));
     }
@@ -840,7 +926,11 @@ fn attribute(e: &BytesStart<'_>, local: &str) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == local)
-        .map(|a| quick_xml::escape::unescape(&a.value).map(|v| v.into_owned()).unwrap_or_else(|_| a.value.into_owned()))
+        .map(|a| {
+            quick_xml::escape::unescape(&a.value)
+                .map(|v| v.into_owned())
+                .unwrap_or_else(|_| a.value.into_owned())
+        })
 }
 
 /// The `r:id` of a `sldId`: the attribute named `id` that has a namespace
@@ -849,7 +939,11 @@ fn relationship_id(e: &BytesStart<'_>) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.prefix().is_some() && a.key.local_name().as_ref() == "id")
-        .map(|a| quick_xml::escape::unescape(&a.value).map(|v| v.into_owned()).unwrap_or_else(|_| a.value.into_owned()))
+        .map(|a| {
+            quick_xml::escape::unescape(&a.value)
+                .map(|v| v.into_owned())
+                .unwrap_or_else(|_| a.value.into_owned())
+        })
 }
 
 /// ODP keeps every slide in content.xml as a `draw:page`; split on those. A
@@ -885,7 +979,11 @@ fn odp_slides(package: &mut Package<'_>, xml: &str) -> Result<Vec<Section>, Extr
         if let Some(notes) = notes {
             let text = package.text("content.xml", &page[notes], &ODP)?;
             if !text.is_empty() {
-                sections.push(Section { kind: SectionKind::Notes, name: Some(format!("{name} notes")), text });
+                sections.push(Section {
+                    kind: SectionKind::Notes,
+                    name: Some(format!("{name} notes")),
+                    text,
+                });
             }
         }
         rest = &rest[range.end..];

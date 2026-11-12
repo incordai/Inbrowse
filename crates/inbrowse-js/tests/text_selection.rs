@@ -135,7 +135,14 @@ fn selection_members_apply_only_to_text_like_input_types() {
             })()"#,
         )
         .unwrap();
-    let rejected = json!([null, null, null, "InvalidStateError", "InvalidStateError", "InvalidStateError"]);
+    let rejected = json!([
+        null,
+        null,
+        null,
+        "InvalidStateError",
+        "InvalidStateError",
+        "InvalidStateError"
+    ]);
     assert_eq!(value["e"], rejected);
     assert_eq!(value["n"], rejected);
     assert_eq!(value["c"], rejected);
@@ -210,8 +217,14 @@ async fn select_and_set_selection_range_fire_select_when_the_range_changes() {
     }
     rt.run_event_loop_bounded(50).await.unwrap();
     assert_eq!(
-        rt.evaluate("[fired, i.selectionStart, i.selectionEnd, e.value.length]").unwrap(),
-        json!([[["i", true, true], ["e", true, true], ["i", true, true]], 1, 2, 5])
+        rt.evaluate("[fired, i.selectionStart, i.selectionEnd, e.value.length]")
+            .unwrap(),
+        json!([
+            [["i", true, true], ["e", true, true], ["i", true, true]],
+            1,
+            2,
+            5
+        ])
     );
 }
 

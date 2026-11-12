@@ -27,13 +27,19 @@ impl Kind {
 #[derive(Debug, Clone)]
 pub(crate) enum Codec {
     /// `avcc` is the AVCDecoderConfigurationRecord (SPS/PPS out of band).
-    H264 { avcc: Bytes },
+    H264 {
+        avcc: Bytes,
+    },
     Vp8,
     Vp9,
     /// `asc` is the AudioSpecificConfig.
-    Aac { asc: Bytes },
+    Aac {
+        asc: Bytes,
+    },
     /// `head` is an OpusHead packet.
-    Opus { head: Option<Bytes> },
+    Opus {
+        head: Option<Bytes>,
+    },
     /// Cue text per sample, in the container's own text encoding.
     Text(TextFormat),
     /// Listed in the report but never decoded.

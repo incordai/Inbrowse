@@ -12,7 +12,10 @@ static FILE_URL: Mutex<String> = Mutex::new(String::new());
 fn png(color: [u8; 4]) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::RgbaImage::from_pixel(4, 4, image::Rgba(color))
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     bytes
 }
@@ -137,11 +140,24 @@ fn capture(args: &[&str], width: &str, height: &str) -> image::RgbaImage {
 
 fn evaluate(url: &str, expression: &str) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_inbrowse"))
-        .args(["fetch", url, "--allow-private-network", "--wait", "1", "--timeout", "20", "--quiet"])
+        .args([
+            "fetch",
+            url,
+            "--allow-private-network",
+            "--wait",
+            "1",
+            "--timeout",
+            "20",
+            "--quiet",
+        ])
         .args(["--eval", expression])
         .output()
         .expect("run inbrowse fetch --eval");
-    assert!(output.status.success(), "eval failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).replace('\\', "")
 }
 
@@ -177,23 +193,63 @@ fn frame_linked_stylesheet_images_and_font_load_through_the_page_pipeline() {
     let url = format!("{base}/index.html");
     let image = capture(&[&url, "--allow-private-network"], "240", "150");
 
-    let seen: Vec<String> = requests.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
-    for path in ["/frame.css", "/imported.css", "/red.png", "/blue.png", "/probe.woff2"] {
-        assert!(seen.iter().any(|p| p == path), "{path} was never requested: {seen:?}");
+    let seen: Vec<String> = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    for path in [
+        "/frame.css",
+        "/imported.css",
+        "/red.png",
+        "/blue.png",
+        "/probe.woff2",
+    ] {
+        assert!(
+            seen.iter().any(|p| p == path),
+            "{path} was never requested: {seen:?}"
+        );
     }
     // The linked sheet paints the frame background and its @import positions
     // the image, so both stylesheets reached the frame's style and layout.
-    assert_eq!(image.get_pixel(200, 120).0, [232, 89, 12, 255], "linked sheet background");
-    assert_eq!(image.get_pixel(40, 30).0, [255, 0, 0, 255], "img sized by the imported sheet");
-    assert_eq!(image.get_pixel(85, 30).0, [0, 0, 255, 255], "css background-image");
-    assert_eq!(image.get_pixel(5, 5).0, [255, 255, 255, 255], "outside the frame");
-    let head = asked_for(&requests, "/red.png").unwrap().to_ascii_lowercase();
+    assert_eq!(
+        image.get_pixel(200, 120).0,
+        [232, 89, 12, 255],
+        "linked sheet background"
+    );
+    assert_eq!(
+        image.get_pixel(40, 30).0,
+        [255, 0, 0, 255],
+        "img sized by the imported sheet"
+    );
+    assert_eq!(
+        image.get_pixel(85, 30).0,
+        [0, 0, 255, 255],
+        "css background-image"
+    );
+    assert_eq!(
+        image.get_pixel(5, 5).0,
+        [255, 255, 255, 255],
+        "outside the frame"
+    );
+    let head = asked_for(&requests, "/red.png")
+        .unwrap()
+        .to_ascii_lowercase();
     assert!(
         head.contains("referer: http://") && head.contains("/frame.html"),
         "frame subresource must carry the frame document as referrer: {head}"
     );
-    assert!(head.contains("sid=abc"), "frame subresource must carry page cookies: {head}");
-    let frames = requests.lock().unwrap().iter().filter(|(p, _)| p == "/red.png").count();
+    assert!(
+        head.contains("sid=abc"),
+        "frame subresource must carry page cookies: {head}"
+    );
+    let frames = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == "/red.png")
+        .count();
     assert_eq!(frames, 1, "the image is fetched once");
 }
 
@@ -202,10 +258,22 @@ fn nested_frames_load_their_own_stylesheets() {
     let (base, _requests) = serve(route);
     let url = format!("{base}/outer.html");
     let image = capture(&[&url, "--allow-private-network"], "200", "130");
-    assert_eq!(image.get_pixel(15, 15).0, [25, 113, 194, 255], "middle frame inline sheet");
+    assert_eq!(
+        image.get_pixel(15, 15).0,
+        [25, 113, 194, 255],
+        "middle frame inline sheet"
+    );
     // Inner frame at (10 + 20, 10 + 10) painted from its own linked sheet.
-    assert_eq!(image.get_pixel(50, 40).0, [112, 72, 232, 255], "inner frame linked sheet");
-    assert_eq!(image.get_pixel(95, 40).0, [25, 113, 194, 255], "right of the inner frame");
+    assert_eq!(
+        image.get_pixel(50, 40).0,
+        [112, 72, 232, 255],
+        "inner frame linked sheet"
+    );
+    assert_eq!(
+        image.get_pixel(95, 40).0,
+        [25, 113, 194, 255],
+        "right of the inner frame"
+    );
 }
 
 #[test]
@@ -221,7 +289,10 @@ fn frame_resources_obey_the_page_network_gate() {
     // page's own images, so the frame image never reaches the server.
     let blocked = capture(&[&page], "80", "60");
     assert_ne!(blocked.get_pixel(30, 20).0, [255, 0, 0, 255]);
-    assert!(asked_for(&requests, "/red.png").is_none(), "blocked frame image reached the server");
+    assert!(
+        asked_for(&requests, "/red.png").is_none(),
+        "blocked frame image reached the server"
+    );
 
     let allowed = capture(&[&page, "--allow-private-network"], "80", "60");
     assert_eq!(allowed.get_pixel(30, 20).0, [255, 0, 0, 255]);
@@ -230,14 +301,23 @@ fn frame_resources_obey_the_page_network_gate() {
 
 #[test]
 fn frame_file_resources_stay_blocked_for_a_network_document() {
-    let secret = std::env::temp_dir().join(format!("inbrowse-frame-secret-{}.png", std::process::id()));
+    let secret =
+        std::env::temp_dir().join(format!("inbrowse-frame-secret-{}.png", std::process::id()));
     std::fs::write(&secret, png([0, 255, 0, 255])).unwrap();
     *FILE_URL.lock().unwrap() = format!("file:///{}", secret.to_string_lossy().replace('\\', "/"));
     let (base, _requests) = serve(route);
     let url = format!("{base}/file.html");
     let image = capture(&[&url, "--allow-private-network"], "80", "70");
     std::fs::remove_file(&secret).ok();
-    assert_ne!(image.get_pixel(30, 20).0, [0, 255, 0, 255], "file image must stay blocked");
+    assert_ne!(
+        image.get_pixel(30, 20).0,
+        [0, 255, 0, 255],
+        "file image must stay blocked"
+    );
     // The same markup with an http image does paint, so the frame itself loaded.
-    assert_eq!(image.get_pixel(30, 50).0, [255, 0, 0, 255], "http image in the same frame");
+    assert_eq!(
+        image.get_pixel(30, 50).0,
+        [255, 0, 0, 255],
+        "http image in the same frame"
+    );
 }

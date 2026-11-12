@@ -18,7 +18,9 @@ pub(crate) fn from_track(track: &Track) -> Option<CaptionTrack> {
     let mut cues: Vec<Cue> = Vec::new();
     for (i, sample) in track.samples.iter().enumerate() {
         let text = match format {
-            TextFormat::WebVttBlock | TextFormat::Plain => String::from_utf8_lossy(&sample.data).into_owned(),
+            TextFormat::WebVttBlock | TextFormat::Plain => {
+                String::from_utf8_lossy(&sample.data).into_owned()
+            }
             TextFormat::WebVttMp4 => vtt_mp4_text(&sample.data),
             TextFormat::Tx3g => tx3g_text(&sample.data),
         };
@@ -112,18 +114,27 @@ fn clean(text: &str) -> String {
         .replace("&lrm;", "")
         .replace("&rlm;", "")
         .replace("&amp;", "&");
-    out.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether the bytes are a WebVTT file.
 pub(crate) fn sniff_webvtt(data: &[u8]) -> bool {
     let data = data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data);
-    data.starts_with(b"WEBVTT") && data.get(6).is_none_or(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
+    data.starts_with(b"WEBVTT")
+        && data
+            .get(6)
+            .is_none_or(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
 }
 
 /// Parse a standalone WebVTT file.
 pub(crate) fn parse_webvtt(data: &[u8]) -> CaptionTrack {
-    let text = String::from_utf8_lossy(data).replace("\r\n", "\n").replace('\r', "\n");
+    let text = String::from_utf8_lossy(data)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut cues = Vec::new();
     for block in text.split("\n\n") {
         let mut lines = block.lines().skip_while(|l| l.trim().is_empty());
@@ -171,7 +182,11 @@ fn parse_timing(line: &str) -> Option<(f64, f64)> {
 fn parse_time(t: &str) -> Option<f64> {
     let parts: Vec<&str> = t.split(':').collect();
     let (h, m, s) = match parts.as_slice() {
-        [h, m, s] => (h.parse::<f64>().ok()?, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        [h, m, s] => (
+            h.parse::<f64>().ok()?,
+            m.parse::<f64>().ok()?,
+            s.parse::<f64>().ok()?,
+        ),
         [m, s] => (0.0, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
         _ => return None,
     };
@@ -215,11 +230,23 @@ mod tests {
     fn cues_before_the_presentation_start_are_dropped() {
         use crate::demux::{Kind, Sample, Track};
         let mut track = Track::new(Kind::Subtitle, Codec::Text(TextFormat::Plain), "text");
-        for (pts_us, dur_us, text) in [(-3_000_000, 1_000_000, "gone"), (-500_000, 2_000_000, "cut"), (1_000_000, 1_000_000, "kept")] {
-            track.samples.push(Sample { pts_us, dur_us: Some(dur_us), key: true, data: text.as_bytes().to_vec().into() });
+        for (pts_us, dur_us, text) in [
+            (-3_000_000, 1_000_000, "gone"),
+            (-500_000, 2_000_000, "cut"),
+            (1_000_000, 1_000_000, "kept"),
+        ] {
+            track.samples.push(Sample {
+                pts_us,
+                dur_us: Some(dur_us),
+                key: true,
+                data: text.as_bytes().to_vec().into(),
+            });
         }
         let cues = from_track(&track).unwrap().cues;
-        let shown: Vec<(&str, f64, f64)> = cues.iter().map(|c| (c.text.as_str(), c.start_secs, c.end_secs)).collect();
+        let shown: Vec<(&str, f64, f64)> = cues
+            .iter()
+            .map(|c| (c.text.as_str(), c.start_secs, c.end_secs))
+            .collect();
         assert_eq!(shown, vec![("cut", 0.0, 1.5), ("kept", 1.0, 2.0)]);
     }
 }

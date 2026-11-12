@@ -42,13 +42,23 @@ fn every_select_setter_is_submitted_by_every_trigger() {
         ("document.querySelector('select').selectedIndex = 0", "a"),
         ("document.querySelector('select').selectedIndex = 2", "c"),
         ("document.querySelector('select').value = 'a'", "a"),
-        ("document.querySelector('select').options[0].selected = true", "a"),
-        ("document.querySelector('select').options[2].selected = true", "c"),
+        (
+            "document.querySelector('select').options[0].selected = true",
+            "a",
+        ),
+        (
+            "document.querySelector('select').options[2].selected = true",
+            "c",
+        ),
     ];
     for (setter, expected) in setters {
         for trigger in TRIGGERS {
             let (url, method, body) = submitted(SELECT_FORM, &format!("{setter}; {trigger}"));
-            assert_eq!(url, format!("http://127.0.0.1:8765/submit?s={expected}"), "{setter} then {trigger}");
+            assert_eq!(
+                url,
+                format!("http://127.0.0.1:8765/submit?s={expected}"),
+                "{setter} then {trigger}"
+            );
             assert_eq!((method.as_str(), body.as_str()), ("GET", ""));
         }
     }
@@ -62,16 +72,24 @@ fn an_untouched_select_submits_its_default_selection() {
         "<form action='/submit'><select name='s'><option>x</option><option>y</option></select></form>",
         "document.forms[0].submit()",
     );
-    assert_eq!(url, "http://127.0.0.1:8765/submit?s=x", "the first option is the default");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit?s=x",
+        "the first option is the default"
+    );
 }
 
 #[test]
 fn a_post_form_sends_the_chosen_option_in_the_body() {
     let html = "<form action='/submit' method='post'><select name='s'>\
         <option>a</option><option selected>b</option></select></form>";
-    let (url, method, body) =
-        submitted(html, "document.querySelector('select').selectedIndex = 0; document.forms[0].submit()");
-    assert_eq!((url.as_str(), method.as_str(), body.as_str()), ("http://127.0.0.1:8765/submit", "POST", "s=a"));
+    let (url, method, body) = submitted(
+        html,
+        "document.querySelector('select').selectedIndex = 0; document.forms[0].submit()",
+    );
+    assert_eq!(
+        (url.as_str(), method.as_str(), body.as_str()),
+        ("http://127.0.0.1:8765/submit", "POST", "s=a")
+    );
 }
 
 #[test]
@@ -123,7 +141,9 @@ fn selected_index_getter_and_setter_follow_the_specification() {
 
 #[test]
 fn option_selected_keeps_a_single_select_to_one_option() {
-    let mut rt = runtime("<select id=s><option>a</option><option selected>b</option><option>c</option></select>");
+    let mut rt = runtime(
+        "<select id=s><option>a</option><option selected>b</option><option>c</option></select>",
+    );
     let value = rt
         .evaluate(
             r#"(() => {
@@ -162,7 +182,10 @@ fn a_select_value_matching_nothing_selects_nothing() {
         "<form action='/submit'><select name='s'><option>a</option></select></form>",
         "document.querySelector('select').value = 'zzz'; document.forms[0].submit()",
     );
-    assert_eq!(url, "http://127.0.0.1:8765/submit", "no selected option, no entry");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit",
+        "no selected option, no entry"
+    );
 }
 
 #[test]
@@ -210,10 +233,16 @@ fn a_multiple_select_submits_one_entry_per_selected_option() {
                 "const o = document.querySelector('select').options; o[0].selected = true; o[1].selected = true; o[2].selected = true; {trigger}"
             ),
         );
-        assert_eq!(url, "http://127.0.0.1:8765/submit?m=x&m=y", "disabled option is skipped: {trigger}");
+        assert_eq!(
+            url, "http://127.0.0.1:8765/submit?m=x&m=y",
+            "disabled option is skipped: {trigger}"
+        );
     }
     let (url, _, _) = submitted(html, "document.forms[0].submit()");
-    assert_eq!(url, "http://127.0.0.1:8765/submit", "a multiple select with nothing selected sends nothing");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit",
+        "a multiple select with nothing selected sends nothing"
+    );
 }
 
 #[test]
@@ -249,7 +278,10 @@ fn form_data_and_the_submitted_query_come_from_the_same_entries() {
         ])
     );
     let (url, _, _) = submitted(html, &format!("{script} document.forms[0].submit()"));
-    assert_eq!(url, "http://127.0.0.1:8765/submit?t=a+b&c=on&r=2&s=b&m=y&ta=hello");
+    assert_eq!(
+        url,
+        "http://127.0.0.1:8765/submit?t=a+b&c=on&r=2&s=b&m=y&ta=hello"
+    );
 }
 
 #[test]
@@ -261,19 +293,23 @@ fn the_submitter_button_contributes_its_name_and_value() {
     let (url, _, _) = submitted(html, "document.querySelectorAll('button')[1].click()");
     assert_eq!(url, "http://127.0.0.1:8765/submit?t=v&act=delete");
     let (url, _, _) = submitted(html, "document.forms[0].submit()");
-    assert_eq!(url, "http://127.0.0.1:8765/submit?t=v", "no submitter, no button entry");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit?t=v",
+        "no submitter, no button entry"
+    );
     let (url, _, _) = submitted(html, "document.querySelector('input[type=image]').click()");
     assert_eq!(url, "http://127.0.0.1:8765/submit?t=v&img.x=0&img.y=0");
     let (url, _, _) = submitted(
         "<form action='/submit'><input type='image' src='x.png'></form>",
         "document.querySelector('input[type=image]').click()",
     );
-    assert_eq!(url, "http://127.0.0.1:8765/submit?x=0&y=0", "an unnamed image button sends bare coordinates");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit?x=0&y=0",
+        "an unnamed image button sends bare coordinates"
+    );
     let mut rt = runtime(html);
     let entries = rt
-        .evaluate(
-            "[...new FormData(document.forms[0], document.querySelectorAll('button')[0])]",
-        )
+        .evaluate("[...new FormData(document.forms[0], document.querySelectorAll('button')[0])]")
         .unwrap();
     assert_eq!(entries, json!([["t", "v"], ["act", "save"]]));
 }
@@ -295,7 +331,10 @@ fn form_data_rejects_a_submitter_that_is_not_a_submit_button_of_the_form() {
             })()"#,
         )
         .unwrap();
-    assert_eq!(value, json!(["TypeError:TypeError", "DOMException:NotFoundError"]));
+    assert_eq!(
+        value,
+        json!(["TypeError:TypeError", "DOMException:NotFoundError"])
+    );
 }
 
 #[test]
@@ -319,8 +358,14 @@ fn textarea_submits_its_current_value_with_crlf_newlines() {
     let html = "<form action='/submit'><textarea name='t'>orig</textarea></form>";
     let (url, _, _) = submitted(html, "document.forms[0].submit()");
     assert_eq!(url, "http://127.0.0.1:8765/submit?t=orig");
-    let (url, _, _) = submitted(html, "document.querySelector('textarea').value = ''; document.forms[0].submit()");
-    assert_eq!(url, "http://127.0.0.1:8765/submit?t=", "a cleared textarea submits nothing, not the original text");
+    let (url, _, _) = submitted(
+        html,
+        "document.querySelector('textarea').value = ''; document.forms[0].submit()",
+    );
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit?t=",
+        "a cleared textarea submits nothing, not the original text"
+    );
     let (url, _, _) = submitted(
         html,
         "document.querySelector('textarea').value = 'a\\nb\\r\\nc'; document.forms[0].submit()",
@@ -339,9 +384,13 @@ fn controls_outside_the_form_join_through_the_form_attribute() {
 
 #[test]
 fn submission_uses_form_urlencoded_escaping() {
-    let html = "<form action='/submit'><input name='q' value=\"it's (a) ~test! *ok* \u{e9}\"></form>";
+    let html =
+        "<form action='/submit'><input name='q' value=\"it's (a) ~test! *ok* \u{e9}\"></form>";
     let (url, _, _) = submitted(html, "document.forms[0].submit()");
-    assert_eq!(url, "http://127.0.0.1:8765/submit?q=it%27s+%28a%29+%7Etest%21+*ok*+%C3%A9");
+    assert_eq!(
+        url,
+        "http://127.0.0.1:8765/submit?q=it%27s+%28a%29+%7Etest%21+*ok*+%C3%A9"
+    );
 }
 
 /// Two groups named `r` (one per form) and a radio outside any form.
@@ -355,7 +404,10 @@ const RADIO_FORMS: &str = "<form action='/submit'>\
 fn checking_a_radio_by_script_unchecks_the_rest_of_its_group() {
     let script = "document.querySelector('[value=r2]').checked = true; document.forms[0].submit()";
     let (url, _, _) = submitted(RADIO_FORMS, script);
-    assert_eq!(url, "http://127.0.0.1:8765/submit?r=r2&other=o1", "one radio per group is submitted");
+    assert_eq!(
+        url, "http://127.0.0.1:8765/submit?r=r2&other=o1",
+        "one radio per group is submitted"
+    );
     let mut rt = runtime(RADIO_FORMS);
     let checked = rt
         .evaluate(

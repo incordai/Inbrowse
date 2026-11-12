@@ -8,7 +8,15 @@ use std::process::{Command, Stdio};
 
 fn cli() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_inbrowse"));
-    for name in ["INBROWSE_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+    for name in [
+        "INBROWSE_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
         command.env_remove(name);
     }
     command.env("INBROWSE_STEALTH", "0");
@@ -25,9 +33,18 @@ fn scrape_with_stdin(args: &[&str], stdin: &str) -> serde_json::Value {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
@@ -44,7 +61,10 @@ fn urls(report: &serde_json::Value) -> Vec<String> {
 
 #[test]
 fn a_dash_reads_the_url_list_from_stdin() {
-    let report = scrape_with_stdin(&["-"], "about:blank#one\n\n  # a comment\n about:blank#two \n");
+    let report = scrape_with_stdin(
+        &["-"],
+        "about:blank#one\n\n  # a comment\n about:blank#two \n",
+    );
     assert_eq!(report["total_urls"], 2, "{report}");
     assert_eq!(urls(&report), ["about:blank#one", "about:blank#two"]);
 }
@@ -57,7 +77,8 @@ fn file_dash_reads_stdin_and_combines_with_positional_urls() {
 
 #[test]
 fn file_reads_a_url_list() {
-    let path = std::env::temp_dir().join(format!("inbrowse_scrape_urls_{}.txt", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("inbrowse_scrape_urls_{}.txt", std::process::id()));
     std::fs::write(&path, "# list\nabout:blank#file\n").unwrap();
     let report = scrape_with_stdin(&["--file", path.to_str().unwrap()], "");
     std::fs::remove_file(&path).ok();
