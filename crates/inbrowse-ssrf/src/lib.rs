@@ -86,13 +86,7 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
             // IPv4/IPv6 translation prefix (RFC 6052). Only /96 has a fixed
             // embedded-address position; the local-use /48 is therefore
             // blocked outright below.
-            if s[0] == 0x64
-                && s[1] == 0xff9b
-                && s[2] == 0
-                && s[3] == 0
-                && s[4] == 0
-                && s[5] == 0
-            {
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
                 return is_forbidden_ip(IpAddr::V4(Ipv4Addr::new(
                     (s[6] >> 8) as u8,
                     s[6] as u8,
@@ -114,12 +108,8 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
             // last 32 bits. Either one embedding a forbidden address is
             // refused, like the other IPv4-in-IPv6 forms above.
             if s[0] == 0x2001 && s[1] == 0 {
-                let server = Ipv4Addr::new(
-                    (s[2] >> 8) as u8,
-                    s[2] as u8,
-                    (s[3] >> 8) as u8,
-                    s[3] as u8,
-                );
+                let server =
+                    Ipv4Addr::new((s[2] >> 8) as u8, s[2] as u8, (s[3] >> 8) as u8, s[3] as u8);
                 let client = Ipv4Addr::new(
                     !(s[6] >> 8) as u8,
                     !s[6] as u8,

@@ -1,4 +1,7 @@
 {
+  "deep-parser-layout": [
+    {"name": "fragment depth matches Chromium without losing the last element", "color": "#3186e8", "x": 545, "width": 80, "height": 20}
+  ],
   "hidden-table-rows": [
     {"name": "rowspan counts visible rows only", "color": "#1971c2", "x": 20, "y": 20, "width": 30, "height": 40},
     {"name": "next visible row occupies the second column", "color": "#e8590c", "x": 50, "y": 40, "width": 30, "height": 20},
@@ -407,6 +410,31 @@
   ],
   "reduced-motion-emulation": [
     {"name": "normal motion keeps the default width", "color": "#22aa66", "width": 100, "height": 30}
+  ],
+  "background-tiling": [
+    {"name": "default repeat tiles red halves across and down", "color": "#e03131", "y": 20, "width": 10, "height": 40, "count": 5},
+    {"name": "default repeat tiles blue halves across and down", "color": "#1971c2", "y": 20, "width": 10, "height": 40, "count": 5},
+    {"name": "repeat-x tiles one row", "color": "#e03131", "y": 20, "width": 10, "height": 20, "count": 5},
+    {"name": "no-repeat paints one tile", "color": "#e03131", "x": 260, "y": 20, "width": 10, "height": 20},
+    {"name": "background-size scales the tile before tiling", "color": "#e03131", "y": 100, "width": 5, "height": 40, "count": 10},
+    {"name": "centered position shifts the tiling grid", "color": "#e03131", "x": 145, "y": 100, "width": 10, "height": 40},
+    {"name": "space spreads whole tiles (first)", "color": "#e03131", "x": 20, "y": 180, "width": 10, "height": 40},
+    {"name": "space spreads whole tiles (last)", "color": "#e03131", "x": 108, "y": 180, "width": 10, "height": 40},
+    {"name": "round rescales four tiles to fill the area", "color": "#e03131", "y": 180, "width": 11, "height": 40, "count": 4},
+    {"name": "ratio-only svg is contained in the positioning area", "color": "#2f9e44", "x": 280, "y": 180, "width": 40, "height": 40},
+    {"name": "origin box positions the tile", "color": "#e03131", "x": 30, "y": 270, "width": 10, "height": 20},
+    {"name": "clip box tiles the content box (first)", "color": "#e03131", "x": 170, "y": 270, "width": 10, "height": 20},
+    {"name": "clip box tiles the content box (last)", "color": "#e03131", "x": 230, "y": 270, "width": 10, "height": 20},
+    {"name": "clip box keeps tiling out of the padding", "color": "#e03131", "x": 160, "y": 260, "count": 0}
+  ],
+  "iframe-content": [
+    {"name": "srcdoc frame paints its document in the content box", "color": "#e8590c", "x": 20, "y": 20, "width": 120, "height": 80},
+    {"name": "data URL frame paints its document in the content box", "color": "#1971c2", "x": 180, "y": 20, "width": 120, "height": 80},
+    {"name": "frame content sits inside border and padding", "color": "#7048e8", "x": 30, "y": 150, "width": 120, "height": 80},
+    {"name": "frame content is laid out at the frame width", "color": "#0b7285", "x": 180, "y": 140, "width": 120, "height": 30},
+    {"name": "frame content is clipped to the frame", "color": "#862e9c", "x": 180, "y": 170, "width": 120, "height": 30},
+    {"name": "linked stylesheet paints the frame background", "color": "#f08c00", "x": 340, "y": 20, "width": 200, "height": 120},
+    {"name": "imported stylesheet places the frame's image", "color": "#2f9e44", "x": 350, "y": 30, "width": 60, "height": 40}
   ],
   "table-display-keywords": [
     {"name": "explicit row and group display override display none", "color": "#1971c2", "x": 20, "y": 20, "width": 40, "height": 20},

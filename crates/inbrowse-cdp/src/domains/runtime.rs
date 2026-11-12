@@ -17,33 +17,57 @@ pub(crate) struct DeferredEvaluation {
 
 impl DeferredEvaluation {
     pub(crate) fn ready(&self, ctx: &mut CdpContext) -> bool {
-        if tokio::time::Instant::now() >= self.deadline { return true; }
-        let Some(js) = ctx.get_page_mut(&self.page_id).and_then(|page| page.js.as_mut()) else { return true; };
+        if tokio::time::Instant::now() >= self.deadline {
+            return true;
+        }
+        let Some(js) = ctx
+            .get_page_mut(&self.page_id)
+            .and_then(|page| page.js.as_mut())
+        else {
+            return true;
+        };
         !js.has_cdp_evaluation(&self.pending) || js.cdp_evaluation_ready(&self.pending)
     }
 
-    pub(crate) async fn finish(self, ctx: &mut CdpContext, session_id: &Option<String>) -> Result<Value, String> {
-        let js = ctx.get_page_mut(&self.page_id).and_then(|page| page.js.as_mut())
+    pub(crate) async fn finish(
+        self,
+        ctx: &mut CdpContext,
+        session_id: &Option<String>,
+    ) -> Result<Value, String> {
+        let js = ctx
+            .get_page_mut(&self.page_id)
+            .and_then(|page| page.js.as_mut())
             .ok_or("Execution context was destroyed")?;
         if !js.has_cdp_evaluation(&self.pending) {
             return Err("Execution context was destroyed".into());
         }
-        let remaining = self.command_deadline.map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()));
+        let remaining = self
+            .command_deadline
+            .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()));
         if remaining.is_some_and(|budget| budget.is_zero()) {
             js.cancel_cdp_evaluation(self.pending);
             return Err("Runtime evaluation exceeded its command budget".into());
         }
         if !js.cdp_evaluation_ready(&self.pending) {
             js.cancel_cdp_evaluation(self.pending);
-            return Err(format!("Runtime.{} promise did not settle within {}ms", self.method, self.timeout_ms));
+            return Err(format!(
+                "Runtime.{} promise did not settle within {}ms",
+                self.method, self.timeout_ms
+            ));
         }
-        let watchdog = remaining.map(|budget| inbrowse_js::runtime::spawn_watchdog(js.isolate_handle(), budget));
+        let watchdog = remaining
+            .map(|budget| inbrowse_js::runtime::spawn_watchdog(js.isolate_handle(), budget));
         let result = match js.finish_cdp_evaluation(self.pending, self.return_by_value) {
-            Ok(info) => emit_post_eval_nav(ctx, session_id).await.map(|_| evaluation_reply(&info)),
+            Ok(info) => emit_post_eval_nav(ctx, session_id)
+                .await
+                .map(|_| evaluation_reply(&info)),
             Err(error) => Err(error),
         };
         if watchdog.is_some_and(|watchdog| watchdog.stop()) {
-            if let Some(js) = ctx.get_page_mut(&self.page_id).and_then(|page| page.js.as_mut()) {
+            if let Some(js) = ctx
+                .get_page_mut(&self.page_id)
+                .and_then(|page| page.js.as_mut())
+            {
                 js.cancel_termination();
             }
             return Err("Runtime result serialization exceeded its task budget".into());
@@ -59,32 +83,69 @@ pub(crate) async fn start_awaited_evaluation(
     session_id: &Option<String>,
     command_budget_ms: u64,
 ) -> Result<Option<DeferredEvaluation>, String> {
-    let field = if method == "evaluate" { "contextId" } else { "executionContextId" };
-    validate_context(params, field, ctx, session_id, method)?;
-    let return_by_value = params.get("returnByValue").and_then(Value::as_bool).unwrap_or(false);
-    let timeout_ms = params.get("timeout").and_then(Value::as_u64).unwrap_or(30_000);
+    let field = if method == "evaluate" {
+        "contextId"
+    } else {
+        "executionContextId"
+    };
+    let frame_id = validate_context(params, field, ctx, session_id, method)?;
+    let return_by_value = params
+        .get("returnByValue")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let timeout_ms = params
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .unwrap_or(30_000);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    let command_deadline = (command_budget_ms != 0).then(|| tokio::time::Instant::now() + std::time::Duration::from_millis(command_budget_ms));
+    let command_deadline = (command_budget_ms != 0)
+        .then(|| tokio::time::Instant::now() + std::time::Duration::from_millis(command_budget_ms));
     let deadline = command_deadline.map_or(deadline, |command| deadline.min(command));
     let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
-    let Some(js) = page.js.as_mut() else { return Ok(None); };
+    let Some(js) = page.js.as_mut() else {
+        return Ok(None);
+    };
     let evaluation = if method == "evaluate" {
-        js.start_cdp_evaluation(params.get("expression").and_then(Value::as_str).ok_or("expression required")?, return_by_value, true)?
+        js.start_cdp_evaluation(
+            params
+                .get("expression")
+                .and_then(Value::as_str)
+                .ok_or("expression required")?,
+            return_by_value,
+            true,
+            frame_id,
+        )?
     } else {
         js.start_cdp_call(
-            params.get("functionDeclaration").and_then(Value::as_str).unwrap_or("() => undefined"),
+            params
+                .get("functionDeclaration")
+                .and_then(Value::as_str)
+                .unwrap_or("() => undefined"),
             params.get("objectId").and_then(Value::as_str),
-            params.get("arguments").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]),
-            return_by_value, true,
+            params
+                .get("arguments")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            return_by_value,
+            true,
+            frame_id,
         )?
     };
     let inbrowse_js::runtime::CdpEvaluation::Pending(pending) = evaluation else {
         return Err("Awaited evaluation did not create a pending record".into());
     };
     // Finish this task's promise reactions before a script-initiated navigation.
-    js.resolve_promises_until(|js| js.cdp_evaluation_ready(&pending), 0).await;
+    js.resolve_promises_until(|js| js.cdp_evaluation_ready(&pending), 0)
+        .await;
     Ok(Some(DeferredEvaluation {
-        page_id: page.id.clone(), pending, return_by_value, deadline, command_deadline, timeout_ms, method: method.into(),
+        page_id: page.id.clone(),
+        pending,
+        return_by_value,
+        deadline,
+        command_deadline,
+        timeout_ms,
+        method: method.into(),
     }))
 }
 
@@ -100,15 +161,28 @@ where
     if ctx.pages.len() == 1 {
         return command(ctx.get_session_page_mut(session_id).ok_or("No page")?).await;
     }
-    let id = ctx.get_session_page_mut(session_id).ok_or("No page")?.id.clone();
-    let index = ctx.pages.iter().position(|page| page.id == id).ok_or("No page")?;
+    let id = ctx
+        .get_session_page_mut(session_id)
+        .ok_or("No page")?
+        .id
+        .clone();
+    let index = ctx
+        .pages
+        .iter()
+        .position(|page| page.id == id)
+        .ok_or("No page")?;
     let (before, remaining) = ctx.pages.split_at_mut(index);
     let (page, after) = remaining.split_first_mut().ok_or("No page")?;
     let command = command(page);
     let peers = async {
         let mut idle = std::collections::HashSet::new();
         loop {
-            let all_idle = match crate::server::pump_page_event_loops(before.iter_mut().chain(after.iter_mut()), &mut idle).await {
+            let all_idle = match crate::server::pump_page_event_loops(
+                before.iter_mut().chain(after.iter_mut()),
+                &mut idle,
+            )
+            .await
+            {
                 Ok(idle) => idle,
                 Err(error) => return error,
             };
@@ -117,9 +191,14 @@ where
                 // idle peers until it wakes again, without a polling timer.
                 let mut parked = false;
                 std::future::poll_fn(|_| {
-                    if parked { std::task::Poll::Ready(()) }
-                    else { parked = true; std::task::Poll::Pending }
-                }).await;
+                    if parked {
+                        std::task::Poll::Ready(())
+                    } else {
+                        parked = true;
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
             } else {
                 tokio::task::yield_now().await;
             }
@@ -164,7 +243,9 @@ pub(crate) fn execution_context_created_event(
 /// the page context. Both handlers now share this guard.
 fn is_valid_binding_name(name: &str) -> bool {
     !name.is_empty()
-        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
         && !name.chars().next().unwrap_or('0').is_ascii_digit()
 }
 
@@ -178,9 +259,7 @@ async fn emit_post_eval_nav(
     session_id: &Option<String>,
 ) -> Result<(), String> {
     let server_managed_navigation = ctx.intercept_tx.is_some();
-    let page = ctx
-        .get_session_page_mut(session_id)
-        .ok_or("No page")?;
+    let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
     // The connection processor owns the Fetch reply channel. Let it perform
     // document navigation outside dispatch so destination requests can resume.
     if server_managed_navigation && page.has_pending_navigation() {
@@ -248,19 +327,20 @@ pub async fn handle(
             // a context appears. Returning "No page" here breaks the standard
             // puppeteer connect/newPage flow. If there's no session, succeed
             // silently — the next Target.attachToTarget will set things up.
-            if let Some(page_id) = session_id.as_ref()
-                .and_then(|session| ctx.sessions.get(session)).cloned()
+            if let Some(page_id) = session_id
+                .as_ref()
+                .and_then(|session| ctx.sessions.get(session))
+                .cloned()
             {
-                let newly_enabled = session_id.as_ref().is_some_and(|session| {
-                    ctx.runtime_enabled_sessions.insert(session.clone())
-                });
+                let newly_enabled = session_id
+                    .as_ref()
+                    .is_some_and(|session| ctx.runtime_enabled_sessions.insert(session.clone()));
                 ctx.refresh_runtime_event_collection(&page_id);
                 ctx.ensure_default_context(&page_id);
                 if newly_enabled {
-                    let events = ctx.contexts_for_page(&page_id)
-                        .map(|context| execution_context_created_event(
-                            context, session_id.clone(),
-                        ))
+                    let events = ctx
+                        .contexts_for_page(&page_id)
+                        .map(|context| execution_context_created_event(context, session_id.clone()))
                         .collect::<Vec<_>>();
                     ctx.pending_events.extend(events);
                 }
@@ -287,7 +367,7 @@ pub async fn handle(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            validate_context(params, "contextId", ctx, session_id, "evaluate")?;
+            let frame_id = validate_context(params, "contextId", ctx, session_id, "evaluate")?;
 
             let await_promise = params
                 .get("awaitPromise")
@@ -305,21 +385,22 @@ pub async fn handle(
 
             let info = match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                with_live_peers(ctx, session_id, |page| page.evaluate_for_cdp_with_timeout(
-                    expression,
-                    return_by_value,
-                    await_promise,
-                    timeout_ms,
-                )),
+                with_live_peers(ctx, session_id, |page| {
+                    page.evaluate_in_frame_for_cdp(
+                        frame_id,
+                        expression,
+                        return_by_value,
+                        await_promise,
+                        timeout_ms,
+                    )
+                }),
             )
             .await
             {
                 Ok(Ok(info)) => info,
                 Ok(Err(error)) => return Err(error),
                 Err(_) => {
-                    return Err(format!(
-                        "Runtime.evaluate exceeded {timeout_ms}ms timeout"
-                    ));
+                    return Err(format!("Runtime.evaluate exceeded {timeout_ms}ms timeout"));
                 }
             };
             emit_post_eval_nav(ctx, session_id).await?;
@@ -351,7 +432,17 @@ pub async fn handle(
             // callFunctionOn (not `contextId`); a request may omit it when
             // `objectId` is supplied — in that case context validation is a
             // no-op and the default context is used.
-            validate_context(params, "executionContextId", ctx, session_id, "callFunctionOn")?;
+            let frame_id = validate_context(
+                params,
+                "executionContextId",
+                ctx,
+                session_id,
+                "callFunctionOn",
+            )?;
+            let target = match object_id {
+                Some(object_id) => inbrowse::page::CdpCallTarget::Object(object_id),
+                None => inbrowse::page::CdpCallTarget::Frame(frame_id),
+            };
 
             // Keep awaitPromise alive for the same command budget as evaluate.
             // Playwright implements waits with callFunctionOn on some utility
@@ -364,14 +455,16 @@ pub async fn handle(
 
             let info = match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                with_live_peers(ctx, session_id, |page| page.call_function_on_for_cdp_with_timeout(
-                    function_declaration,
-                    object_id,
-                    &arguments,
-                    return_by_value,
-                    await_promise,
-                    timeout_ms,
-                )),
+                with_live_peers(ctx, session_id, |page| {
+                    page.call_function_on_target_for_cdp(
+                        target,
+                        function_declaration,
+                        &arguments,
+                        return_by_value,
+                        await_promise,
+                        timeout_ms,
+                    )
+                }),
             )
             .await
             {
@@ -408,9 +501,7 @@ pub async fn handle(
             //      ElementHandle.
             let object_id = params.get("objectId").and_then(|v| v.as_str());
             if let Some(oid) = object_id {
-                let page = ctx
-                    .get_session_page_mut(session_id)
-                    .ok_or("No page")?;
+                let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
                 // The child ids minted below are `<parent>::<key>` and the key
                 // is a property name off a page object, so the page decides
                 // what ends up inside this literal. A JSON literal covers the
@@ -448,14 +539,24 @@ pub async fn handle(
                     }})()",
                     oid = oid_literal,
                 );
-                let result = page.evaluate(&code);
+                let result = page.evaluate(&code)?;
                 if let serde_json::Value::Array(props) = result {
+                    if let Some(js) = page.js.as_mut() {
+                        for child in props
+                            .iter()
+                            .filter_map(|p| p.get("childOid").and_then(|v| v.as_str()))
+                        {
+                            js.adopt_object(child);
+                        }
+                    }
                     let descriptors: Vec<Value> = props
                         .iter()
                         .map(|p| {
                             let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            let prop_type =
-                                p.get("type").and_then(|v| v.as_str()).unwrap_or("undefined");
+                            let prop_type = p
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("undefined");
                             let mut remote = json!({ "type": prop_type });
                             if let Some(child_oid) = p.get("childOid").and_then(|v| v.as_str()) {
                                 remote["type"] = json!("object");
@@ -567,7 +668,7 @@ pub async fn handle(
                 // Install on the current page so the binding is usable
                 // immediately, without waiting for the next navigation.
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
-                    page.evaluate(&shim);
+                    page.evaluate(&shim)?;
                 }
             }
             Ok(json!({}))
@@ -586,7 +687,7 @@ pub async fn handle(
                     }
                 }
                 if let Some(page) = ctx.get_session_page_mut(session_id) {
-                    page.evaluate(&format!("delete globalThis['{}'];", name));
+                    page.evaluate(&format!("delete globalThis['{}'];", name))?;
                 }
             }
             Ok(json!({}))
@@ -608,44 +709,53 @@ fn validate_context(
     ctx: &crate::dispatch::CdpContext,
     session_id: &Option<String>,
     method: &str,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let id = params.get(field).and_then(|value| value.as_i64());
-    let unique_id = params.get("uniqueContextId").and_then(|value| value.as_str());
+    let unique_id = params
+        .get("uniqueContextId")
+        .and_then(|value| value.as_str());
     if id.is_some() && unique_id.is_some() {
         return Err(format!(
             "Runtime.{method} cannot specify both {field} and uniqueContextId"
         ));
     }
     if id.is_none() && unique_id.is_none() {
-        return Ok(());
+        return Ok(0);
     }
-    let record = id.and_then(|id| ctx.context_by_id(id))
+    let identity = id
+        .map(|id| id.to_string())
+        .or_else(|| unique_id.map(str::to_string))
+        .unwrap_or_default();
+    let record = id
+        .and_then(|id| ctx.context_by_id(id))
         .or_else(|| unique_id.and_then(|id| ctx.context_by_unique_id(id)));
     if let Some(record) = record {
-        let owner = session_id.as_ref().and_then(|session| ctx.sessions.get(session));
+        let owner = session_id
+            .as_ref()
+            .and_then(|session| ctx.sessions.get(session));
         if owner == Some(&record.page_id) {
-            // This registry currently validates ownership/routing only. A
-            // named isolated context still executes in the owning page's
-            // current V8 runtime/global; it is not a separate V8 realm yet.
-            return Ok(());
+            // A named isolated world is not a separate V8 realm: it runs in
+            // the realm of the frame it belongs to, the page's or a child's.
+            return ctx
+                .get_session_page(session_id)
+                .and_then(|page| super::page::frame_number(page, &record.frame_id))
+                .ok_or_else(|| format!("Cannot find context with specified id: {identity}"));
         }
-    } else if session_id.is_none() && unique_id.is_none()
+    } else if session_id.is_none()
+        && unique_id.is_none()
         && id.is_some_and(|id| ctx.valid_context_ids.contains(&id))
     {
         // Direct embedders can still reserve an id through the existing public
         // next_isolated_context API. Attached sessions require page ownership.
-        return Ok(());
+        return Ok(0);
     }
-    let identity = id.map(|id| id.to_string())
-        .or_else(|| unique_id.map(str::to_string))
-        .unwrap_or_default();
     if record.is_none() || session_id.is_some() {
         return Err(format!(
             "Cannot find context with specified id: {}",
             identity
         ));
     }
-    Ok(())
+    Ok(0)
 }
 
 /// Shape one `Runtime.evaluate` or `Runtime.callFunctionOn` reply.
@@ -718,24 +828,55 @@ mod tests {
             for _ in 0..2 {
                 let id = ctx.create_page();
                 let session = Some(format!("{id}-session"));
-                ctx.sessions.insert(session.clone().unwrap(),id);
-                crate::domains::page::handle("navigate",&json!({"url":"data:text/html,<body>idb</body>"}),&mut ctx,&session).await.unwrap();
-                ctx.get_session_page_mut(&session).unwrap().js.as_mut().unwrap().set_url("https://idb.test/");
+                ctx.sessions.insert(session.clone().unwrap(), id);
+                crate::domains::page::handle(
+                    "navigate",
+                    &json!({"url":"data:text/html,<body>idb</body>"}),
+                    &mut ctx,
+                    &session,
+                )
+                .await
+                .unwrap();
+                ctx.get_session_page_mut(&session)
+                    .unwrap()
+                    .js
+                    .as_mut()
+                    .unwrap()
+                    .set_url("https://idb.test/");
                 sessions.push(session);
             }
             let first = ctx.get_session_page_mut(&sessions[0]).unwrap();
-            first.evaluate(r#"(() => {
+            first
+                .evaluate(
+                    r#"(() => {
                 const r = indexedDB.open('awaited-peer',1);
                 r.onsuccess = () => {globalThis.peer = r.result;
                     peer.onversionchange = () => setTimeout(() => peer.close(),10);};
-            })()"#);
-            first.js.as_mut().unwrap().run_event_loop_bounded(100).await.unwrap();
+            })()"#,
+                )
+                .unwrap();
+            first
+                .js
+                .as_mut()
+                .unwrap()
+                .run_event_loop_bounded(100)
+                .await
+                .unwrap();
             let body = "return new Promise((resolve,reject)=>{const r=indexedDB.open('awaited-peer',2);r.onsuccess=()=>{r.result.close();resolve(r.result.version)};r.onerror=()=>reject(r.error)})";
             let mut params = json!({"awaitPromise":true,"returnByValue":true,"timeout":1000});
-            if method == "evaluate" { params["expression"] = json!(format!("(()=>{{{body}}})()")); }
-            else { params["functionDeclaration"] = json!(format!("function(){{{body}}}")); }
-            let result = handle(method,&params,&mut ctx,&sessions[1]).await.unwrap();
-            assert_eq!(result["result"]["value"].as_f64(),Some(2.0),"{method}: {result}");
+            if method == "evaluate" {
+                params["expression"] = json!(format!("(()=>{{{body}}})()"));
+            } else {
+                params["functionDeclaration"] = json!(format!("function(){{{body}}}"));
+            }
+            let result = handle(method, &params, &mut ctx, &sessions[1])
+                .await
+                .unwrap();
+            assert_eq!(
+                result["result"]["value"].as_f64(),
+                Some(2.0),
+                "{method}: {result}"
+            );
         }
     }
 
@@ -745,24 +886,50 @@ mod tests {
         let page_id = ctx.create_page();
         let session = Some("heap-usage".to_string());
         ctx.sessions.insert(session.clone().unwrap(), page_id);
-        let before = handle("getHeapUsage", &json!({}), &mut ctx, &session).await.unwrap();
-        for field in ["usedSize", "totalSize", "embedderHeapUsedSize", "backingStorageSize"] {
-            assert!(before[field].as_u64().is_some(), "missing byte count: {before}");
+        let before = handle("getHeapUsage", &json!({}), &mut ctx, &session)
+            .await
+            .unwrap();
+        for field in [
+            "usedSize",
+            "totalSize",
+            "embedderHeapUsedSize",
+            "backingStorageSize",
+        ] {
+            assert!(
+                before[field].as_u64().is_some(),
+                "missing byte count: {before}"
+            );
         }
         assert!(before["usedSize"].as_u64().unwrap() > 0);
         assert!(before["totalSize"].as_u64().unwrap() >= before["usedSize"].as_u64().unwrap());
-        ctx.get_session_page_mut(&session).unwrap().js.as_mut().unwrap().execute_script("heap-allocations",
-            "globalThis.heapObjects = Array.from({length: 100000}, (_, i) => ({i}));\
+        ctx.get_session_page_mut(&session)
+            .unwrap()
+            .js
+            .as_mut()
+            .unwrap()
+            .execute_script(
+                "heap-allocations",
+                "globalThis.heapObjects = Array.from({length: 100000}, (_, i) => ({i}));\
              globalThis.heapBuffer = new ArrayBuffer(8 * 1024 * 1024);\
              globalThis.heapTimerRan = false;\
              setTimeout(() => { globalThis.heapTimerRan = true; }, 0);",
-        ).unwrap();
-        let after = handle("getHeapUsage", &json!({}), &mut ctx, &session).await.unwrap();
+            )
+            .unwrap();
+        let after = handle("getHeapUsage", &json!({}), &mut ctx, &session)
+            .await
+            .unwrap();
         assert!(after["usedSize"].as_u64().unwrap() > before["usedSize"].as_u64().unwrap());
-        assert!(after["backingStorageSize"].as_u64().unwrap()
-            >= before["backingStorageSize"].as_u64().unwrap() + 8 * 1024 * 1024);
-        assert_eq!(ctx.get_session_page_mut(&session).unwrap()
-            .evaluate("heapTimerRan"), json!(false));
+        assert!(
+            after["backingStorageSize"].as_u64().unwrap()
+                >= before["backingStorageSize"].as_u64().unwrap() + 8 * 1024 * 1024
+        );
+        assert_eq!(
+            ctx.get_session_page_mut(&session)
+                .unwrap()
+                .evaluate("heapTimerRan")
+                .unwrap(),
+            json!(false)
+        );
     }
 
     // Issue #51 — Runtime.evaluate / callFunctionOn must read and validate
@@ -896,7 +1063,10 @@ mod tests {
             .get("exceptionDetails")
             .expect("a rejected call is reported through exceptionDetails");
         assert_eq!(details["exception"]["subtype"], json!("error"));
-        assert!(reply["result"]["value"].is_null(), "the error must not be serialized by value: {reply}");
+        assert!(
+            reply["result"]["value"].is_null(),
+            "the error must not be serialized by value: {reply}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -919,7 +1089,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(reply["result"]["value"], json!(2.0));
+        assert_eq!(reply["result"]["value"], json!(2));
         assert!(reply.get("exceptionDetails").is_none());
     }
     #[tokio::test(flavor = "current_thread")]
@@ -1013,11 +1183,12 @@ mod tests {
         // Canary the injection would flip from 0 to 1.
         ctx.get_session_page_mut(&session)
             .unwrap()
-            .evaluate("globalThis.__pwned = 0");
+            .evaluate("globalThis.__pwned = 0")
+            .unwrap();
 
-        // The generated code is `delete globalThis['{name}']`, which the runtime
-        // wraps as `return ( ... )`. A comma-expression payload stays a single
-        // valid expression through that wrapper and runs the assignment:
+        // The generated code is `delete globalThis['{name}']`. A
+        // comma-expression payload stays one valid statement and, unvalidated,
+        // would run the assignment:
         //   delete globalThis['x'] , (globalThis.__pwned = 1) , globalThis['y']
         handle(
             "removeBinding",
@@ -1031,7 +1202,8 @@ mod tests {
         let pwned = ctx
             .get_session_page_mut(&session)
             .unwrap()
-            .evaluate("globalThis.__pwned");
+            .evaluate("globalThis.__pwned")
+            .unwrap();
         assert_ne!(
             pwned.as_f64(),
             Some(1.0),

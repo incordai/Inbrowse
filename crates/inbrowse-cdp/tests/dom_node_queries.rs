@@ -37,7 +37,7 @@ async fn dom_attributes_preserve_qualified_names_and_reject_invalid_nodes() {
     let node = ok(&mut ctx, &session, "querySelector", json!({"selector":"#lab"})).await["nodeId"].clone();
     ctx.get_session_page_mut(&Some(session.clone())).unwrap().evaluate(
         "document.querySelector('#lab').setAttributeNS('urn:test','x:flag','yes')"
-    );
+    ).unwrap();
     let attributes = ok(&mut ctx, &session, "getAttributes", json!({"nodeId":node})).await;
     let pairs: std::collections::BTreeMap<_, _> = attributes["attributes"].as_array().unwrap()
         .chunks_exact(2).map(|pair| (pair[0].as_str().unwrap(), pair[1].as_str().unwrap())).collect();
@@ -114,7 +114,7 @@ async fn dom_child_requests_allow_pierce_on_plain_trees_but_reject_unserved_root
     assert!(ctx.pending_events.iter().any(|event| event.method == "DOM.setChildNodes"));
     ctx.get_session_page_mut(&Some(session.clone())).unwrap().evaluate(
         "document.querySelector('main').attachShadow({mode:'open'}).innerHTML='<button>shadow</button>'"
-    );
+    ).unwrap();
     assert!(call(&mut ctx, &session, "requestChildNodes",
         json!({"nodeId":root,"depth":-1,"pierce":true})).await.error.is_some(),
         "a requested shadow tree must not be silently omitted");

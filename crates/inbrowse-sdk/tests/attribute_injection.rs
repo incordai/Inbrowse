@@ -15,9 +15,12 @@ async fn attribute_name_cannot_inject_js() {
         .unwrap();
 
     // Canary the injection would flip from 0 to 1.
-    page.evaluate("globalThis.__pwned = 0");
+    page.evaluate("globalThis.__pwned = 0").unwrap();
 
-    let el = page.query_selector("#x").expect("element #x should be found");
+    let el = page
+        .query_selector("#x")
+        .unwrap()
+        .expect("element #x should be found");
 
     // Payload breaks out of `getAttribute('{name}')` while staying a single
     // valid expression (the wrapper places it inside `el ? ... : null`, which
@@ -25,7 +28,7 @@ async fn attribute_name_cannot_inject_js() {
     //   el.getAttribute('x' + (globalThis.__pwned = 1) + '')
     let _ = el.attribute("x' + (globalThis.__pwned = 1) + '");
 
-    let pwned = page.evaluate("globalThis.__pwned");
+    let pwned = page.evaluate("globalThis.__pwned").unwrap();
     assert_ne!(
         pwned.as_f64(),
         Some(1.0),
@@ -41,9 +44,12 @@ async fn attribute_reads_ordinary_names() {
         .await
         .unwrap();
 
-    let el = page.query_selector("#x").expect("element #x should be found");
+    let el = page
+        .query_selector("#x")
+        .unwrap()
+        .expect("element #x should be found");
     assert_eq!(
-        el.attribute("data-safe").as_deref(),
+        el.attribute("data-safe").unwrap().as_deref(),
         Some("ok"),
         "escaping must not break reading a normal attribute name"
     );

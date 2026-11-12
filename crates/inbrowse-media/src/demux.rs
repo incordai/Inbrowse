@@ -27,13 +27,19 @@ impl Kind {
 #[derive(Debug, Clone)]
 pub(crate) enum Codec {
     /// `avcc` is the AVCDecoderConfigurationRecord (SPS/PPS out of band).
-    H264 { avcc: Bytes },
+    H264 {
+        avcc: Bytes,
+    },
     Vp8,
     Vp9,
     /// `asc` is the AudioSpecificConfig.
-    Aac { asc: Bytes },
+    Aac {
+        asc: Bytes,
+    },
     /// `head` is an OpusHead packet.
-    Opus { head: Option<Bytes> },
+    Opus {
+        head: Option<Bytes>,
+    },
     /// Cue text per sample, in the container's own text encoding.
     Text(TextFormat),
     /// Listed in the report but never decoded.
@@ -83,6 +89,10 @@ pub(crate) struct Track {
     pub sample_rate: Option<u32>,
     pub channels: Option<u32>,
     pub language: Option<String>,
+    /// Microseconds before the track's first presented sample: the delay an
+    /// MP4 edit list gives it (`mp4.rs`), 0 elsewhere. `audio.rs` writes it as
+    /// silence so the WAV shares the file's time axis.
+    pub start_us: i64,
     /// Samples in decode order.
     pub samples: Vec<Sample>,
 }
@@ -98,6 +108,7 @@ impl Track {
             sample_rate: None,
             channels: None,
             language: None,
+            start_us: 0,
             samples: Vec::new(),
         }
     }

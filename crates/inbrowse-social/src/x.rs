@@ -14,7 +14,9 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::http::{self, i, s, Req};
-use crate::{time, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort};
+use crate::{
+    time, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort,
+};
 
 const SITE: &str = "X";
 /// Recent search on the official API reaches back this far.
@@ -26,7 +28,9 @@ pub fn search_page_url(query: &str, days: u32, sort: Sort) -> String {
     let since = time::to_date(time::now() - i64::from(days.max(1)) * 86_400);
     let q = format!("{query} since:{since}");
     let mut url = url::Url::parse("https://x.com/search").expect("static URL");
-    url.query_pairs_mut().append_pair("q", &q).append_pair("src", "typed_query");
+    url.query_pairs_mut()
+        .append_pair("q", &q)
+        .append_pair("src", "typed_query");
     if sort == Sort::Recent {
         url.query_pairs_mut().append_pair("f", "live");
     }
@@ -67,7 +71,11 @@ fn tweet_item(t: &Value) -> Option<Item> {
         author: screen,
         community: None,
         published_at: secs.map(time::to_rfc3339),
-        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+        date_confidence: if secs.is_some() {
+            DateConfidence::Exact
+        } else {
+            DateConfidence::Unknown
+        },
         engagement: Engagement {
             likes: i(legacy, "favorite_count"),
             reposts: i(legacy, "retweet_count"),
@@ -94,7 +102,9 @@ pub fn items_from_graphql(body: &Value) -> Vec<Item> {
         match v {
             Value::Object(map) => {
                 if let Some(result) = map.get("tweet_results").and_then(|r| r.get("result")) {
-                    let tweet = if result.get("__typename").and_then(Value::as_str) == Some("TweetWithVisibilityResults") {
+                    let tweet = if result.get("__typename").and_then(Value::as_str)
+                        == Some("TweetWithVisibilityResults")
+                    {
                         result.get("tweet").unwrap_or(result)
                     } else {
                         result
@@ -131,7 +141,9 @@ pub(crate) async fn search_api(
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Item>, SocialError> {
     let days = if req.days > API_MAX_DAYS {
-        warnings.push(format!("the X API's recent search covers {API_MAX_DAYS} days; window shortened"));
+        warnings.push(format!(
+            "the X API's recent search covers {API_MAX_DAYS} days; window shortened"
+        ));
         API_MAX_DAYS
     } else {
         req.days
@@ -146,9 +158,19 @@ pub(crate) async fn search_api(
         .append_pair("tweet.fields", "created_at,public_metrics,author_id,lang")
         .append_pair("expansions", "author_id")
         .append_pair("user.fields", "username")
-        .append_pair("sort_order", if req.sort == Sort::Recent { "recency" } else { "relevancy" });
+        .append_pair(
+            "sort_order",
+            if req.sort == Sort::Recent {
+                "recency"
+            } else {
+                "relevancy"
+            },
+        );
     let options = Req {
-        headers: vec![("Authorization", format!("Bearer {}", credentials.key)), ("Accept", "application/json".into())],
+        headers: vec![
+            ("Authorization", format!("Bearer {}", credentials.key)),
+            ("Accept", "application/json".into()),
+        ],
         cookies: false,
         ..Req::default()
     };
@@ -168,7 +190,11 @@ fn items_from_api(body: &Value) -> Vec<Item> {
     let users: Vec<(String, String)> = body
         .pointer("/includes/users")
         .and_then(Value::as_array)
-        .map(|u| u.iter().filter_map(|u| Some((s(u, "id")?, s(u, "username")?))).collect())
+        .map(|u| {
+            u.iter()
+                .filter_map(|u| Some((s(u, "id")?, s(u, "username")?)))
+                .collect()
+        })
         .unwrap_or_default();
     body.get("data")
         .and_then(Value::as_array)
@@ -177,7 +203,12 @@ fn items_from_api(body: &Value) -> Vec<Item> {
                 .filter_map(|t| {
                     let id = s(t, "id")?;
                     let author_id = s(t, "author_id");
-                    let screen = author_id.and_then(|a| users.iter().find(|(id, _)| *id == a).map(|(_, n)| n.clone()));
+                    let screen = author_id.and_then(|a| {
+                        users
+                            .iter()
+                            .find(|(id, _)| *id == a)
+                            .map(|(_, n)| n.clone())
+                    });
                     let secs = s(t, "created_at").and_then(|d| time::parse_rfc3339(&d));
                     let m = t.get("public_metrics");
                     Some(Item {
@@ -189,7 +220,11 @@ fn items_from_api(body: &Value) -> Vec<Item> {
                         author: screen,
                         community: None,
                         published_at: secs.map(time::to_rfc3339),
-                        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+                        date_confidence: if secs.is_some() {
+                            DateConfidence::Exact
+                        } else {
+                            DateConfidence::Unknown
+                        },
                         engagement: Engagement {
                             likes: m.and_then(|m| i(m, "like_count")),
                             reposts: m.and_then(|m| i(m, "retweet_count")),
@@ -233,10 +268,17 @@ mod tests {
         let v: Value = serde_json::from_str(GRAPHQL).unwrap();
         let items = items_from_graphql(&v);
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["111", "222"], "quoted post and tombstone are not results");
+        assert_eq!(
+            ids,
+            ["111", "222"],
+            "quoted post and tombstone are not results"
+        );
         assert_eq!(items[0].url, "https://x.com/alice/status/111");
         assert_eq!(items[0].engagement.views, Some(5400));
-        assert_eq!(items[0].published_at.as_deref(), Some("2026-10-13T10:27:00Z"));
+        assert_eq!(
+            items[0].published_at.as_deref(),
+            Some("2026-10-13T10:27:00Z")
+        );
         assert_eq!(items[1].text, "a long post");
         assert_eq!(items[1].author.as_deref(), Some("bob"));
     }
@@ -257,7 +299,10 @@ mod tests {
     #[test]
     fn page_url_has_window_and_order() {
         let u = search_page_url("rust lang", 7, Sort::Recent);
-        assert!(u.starts_with("https://x.com/search?q=rust+lang+since%3A"), "{u}");
+        assert!(
+            u.starts_with("https://x.com/search?q=rust+lang+since%3A"),
+            "{u}"
+        );
         assert!(u.ends_with("&f=live"));
     }
 }

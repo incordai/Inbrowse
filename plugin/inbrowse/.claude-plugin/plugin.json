@@ -1,7 +1,7 @@
 {
   "name": "inbrowse",
   "displayName": "Inbrowse",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A fast headless browser for Claude Code: pages with JavaScript, forms and tabs; PDF, Office and spreadsheet text; video frames, audio and captions; OCR; research posts from Reddit, X, Hacker News, GitHub and Polymarket",
   "author": { "name": "Incord AI", "url": "https://github.com/incordai" },
   "homepage": "https://github.com/incordai/Inbrowse",

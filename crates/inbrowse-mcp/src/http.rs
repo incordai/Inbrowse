@@ -271,9 +271,16 @@ fn cors_header(origin: Option<&str>, allowlist: Option<&str>) -> String {
     }
 }
 
-/// MCP Streamable HTTP transport (POST /mcp → JSON response).
-///
-pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Option<String>, stealth: bool) -> Result<()> {
+/// MCP Streamable HTTP transport (POST /mcp → JSON response). Pages open and
+/// close for idleness as on stdio ([`crate::run`]).
+pub async fn run(
+    host: String,
+    port: u16,
+    proxy: Option<String>,
+    user_agent: Option<String>,
+    stealth: bool,
+    idle_close: Option<std::time::Duration>,
+) -> Result<()> {
     let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
     let auth_token = token_from_env()?;
     if !addr.ip().is_loopback() && auth_token.is_none() {
@@ -288,6 +295,7 @@ pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Opt
     }
 
     let mut state = BrowserState::new(proxy, user_agent, stealth);
+    state.idle_close = idle_close;
     let allowed_origins = Arc::new(allowed_origins_env());
     let auth_token = Arc::new(auth_token);
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -295,7 +303,12 @@ pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Opt
     let mut runtime_pump_armed = false;
 
     loop {
+        let idle_deadline = state.idle_deadline();
         tokio::select! {
+            () = tokio::time::sleep_until(idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if idle_deadline.is_some() => {
+                state.close_idle_tabs();
+                runtime_pump_armed = false;
+            }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
                 let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
@@ -454,7 +467,8 @@ async fn handle_connection(
                 }
                 let body = match body {
                     RequestBody::MissingLength => {
-                        respond(&mut writer, 400, b"{\"error\":\"missing Content-Length\"}").await?;
+                        respond(&mut writer, 400, b"{\"error\":\"missing Content-Length\"}")
+                            .await?;
                         break;
                     }
                     RequestBody::TooLarge => {
@@ -494,7 +508,9 @@ async fn handle_connection(
 async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
     let msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
+        Err(_) => {
+            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}})
+        }
     };
 
     if let Some(batch) = msg.as_array() {
@@ -510,8 +526,9 @@ async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
         return Value::Array(results);
     }
 
-    process_one(&msg, state).await
-        .unwrap_or_else(|| json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}))
+    process_one(&msg, state).await.unwrap_or_else(
+        || json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
+    )
 }
 
 async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
@@ -523,13 +540,24 @@ async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
             json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
         );
     }
+    if msg.get("jsonrpc").and_then(Value::as_str) != Some(crate::JSONRPC_VERSION) {
+        return Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": crate::INVALID_REQUEST, "message": "Invalid Request: jsonrpc must be \"2.0\""}
+        }));
+    }
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let params = msg.get("params").unwrap_or(&Value::Null);
     let resp = dispatch(method, id, params, state).await;
     Some(serde_json::to_value(resp).unwrap())
 }
 
-async fn respond_json(writer: &mut (impl AsyncWriteExt + Unpin), body: &[u8], cors: &str) -> Result<()> {
+async fn respond_json(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    body: &[u8],
+    cors: &str,
+) -> Result<()> {
     let hdr = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
@@ -545,7 +573,11 @@ async fn respond_json(writer: &mut (impl AsyncWriteExt + Unpin), body: &[u8], co
     Ok(())
 }
 
-async fn respond(writer: &mut (impl AsyncWriteExt + Unpin), status: u16, body: &[u8]) -> Result<()> {
+async fn respond(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    status: u16,
+    body: &[u8],
+) -> Result<()> {
     let status_text = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -625,12 +657,13 @@ mod mcp_hardening_tests {
     async fn stalled_request_line_hits_deadline() {
         let (_client, server) = tokio::io::duplex(64);
         let mut reader = BufReader::new(server);
-        let err = match read_request_with_timeout(&mut reader, None, None, Duration::from_millis(20))
-            .await
-        {
-            Err(err) => err,
-            Ok(_) => panic!("stalled request line should time out"),
-        };
+        let err =
+            match read_request_with_timeout(&mut reader, None, None, Duration::from_millis(20))
+                .await
+            {
+                Err(err) => err,
+                Ok(_) => panic!("stalled request line should time out"),
+            };
         assert!(err.to_string().contains("timed out"));
     }
 
@@ -649,12 +682,13 @@ mod mcp_hardening_tests {
             .unwrap();
 
         let mut reader = BufReader::new(server);
-        let err = match read_request_with_timeout(&mut reader, None, None, Duration::from_millis(20))
-            .await
-        {
-            Err(err) => err,
-            Ok(_) => panic!("stalled request body should time out"),
-        };
+        let err =
+            match read_request_with_timeout(&mut reader, None, None, Duration::from_millis(20))
+                .await
+            {
+                Err(err) => err,
+                Ok(_) => panic!("stalled request body should time out"),
+            };
         assert!(err.to_string().contains("timed out"));
     }
 }

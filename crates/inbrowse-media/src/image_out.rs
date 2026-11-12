@@ -7,7 +7,11 @@ use image::{ImageFormat, RgbaImage};
 
 /// Scale `image` so its longer side is at most `max_side` (aspect kept), save it
 /// as PNG at `path`, and return the path and the saved size.
-pub(crate) fn save_png(image: RgbaImage, max_side: u32, path: &Path) -> Result<(String, u32, u32), String> {
+pub(crate) fn save_png(
+    image: RgbaImage,
+    max_side: u32,
+    path: &Path,
+) -> Result<(String, u32, u32), String> {
     let (w, h) = image.dimensions();
     let longest = w.max(h);
     let image = if max_side > 0 && longest > max_side {

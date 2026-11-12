@@ -100,9 +100,10 @@ fn wreq_response_header_value<'a>(
             url, name
         )));
     }
-    first.to_str().map(Some).map_err(|_| {
-        InbrowseNetError::Cors(format!("{} returned an invalid {} header", url, name))
-    })
+    first
+        .to_str()
+        .map(Some)
+        .map_err(|_| InbrowseNetError::Cors(format!("{} returned an invalid {} header", url, name)))
 }
 
 #[cfg(feature = "stealth")]
@@ -115,8 +116,7 @@ fn validate_wreq_cors_response(
     if !cors_required(request, target) {
         return Ok(());
     }
-    let allow_origin =
-        wreq_response_header_value(headers, "access-control-allow-origin", target)?;
+    let allow_origin = wreq_response_header_value(headers, "access-control-allow-origin", target)?;
     let allow_credentials =
         wreq_response_header_value(headers, "access-control-allow-credentials", target)?;
     validate_cors_response(
@@ -192,6 +192,28 @@ pub struct StealthHttpClient {
     pub cookie_jar: Arc<CookieJar>,
     pub extra_headers: RwLock<HashMap<String, String>>,
     pub in_flight: Arc<std::sync::atomic::AtomicU32>,
+    /// Overrides the emulation's User-Agent for every request (`--user-agent`).
+    /// `None` keeps the emulation's own UA untouched.
+    user_agent: Option<String>,
+}
+
+/// The User-Agent a request must carry when one was set explicitly: the first
+/// source that holds a `user-agent` header wins, then the client-wide override.
+/// `None` leaves the emulation's own header in place.
+#[cfg(feature = "stealth")]
+fn explicit_user_agent<'a>(
+    sources: &[&'a HashMap<String, String>],
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    sources
+        .iter()
+        .find_map(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, value)| value.as_str())
+        })
+        .or(fallback)
 }
 
 /// Scripted fetch exposes these headers before consuming the bounded body.
@@ -260,7 +282,10 @@ impl StealthHttpClient {
             std::env::var_os("SSL_CERT_FILE").as_deref(),
             std::env::var_os("SSL_CERT_DIR").as_deref(),
         ) {
-            match wreq::tls::trust::CertStore::builder().set_default_paths().build() {
+            match wreq::tls::trust::CertStore::builder()
+                .set_default_paths()
+                .build()
+            {
                 Ok(store) => builder = builder.tls_cert_store(store),
                 Err(error) => tracing::warn!(
                     %error,
@@ -276,7 +301,9 @@ impl StealthHttpClient {
             }
         }
 
-        let client = builder.build().expect("failed to build wreq stealth client");
+        let client = builder
+            .build()
+            .expect("failed to build wreq stealth client");
 
         StealthHttpClient {
             client,
@@ -288,7 +315,16 @@ impl StealthHttpClient {
             cookie_jar,
             extra_headers: RwLock::new(HashMap::new()),
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            user_agent: None,
         }
+    }
+
+    /// Send `user_agent` instead of the emulation's own User-Agent on every
+    /// request. A `user-agent` in the extra headers or in a request's own
+    /// headers still takes precedence. `None` keeps the emulation's value.
+    pub fn with_user_agent(mut self, user_agent: Option<String>) -> Self {
+        self.user_agent = user_agent;
+        self
     }
 
     /// Open a page WebSocket through the wreq client, so the TLS handshake
@@ -302,7 +338,8 @@ impl StealthHttpClient {
         use wreq::ws::message::{CloseCode, CloseFrame, Message};
 
         let http = crate::websocket::http_equivalent(&opts.url).ok_or("not a ws(s) URL")?;
-        crate::client::validate_url(&http, self.allow_private_network).map_err(|e| e.to_string())?;
+        crate::client::validate_url(&http, self.allow_private_network)
+            .map_err(|e| e.to_string())?;
 
         let mut request = self
             .client
@@ -401,7 +438,13 @@ impl StealthHttpClient {
             }
         });
 
-        Ok(WsHandle { protocol, extensions, set_cookies, commands: cmd_tx, events: ev_rx })
+        Ok(WsHandle {
+            protocol,
+            extensions,
+            set_cookies,
+            commands: cmd_tx,
+            events: ev_rx,
+        })
     }
 
     pub async fn fetch(&self, url: &Url) -> Result<Response, InbrowseNetError> {
@@ -492,11 +535,19 @@ impl StealthHttpClient {
                 req = req.header("Cookie", &cookie_header);
             }
 
-            for (k, v) in self.extra_headers.read().await.iter() {
-                if k.eq_ignore_ascii_case("origin") {
-                    continue;
+            {
+                let extra_headers = self.extra_headers.read().await;
+                if let Some(user_agent) =
+                    explicit_user_agent(&[&extra_headers], self.user_agent.as_deref())
+                {
+                    req = req.header("user-agent", user_agent);
                 }
-                req = req.header(k.as_str(), v.as_str());
+                for (k, v) in extra_headers.iter() {
+                    if k.eq_ignore_ascii_case("origin") || k.eq_ignore_ascii_case("user-agent") {
+                        continue;
+                    }
+                    req = req.header(k.as_str(), v.as_str());
+                }
             }
             if cors_required(&request, &current_url) {
                 req = req.header("origin", &request_origin);
@@ -523,12 +574,7 @@ impl StealthHttpClient {
                 })?;
 
             let status = resp.status();
-            validate_wreq_cors_response(
-                &request,
-                &current_url,
-                &request_origin,
-                resp.headers(),
-            )?;
+            validate_wreq_cors_response(&request, &current_url, &request_origin, resp.headers())?;
 
             if request.sends_credentials_to(&current_url) {
                 for val in resp.headers().get_all("set-cookie") {
@@ -557,16 +603,15 @@ impl StealthHttpClient {
                     })?;
                     validate_url(&next_url, self.allow_private_network)?;
                     validate_request_mode(&request, &next_url)?;
-                    redirect_tainted |=
-                        redirect_taints_origin(&request, &current_url, &next_url);
+                    redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
                     redirects.push(current_url.clone());
                     current_url = next_url;
                     continue;
                 }
             }
 
-            let body = read_wreq_body_limited(resp, &current_url, request.max_response_bytes)
-                .await?;
+            let body =
+                read_wreq_body_limited(resp, &current_url, request.max_response_bytes).await?;
             drop(in_flight);
 
             let response = Response {
@@ -619,12 +664,23 @@ impl StealthHttpClient {
         cookie_context: Option<SameSiteContext>,
         store_cookies: bool,
     ) -> Result<Response, InbrowseNetError> {
-        let response = self.send_single_headers_with_context(
-            method, url, headers, body, cookie_context, store_cookies, 64 * 1024 * 1024,
-        ).await?;
+        let response = self
+            .send_single_headers_with_context(
+                method,
+                url,
+                headers,
+                body,
+                cookie_context,
+                store_cookies,
+                64 * 1024 * 1024,
+            )
+            .await?;
         Ok(Response {
-            url: url.clone(), status: response.status, headers: response.headers,
-            body: response.body.await?, redirected_from: Vec::new(),
+            url: url.clone(),
+            status: response.status,
+            headers: response.headers,
+            body: response.body.await?,
+            redirected_from: Vec::new(),
         })
     }
 
@@ -648,9 +704,9 @@ impl StealthHttpClient {
             });
         }
 
-        let req_method = method
-            .parse::<wreq::Method>()
-            .map_err(|e| InbrowseNetError::Network(format!("invalid method '{}': {}", method, e)))?;
+        let req_method = method.parse::<wreq::Method>().map_err(|e| {
+            InbrowseNetError::Network(format!("invalid method '{}': {}", method, e))
+        })?;
         let mut req = self.client.request(req_method, url.as_str());
 
         if let Some(context) = cookie_context {
@@ -659,20 +715,28 @@ impl StealthHttpClient {
                 req = req.header("cookie", &cookie_header);
             }
         }
-        for (k, v) in self.extra_headers.read().await.iter() {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        for (k, v) in headers.iter() {
-            req = req.header(k.as_str(), v.as_str());
+        {
+            let extra_headers = self.extra_headers.read().await;
+            if let Some(user_agent) =
+                explicit_user_agent(&[headers, &extra_headers], self.user_agent.as_deref())
+            {
+                req = req.header("user-agent", user_agent);
+            }
+            for (k, v) in extra_headers.iter().chain(headers.iter()) {
+                if !k.eq_ignore_ascii_case("user-agent") {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
         }
         if !body.is_empty() {
             req = req.body(body.to_vec());
         }
 
         let in_flight = InFlightGuard::new(&self.in_flight);
-        let resp = req.send().await.map_err(|e| {
-            InbrowseNetError::Network(format!("{}: {}", url, error_chain(&e)))
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| InbrowseNetError::Network(format!("{}: {}", url, error_chain(&e))))?;
 
         let status = resp.status();
         if store_cookies {
@@ -685,7 +749,12 @@ impl StealthHttpClient {
         let response_headers: HashMap<String, String> = resp
             .headers()
             .iter()
-            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
         let body_url = url.clone();
         Ok(StealthResponseHeaders {
@@ -721,8 +790,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        StealthHttpClient, is_tracker_blocked, send_get_with_connection_reset_retry,
-        tracker_blocking_enabled,
+        is_tracker_blocked, send_get_with_connection_reset_retry, tracker_blocking_enabled,
+        StealthHttpClient,
     };
     use crate::client::{InbrowseNetError, SsrfGuardResolver};
     use crate::cookies::CookieJar;
@@ -770,7 +839,11 @@ mod tests {
             );
         }
         for value in [
-            Some("0"), Some("false"), Some(" NO "), Some("off"), Some(" FALSE "),
+            Some("0"),
+            Some("false"),
+            Some(" NO "),
+            Some("off"),
+            Some(" FALSE "),
         ] {
             assert!(
                 !tracker_blocking_enabled(value),
@@ -801,70 +874,81 @@ mod tests {
         assert!(is_tracker_blocked(&url, true));
         assert!(!is_tracker_blocked(&url, false));
         assert!(!is_tracker_blocked(
-            &Url::parse("https://example.com/").unwrap(), true,
+            &Url::parse("https://example.com/").unwrap(),
+            true,
         ));
         assert!(!is_tracker_blocked(
-            &Url::parse("file:///tmp/page.html").unwrap(), true,
+            &Url::parse("file:///tmp/page.html").unwrap(),
+            true,
         ));
     }
 
     #[test]
     fn tracker_blocking_constructor_reads_environment() {
         let client = StealthHttpClient::new(Arc::new(CookieJar::new()));
-        let expected = tracker_blocking_enabled(
-            std::env::var("INBROWSE_BLOCK_TRACKERS").ok().as_deref(),
-        );
+        let expected =
+            tracker_blocking_enabled(std::env::var("INBROWSE_BLOCK_TRACKERS").ok().as_deref());
         assert_eq!(client.block_trackers, expected);
     }
 
     async fn assert_tracker_blocking_request(scripted: bool) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy = format!("http://{}", listener.local_addr().unwrap());
-        let mut client = StealthHttpClient::with_proxy(
-            Arc::new(CookieJar::new()),
-            Some(&proxy),
-            true,
-        );
+        let mut client =
+            StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), Some(&proxy), true);
         let url = Url::parse("http://www.google-analytics.com/collect").unwrap();
         let headers = std::collections::HashMap::new();
 
         client.block_trackers = true;
         let blocked = if scripted {
-            client.send_single("GET", &url, &headers, &[], false, false)
+            client
+                .send_single("GET", &url, &headers, &[], false, false)
                 .await
         } else {
             client.fetch(&url).await
-        }.expect("blocked tracker returns an empty response");
+        }
+        .expect("blocked tracker returns an empty response");
         assert_eq!(blocked.status, 0);
         assert!(blocked.body.is_empty());
-        assert!(tokio::time::timeout(Duration::from_millis(50), listener.accept())
-            .await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                .await.expect("request reaches local proxy").unwrap();
+                .await
+                .expect("request reaches local proxy")
+                .unwrap();
             let mut request = Vec::new();
             while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
                 let mut buffer = [0u8; 1024];
                 let count = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
-                    .await.expect("request headers arrive").unwrap();
+                    .await
+                    .expect("request headers arrive")
+                    .unwrap();
                 assert_ne!(count, 0);
                 request.extend_from_slice(&buffer[..count]);
             }
-            assert!(String::from_utf8(request).unwrap().starts_with(
-                "GET http://www.google-analytics.com/collect HTTP/1.1\r\n",
-            ));
-            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
-                .await.unwrap();
+            assert!(String::from_utf8(request)
+                .unwrap()
+                .starts_with("GET http://www.google-analytics.com/collect HTTP/1.1\r\n",));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .unwrap();
         });
 
         client.block_trackers = false;
         let allowed = if scripted {
-            client.send_single("GET", &url, &headers, &[], false, false)
+            client
+                .send_single("GET", &url, &headers, &[], false, false)
                 .await
         } else {
             client.fetch(&url).await
-        }.expect("disabled blocking allows the request");
+        }
+        .expect("disabled blocking allows the request");
         assert_eq!(allowed.status, 200);
         assert_eq!(allowed.body, b"ok");
         server.await.unwrap();
@@ -883,13 +967,11 @@ mod tests {
     // gzip (level 9) of PLAIN_BODY, hardcoded so the fixture needs no
     // compression dependency. A wrong byte fails the assert below.
     const GZIP_BODY: &[u8] = &[
-        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xb3, 0x51,
-        0x74, 0xf1, 0x77, 0x0e, 0x89, 0x0c, 0x70, 0x55, 0xc8, 0x28, 0xc9, 0xcd,
-        0xb1, 0xb3, 0x81, 0x90, 0x49, 0xf9, 0x29, 0x95, 0x76, 0x36, 0x05, 0x0a,
-        0x99, 0x29, 0xb6, 0x4a, 0xb9, 0x89, 0x45, 0xd9, 0x4a, 0x76, 0xe9, 0x55,
-        0x99, 0x05, 0x0a, 0xf9, 0xd9, 0x36, 0xfa, 0x05, 0x76, 0x36, 0xfa, 0x10,
-        0x69, 0x7d, 0xb0, 0x5a, 0x00, 0x80, 0x3d, 0x1c, 0x5f, 0x41, 0x00, 0x00,
-        0x00,
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xb3, 0x51, 0x74, 0xf1, 0x77,
+        0x0e, 0x89, 0x0c, 0x70, 0x55, 0xc8, 0x28, 0xc9, 0xcd, 0xb1, 0xb3, 0x81, 0x90, 0x49, 0xf9,
+        0x29, 0x95, 0x76, 0x36, 0x05, 0x0a, 0x99, 0x29, 0xb6, 0x4a, 0xb9, 0x89, 0x45, 0xd9, 0x4a,
+        0x76, 0xe9, 0x55, 0x99, 0x05, 0x0a, 0xf9, 0xd9, 0x36, 0xfa, 0x05, 0x76, 0x36, 0xfa, 0x10,
+        0x69, 0x7d, 0xb0, 0x5a, 0x00, 0x80, 0x3d, 0x1c, 0x5f, 0x41, 0x00, 0x00, 0x00,
     ];
 
     fn reset_fixture(respond_after_reset: bool) -> (u16, std::thread::JoinHandle<usize>) {
@@ -954,6 +1036,7 @@ mod tests {
             cookie_jar: Arc::new(CookieJar::new()),
             extra_headers: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            user_agent: None,
         };
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let error = client
@@ -1009,7 +1092,11 @@ mod tests {
             .port();
         let client = StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-        let message = client.fetch(&url).await.expect_err("nothing listens").to_string();
+        let message = client
+            .fetch(&url)
+            .await
+            .expect_err("nothing listens")
+            .to_string();
         assert!(message.to_lowercase().contains("refused"), "{message}");
         assert!(!message.contains("source: Some("), "{message}");
     }
@@ -1049,6 +1136,80 @@ mod tests {
         let resp = client.fetch(&url).await.expect("fixture must be reachable");
         assert_eq!(resp.status, 200);
         assert_eq!(resp.text(), PLAIN_BODY, "gzip body must be decompressed");
+    }
+
+    /// An explicit user agent reaches the wire once, for navigation and for
+    /// scripted requests alike. A `user-agent` among the extra headers beats the
+    /// client-wide override, and one on the request itself beats both.
+    #[tokio::test]
+    async fn stealth_user_agent_override_has_one_wire_value_for_navigation_and_script_fetch() {
+        for scripted in [false, true] {
+            for override_mode in 0..if scripted { 3 } else { 2 } {
+                let extra = override_mode > 0;
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let url =
+                    Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut bytes = [0; 4096];
+                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let n = std::io::Read::read(&mut socket, &mut bytes).unwrap();
+                        assert!(n > 0);
+                        request.extend_from_slice(&bytes[..n]);
+                    }
+                    std::io::Write::write_all(
+                        &mut socket,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .unwrap();
+                    String::from_utf8(request).unwrap()
+                });
+                let client = StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), None, true)
+                    .with_user_agent(Some("TestingUA/1.0".into()));
+                if extra {
+                    client
+                        .extra_headers
+                        .write()
+                        .await
+                        .insert("user-agent".into(), "HeaderUA/2.0".into());
+                }
+                let request_headers: std::collections::HashMap<String, String> =
+                    if override_mode == 2 {
+                        [("User-Agent".into(), "RequestUA/3.0".into())].into()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                let response = if scripted {
+                    client
+                        .send_single("GET", &url, &request_headers, &[], true, true)
+                        .await
+                        .unwrap()
+                } else {
+                    client.fetch(&url).await.unwrap()
+                };
+                assert_eq!(response.status, 200);
+                let wire = server.join().unwrap();
+                let agents: Vec<&str> = wire
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                    .map(|(_, value)| value.trim())
+                    .collect();
+                let expected = if override_mode == 2 {
+                    "RequestUA/3.0"
+                } else if extra {
+                    "HeaderUA/2.0"
+                } else {
+                    "TestingUA/1.0"
+                };
+                assert_eq!(
+                    agents,
+                    vec![expected],
+                    "scripted={scripted}, override={override_mode}: {wire}"
+                );
+            }
+        }
     }
 
     // #793: the opt-in must reach the DNS resolver. `validate_url` already

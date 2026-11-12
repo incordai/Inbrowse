@@ -25,7 +25,9 @@ struct Seen {
 impl Seen {
     fn image(&self) -> RgbImage {
         let b64 = self.body["image_base64"].as_str().unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         image::load_from_memory(&bytes).unwrap().to_rgb8()
     }
 
@@ -43,7 +45,11 @@ struct Reply {
 }
 
 fn ok(body: Value) -> Reply {
-    Reply { status: 200, headers: vec![], body: body.to_string() }
+    Reply {
+        status: 200,
+        headers: vec![],
+        body: body.to_string(),
+    }
 }
 
 type Handler = Arc<dyn Fn(&Seen, usize) -> Reply + Send + Sync>;
@@ -60,7 +66,9 @@ async fn engine(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let log = seen.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let mut data = Vec::new();
             let mut buf = [0u8; 65536];
             let (head_end, length) = loop {
@@ -73,7 +81,10 @@ async fn engine(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
                     let head = String::from_utf8_lossy(&data[..pos]).to_lowercase();
                     let length = head
                         .lines()
-                        .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
                         .unwrap_or(0);
                     break (Some(pos + 4), length);
                 }
@@ -89,10 +100,15 @@ async fn engine(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
             let head = String::from_utf8_lossy(&data[..head_end]).to_string();
             let authorization = head.lines().find_map(|l| {
                 let (k, v) = l.split_once(':')?;
-                k.eq_ignore_ascii_case("authorization").then(|| v.trim().to_string())
+                k.eq_ignore_ascii_case("authorization")
+                    .then(|| v.trim().to_string())
             });
-            let body: Value = serde_json::from_slice(&data[head_end..head_end + length]).unwrap_or(Value::Null);
-            let request = Seen { authorization, body };
+            let body: Value =
+                serde_json::from_slice(&data[head_end..head_end + length]).unwrap_or(Value::Null);
+            let request = Seen {
+                authorization,
+                body,
+            };
             let index = {
                 let mut log = log.lock().unwrap();
                 log.push(request.clone());
@@ -117,19 +133,27 @@ async fn engine(handler: Handler) -> (String, Arc<Mutex<Vec<Seen>>>) {
 }
 
 fn client(url: &str, limits: Limits) -> Client {
-    Client::new(Config { url: url.into(), key: Some("test-key".into()), timeout: Duration::from_secs(10) })
-        .unwrap()
-        .with_limits(limits)
+    Client::new(Config {
+        url: url.into(),
+        key: Some("test-key".into()),
+        timeout: Duration::from_secs(10),
+    })
+    .unwrap()
+    .with_limits(limits)
 }
 
 fn positions(width: u32, height: u32) -> RgbImage {
     assert!(height <= 256);
-    RgbImage::from_fn(width, height, |x, y| image::Rgb([(x & 255) as u8, (x >> 8) as u8, y as u8]))
+    RgbImage::from_fn(width, height, |x, y| {
+        image::Rgb([(x & 255) as u8, (x >> 8) as u8, y as u8])
+    })
 }
 
 fn encode(image: RgbImage, format: ImageFormat) -> Vec<u8> {
     let mut out = Vec::new();
-    DynamicImage::ImageRgb8(image).write_to(&mut Cursor::new(&mut out), format).unwrap();
+    DynamicImage::ImageRgb8(image)
+        .write_to(&mut Cursor::new(&mut out), format)
+        .unwrap();
     out
 }
 
@@ -146,12 +170,17 @@ fn small_tiles() -> Limits {
 #[tokio::test]
 async fn small_image_goes_as_is_with_warnings_kept() {
     let handler = answer(|_, _| {
-        ok(json!({"text": "hi", "lines": [{"text": "hi", "box": [1, 2, 3, 4], "confidence": 0.9}],
-                  "lang": null, "model": "m1", "elapsed_ms": 5, "warnings": ["broken PNG row"]}))
+        ok(
+            json!({"text": "hi", "lines": [{"text": "hi", "box": [1, 2, 3, 4], "confidence": 0.9}],
+                  "lang": null, "model": "m1", "elapsed_ms": 5, "warnings": ["broken PNG row"]}),
+        )
     });
     let (url, seen) = engine(handler).await;
     let png = encode(positions(64, 32), ImageFormat::Png);
-    let result = client(&url, Limits::default()).recognize(&png, None).await.unwrap();
+    let result = client(&url, Limits::default())
+        .recognize(&png, None)
+        .await
+        .unwrap();
     assert_eq!(result.text, "hi");
     assert_eq!(result.lines[0].bbox, [1, 2, 3, 4]);
     assert_eq!((result.width, result.height, result.tiles), (64, 32, 1));
@@ -171,7 +200,8 @@ async fn big_image_is_tiled_and_seams_merged() {
     let handler = answer(|seen, _| {
         let (gx, gy) = seen.origin();
         let tile = seen.image();
-        let mut lines = vec![json!({"text": format!("tile {gx}"), "box": [2, 40, 10, 10], "confidence": 0.8})];
+        let mut lines =
+            vec![json!({"text": format!("tile {gx}"), "box": [2, 40, 10, 10], "confidence": 0.8})];
         let seam = [140u32, 10, 20, 12];
         if seam[0] >= gx && seam[0] + seam[2] <= gx + tile.width() {
             lines.push(json!({"text": "SEAM", "box": [seam[0] - gx, seam[1] - gy, seam[2], seam[3]], "confidence": 0.9}));
@@ -180,7 +210,10 @@ async fn big_image_is_tiled_and_seams_merged() {
     });
     let (url, seen) = engine(handler).await;
     // 300x60 = 18,000 px, over a 10,000 px limit: never sent whole.
-    let limits = Limits { max_pixels: 10_000, ..small_tiles() };
+    let limits = Limits {
+        max_pixels: 10_000,
+        ..small_tiles()
+    };
     let png = encode(positions(300, 60), ImageFormat::Png);
     let result = client(&url, limits).recognize(&png, None).await.unwrap();
 
@@ -189,11 +222,68 @@ async fn big_image_is_tiled_and_seams_merged() {
     let seams: Vec<_> = result.lines.iter().filter(|l| l.text == "SEAM").collect();
     assert_eq!(seams.len(), 1, "{:?}", result.lines);
     assert_eq!(seams[0].bbox, [140, 10, 20, 12]);
-    for x in [0u32, 68, 136, 200] {
-        let own = result.lines.iter().find(|l| l.text == format!("tile {x}")).expect("tile line");
+    // Four equal 93 px columns (the tiles' own lines sit at their starts).
+    for x in [0u32, 69, 138, 207] {
+        let own = result
+            .lines
+            .iter()
+            .find(|l| l.text == format!("tile {x}"))
+            .expect("tile line");
         assert_eq!(own.bbox, [x + 2, 40, 10, 10]);
     }
     assert!(result.text.contains("SEAM"));
+}
+
+/// An image just over the engine's width limit: two equal columns that
+/// overlap normally (not two max-width columns 90% on top of each other),
+/// and a line cut at the seam comes back once, read whole, with the other
+/// tile's misread fragment of it dropped.
+#[tokio::test]
+async fn image_just_over_the_width_limit_is_read_in_two_columns() {
+    let line = [4400u32, 60, 600, 100];
+    let handler = answer(move |seen, _| {
+        let (gx, gy) = seen.origin();
+        let tile = seen.image();
+        let (left, right) = (gx.max(line[0]), (gx + tile.width()).min(line[0] + line[2]));
+        let lines = if right <= left {
+            vec![]
+        } else if right - left == line[2] {
+            vec![
+                json!({"text": "HUGE IMAGE TEXT", "box": [line[0] - gx, line[1] - gy, line[2], line[3]], "confidence": 0.9}),
+            ]
+        } else {
+            // Cut by this tile's edge: a short misread of the visible part.
+            vec![
+                json!({"text": "FE TEXT", "box": [left - gx, line[1] - gy, right - left, line[3]], "confidence": 0.4}),
+            ]
+        };
+        ok(json!({"text": "", "lines": lines, "model": "m1", "elapsed_ms": 1, "warnings": []}))
+    });
+    let (url, seen) = engine(handler).await;
+    let limits = Limits {
+        max_pixels: 1_000_000,
+        ..Limits::default()
+    };
+    let png = encode(positions(9000, 200), ImageFormat::Png);
+    let result = client(&url, limits).recognize(&png, None).await.unwrap();
+
+    assert_eq!(result.tiles, 2, "{:?}", result.warnings);
+    let seen = seen.lock().unwrap();
+    let mut spans: Vec<(u32, u32)> = seen
+        .iter()
+        .map(|s| (s.origin().0, s.origin().0 + s.image().width()))
+        .collect();
+    spans.sort_unstable();
+    assert!(spans.iter().all(|(a, b)| b - a <= 8192), "{spans:?}");
+    assert_eq!(spans[0].0, 0);
+    assert_eq!(spans[1].1, 9000);
+    // A normal overlap of a tenth of a column, nowhere near 90%.
+    let overlap = spans[0].1 - spans[1].0;
+    assert!((160..=1000).contains(&overlap), "{spans:?}");
+    // The line lies whole in the second column only.
+    let texts: Vec<&str> = result.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, vec!["HUGE IMAGE TEXT"], "{:?}", result.lines);
+    assert_eq!(result.lines[0].bbox, line);
 }
 
 /// 413 with a reason on the whole image: decode, tile, retry.
@@ -211,7 +301,10 @@ async fn too_large_reply_leads_to_tiles() {
     });
     let (url, seen) = engine(handler).await;
     let png = encode(positions(300, 60), ImageFormat::Png);
-    let result = client(&url, small_tiles()).recognize(&png, None).await.unwrap();
+    let result = client(&url, small_tiles())
+        .recognize(&png, None)
+        .await
+        .unwrap();
     assert_eq!(result.tiles, 4);
     assert_eq!(seen.lock().unwrap().len(), 5);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
@@ -223,14 +316,26 @@ async fn too_large_reply_leads_to_tiles() {
 async fn refused_tiles_split_down_to_the_floor() {
     let handler = answer(|seen, _| {
         if seen.image().width() > 50 {
-            return Reply { status: 413, headers: vec![], body: json!({"error": "too_large"}).to_string() };
+            return Reply {
+                status: 413,
+                headers: vec![],
+                body: json!({"error": "too_large"}).to_string(),
+            };
         }
         let (gx, _) = seen.origin();
-        ok(json!({"text": "", "lines": [{"text": format!("at {gx}"), "box": [0, 0, 5, 5], "confidence": 0.5}],
-                  "model": "m1", "elapsed_ms": 1, "warnings": []}))
+        ok(
+            json!({"text": "", "lines": [{"text": format!("at {gx}"), "box": [0, 0, 5, 5], "confidence": 0.5}],
+                  "model": "m1", "elapsed_ms": 1, "warnings": []}),
+        )
     });
     let (url, _) = engine(handler).await;
-    let limits = Limits { max_pixels: 1_000, tile_pixels: 4_800, tile_max_width: 120, min_side: 16, ..Limits::default() };
+    let limits = Limits {
+        max_pixels: 1_000,
+        tile_pixels: 4_800,
+        tile_max_width: 120,
+        min_side: 16,
+        ..Limits::default()
+    };
     let png = encode(positions(120, 40), ImageFormat::Png);
     let result = client(&url, limits).recognize(&png, None).await.unwrap();
     assert!(result.tiles >= 2, "{result:?}");
@@ -245,11 +350,21 @@ async fn refused_tiles_split_down_to_the_floor() {
         body: json!({"error": "too_large"}).to_string(),
     }))
     .await;
-    let limits = Limits { min_side: 40, ..limits };
+    let limits = Limits {
+        min_side: 40,
+        ..limits
+    };
     let result = client(&url, limits).recognize(&png, None).await.unwrap();
     assert_eq!(result.tiles, 0);
     assert!(!result.warnings.is_empty());
-    assert!(result.warnings.iter().all(|w| w.contains("not read") && w.contains(" at ")), "{:?}", result.warnings);
+    assert!(
+        result
+            .warnings
+            .iter()
+            .all(|w| w.contains("not read") && w.contains(" at ")),
+        "{:?}",
+        result.warnings
+    );
 }
 
 #[tokio::test]
@@ -262,8 +377,14 @@ async fn model_unavailable_stops_without_retrying() {
     .await;
     let png = encode(positions(300, 60), ImageFormat::Png);
     // Tiled, so a retry storm would show up as one request per tile.
-    let limits = Limits { max_pixels: 10_000, ..small_tiles() };
-    let err = client(&url, limits).recognize(&png, None).await.unwrap_err();
+    let limits = Limits {
+        max_pixels: 10_000,
+        ..small_tiles()
+    };
+    let err = client(&url, limits)
+        .recognize(&png, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, OcrError::Unavailable(_)), "{err:?}");
     assert!(err.to_string().starts_with("ocr_unavailable:"));
     assert_eq!(seen.lock().unwrap().len(), 1);
@@ -273,14 +394,21 @@ async fn model_unavailable_stops_without_retrying() {
 async fn busy_is_retried_after_retry_after() {
     let (url, seen) = engine(answer(|_, index| {
         if index == 0 {
-            return Reply { status: 429, headers: vec![("retry-after", "1".into())], body: json!({"error": "busy"}).to_string() };
+            return Reply {
+                status: 429,
+                headers: vec![("retry-after", "1".into())],
+                body: json!({"error": "busy"}).to_string(),
+            };
         }
         ok(json!({"text": "later", "lines": [], "model": "m1", "elapsed_ms": 1, "warnings": []}))
     }))
     .await;
     let png = encode(positions(16, 16), ImageFormat::Png);
     let started = Instant::now();
-    let result = client(&url, Limits::default()).recognize(&png, None).await.unwrap();
+    let result = client(&url, Limits::default())
+        .recognize(&png, None)
+        .await
+        .unwrap();
     assert_eq!(result.text, "later");
     assert_eq!(seen.lock().unwrap().len(), 2);
     assert!(started.elapsed() >= Duration::from_millis(900));
@@ -288,13 +416,27 @@ async fn busy_is_retried_after_retry_after() {
 
 #[tokio::test]
 async fn old_engine_and_bad_input_are_named() {
-    let (url, _) = engine(answer(|_, _| Reply { status: 404, headers: vec![], body: String::new() })).await;
+    let (url, _) = engine(answer(|_, _| Reply {
+        status: 404,
+        headers: vec![],
+        body: String::new(),
+    }))
+    .await;
     let png = encode(positions(16, 16), ImageFormat::Png);
-    let err = client(&url, Limits::default()).recognize(&png, None).await.unwrap_err();
-    assert!(matches!(&err, OcrError::Unavailable(d) if d.contains("newer engine")), "{err:?}");
+    let err = client(&url, Limits::default())
+        .recognize(&png, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, OcrError::Unavailable(d) if d.contains("newer engine")),
+        "{err:?}"
+    );
 
     let (url, seen) = engine(answer(|_, _| ok(json!({})))).await;
-    let err = client(&url, Limits::default()).recognize(b"plain text, not an image", None).await.unwrap_err();
+    let err = client(&url, Limits::default())
+        .recognize(b"plain text, not an image", None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, OcrError::Rejected(_)), "{err:?}");
     assert!(seen.lock().unwrap().is_empty());
 }
@@ -302,7 +444,11 @@ async fn old_engine_and_bad_input_are_named() {
 #[tokio::test]
 async fn unreachable_engine_is_unavailable() {
     // Bind and drop to get a port nothing listens on.
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let png = encode(positions(16, 16), ImageFormat::Png);
     let err = client(&format!("http://127.0.0.1:{port}"), Limits::default())
         .recognize(&png, None)
@@ -314,7 +460,11 @@ async fn unreachable_engine_is_unavailable() {
 /// Neither the key nor a password in the URL appears in what comes back.
 #[tokio::test]
 async fn secrets_never_reach_errors() {
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let config = Config {
         url: format!("http://ocr-user:url-secret-1@127.0.0.1:{port}"),
         key: Some("key-secret-2".into()),
@@ -322,18 +472,32 @@ async fn secrets_never_reach_errors() {
     };
     assert!(!format!("{config:?}").contains("key-secret-2"));
     let png = encode(positions(16, 16), ImageFormat::Png);
-    let err = Client::new(config).unwrap().recognize(&png, None).await.unwrap_err().to_string();
+    let err = Client::new(config)
+        .unwrap()
+        .recognize(&png, None)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.starts_with("ocr_unavailable:"), "{err}");
     assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
-    assert!(!err.contains("url-secret-1") && !err.contains("key-secret-2"), "{err}");
+    assert!(
+        !err.contains("url-secret-1") && !err.contains("key-secret-2"),
+        "{err}"
+    );
 }
 
 /// Formats the engine does not take (here BMP) are converted to PNG.
 #[tokio::test]
 async fn other_formats_are_sent_as_png() {
-    let (url, seen) = engine(answer(|_, _| ok(json!({"text": "", "lines": [], "model": "m1", "elapsed_ms": 1, "warnings": []})))).await;
+    let (url, seen) = engine(answer(|_, _| {
+        ok(json!({"text": "", "lines": [], "model": "m1", "elapsed_ms": 1, "warnings": []}))
+    }))
+    .await;
     let bmp = encode(positions(40, 20), ImageFormat::Bmp);
-    let result = client(&url, Limits::default()).recognize(&bmp, None).await.unwrap();
+    let result = client(&url, Limits::default())
+        .recognize(&bmp, None)
+        .await
+        .unwrap();
     assert_eq!(result.tiles, 1);
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].body["mime"], "image/png");

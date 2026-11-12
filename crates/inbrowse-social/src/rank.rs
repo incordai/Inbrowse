@@ -27,7 +27,9 @@ pub(crate) fn engagement(item: &Item, source: Source) -> f64 {
         Source::HackerNews => 0.55 * ln(e.score) + 0.45 * ln(e.comments),
         Source::Github => 0.60 * ln(e.likes) + 0.40 * ln(e.comments),
         Source::Polymarket => 0.60 * lnf(e.volume) + 0.40 * lnf(e.liquidity),
-        Source::X => 0.55 * ln(e.likes) + 0.25 * ln(e.reposts) + 0.15 * ln(e.comments) + 0.05 * ln(e.quotes),
+        Source::X => {
+            0.55 * ln(e.likes) + 0.25 * ln(e.reposts) + 0.15 * ln(e.comments) + 0.05 * ln(e.quotes)
+        }
     }
 }
 
@@ -47,7 +49,11 @@ pub(crate) fn rank(items: &mut [Item], source: Source, sort: Sort) {
                 .partial_cmp(&engagement(a, source))
                 .unwrap_or(std::cmp::Ordering::Equal)
         }),
-        Sort::Relevance => items.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(std::cmp::Ordering::Equal)),
+        Sort::Relevance => items.sort_by(|a, b| {
+            b.rank_score
+                .partial_cmp(&a.rank_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
     }
 }
 
@@ -89,7 +95,11 @@ fn words(text: &str) -> HashSet<String> {
 }
 
 fn trigrams(text: &str) -> HashSet<String> {
-    let chars: Vec<char> = text.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let chars: Vec<char> = text
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     chars.windows(3).map(|w| w.iter().collect()).collect()
 }
 
@@ -121,7 +131,11 @@ pub(crate) fn dedupe(items: &mut Vec<Item>) {
         let sig = signature(item);
         let (w, t) = (words(&sig), trigrams(&sig));
         // Very short texts ("Nice!") match too easily to compare.
-        if w.len() >= 4 && kept.iter().any(|(kw, kt)| similarity(&w, kw).max(similarity(&t, kt)) >= 0.7) {
+        if w.len() >= 4
+            && kept
+                .iter()
+                .any(|(kw, kt)| similarity(&w, kw).max(similarity(&t, kt)) >= 0.7)
+        {
             return false;
         }
         kept.push((w, t));
@@ -161,16 +175,35 @@ mod tests {
             normalize_url("https://www.Example.com/a/b/?utm_source=x&id=3#frag"),
             "example.com/a/b?id=3"
         );
-        assert_eq!(normalize_url("https://old.reddit.com/r/rust/"), "reddit.com/r/rust");
+        assert_eq!(
+            normalize_url("https://old.reddit.com/r/rust/"),
+            "reddit.com/r/rust"
+        );
     }
 
     #[test]
     fn dedupe_by_url_and_text() {
         let mut items = vec![
-            item("https://a.com/1", "Rust borrow checker unsoundness found after eleven years", 10),
-            item("https://www.a.com/1/?utm_medium=x", "something else entirely", 5),
-            item("https://b.com/2", "Rust borrow checker unsoundness found after eleven years!", 3),
-            item("https://c.com/3", "A different story about Go generics performance", 1),
+            item(
+                "https://a.com/1",
+                "Rust borrow checker unsoundness found after eleven years",
+                10,
+            ),
+            item(
+                "https://www.a.com/1/?utm_medium=x",
+                "something else entirely",
+                5,
+            ),
+            item(
+                "https://b.com/2",
+                "Rust borrow checker unsoundness found after eleven years!",
+                3,
+            ),
+            item(
+                "https://c.com/3",
+                "A different story about Go generics performance",
+                1,
+            ),
         ];
         dedupe(&mut items);
         let urls: Vec<&str> = items.iter().map(|i| i.url.as_str()).collect();
@@ -179,7 +212,10 @@ mod tests {
 
     #[test]
     fn engagement_outranks_position_when_large() {
-        let mut items = vec![item("https://a.com/1", "first", 1), item("https://a.com/2", "second", 5000)];
+        let mut items = vec![
+            item("https://a.com/1", "first", 1),
+            item("https://a.com/2", "second", 5000),
+        ];
         rank(&mut items, Source::HackerNews, Sort::Relevance);
         assert_eq!(items[0].url, "https://a.com/2");
         assert!(items[0].rank_score > items[1].rank_score);

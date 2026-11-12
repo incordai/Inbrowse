@@ -62,6 +62,28 @@ fn local_file_name_marks_csv() {
     let doc = json_stdout(&output);
     assert_eq!(doc["format"], "csv");
     assert_eq!(doc["text"], "a,b\n1,2");
+    // `warnings` is always present, empty when nothing was lost.
+    assert_eq!(doc["warnings"], serde_json::json!([]));
+}
+
+#[test]
+fn password_is_accepted_and_a_file_that_takes_none_says_so() {
+    let path = std::env::temp_dir().join(format!(
+        "inbrowse-extract-{}-password.csv",
+        std::process::id()
+    ));
+    std::fs::write(&path, "a,b\n").unwrap();
+    let output = cli()
+        .args(["extract", "--password", "secret"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let doc = json_stdout(&output);
+    assert_eq!(
+        doc["warnings"],
+        serde_json::json!(["password_ignored: only PDF files use a password"])
+    );
 }
 
 #[test]
@@ -88,7 +110,10 @@ fn private_network_download_is_refused_without_the_opt_in() {
 
 #[test]
 fn missing_file_and_unknown_binary_are_errors() {
-    let missing = cli().args(["extract", "no-such-file.pdf"]).output().unwrap();
+    let missing = cli()
+        .args(["extract", "no-such-file.pdf"])
+        .output()
+        .unwrap();
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("Failed to read"));
 

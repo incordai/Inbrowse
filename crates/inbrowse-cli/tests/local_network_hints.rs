@@ -32,7 +32,10 @@ fn local_cli_denials_explain_the_existing_opt_in_without_granting_access() {
             let error = String::from_utf8(output.stderr).unwrap();
             assert!(error.contains("is not allowed"), "{error}");
             assert!(error.contains("--allow-private-network"), "{error}");
-            assert!(error.contains("INBROWSE_ALLOW_PRIVATE_NETWORK=1"), "{error}");
+            assert!(
+                error.contains("INBROWSE_ALLOW_PRIVATE_NETWORK=1"),
+                "{error}"
+            );
         }
     }
 }

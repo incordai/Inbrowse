@@ -85,9 +85,7 @@ fn parse_page_ranges(value: &str) -> Result<Vec<inbrowse::RasterPdfPageRange>, S
                 .ok()
                 .filter(|page| *page > 0)
                 .map(Some)
-                .ok_or_else(|| {
-                    format!("Invalid parameters: pageRanges has invalid page {text:?}")
-                })
+                .ok_or_else(|| format!("Invalid parameters: pageRanges has invalid page {text:?}"))
         };
         let (start, end) = match part.split_once('-') {
             Some((start, end)) if !end.contains('-') => (page(start)?, page(end)?),
@@ -321,7 +319,10 @@ mod tests {
         .expect("headers, footers, @page size and outlines are supported");
         assert!(full.raster.display_header_footer);
         assert_eq!(full.raster.header_template, "<span class=\"title\"></span>");
-        assert_eq!(full.raster.footer_template, "<span class=\"pageNumber\"></span>");
+        assert_eq!(
+            full.raster.footer_template,
+            "<span class=\"pageNumber\"></span>"
+        );
         assert!(full.raster.prefer_css_page_size);
         assert!(full.raster.generate_document_outline);
         assert!(parse_options(&json!({"headerTemplate": 3})).is_err());

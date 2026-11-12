@@ -30,14 +30,14 @@ const __inbrowseCore = globalThis.Deno.core;
     '__inbrowse_dispatchTouch', '__inbrowse_dispatchDrag',
     '__inbrowse_frameId', '__inbrowse_parentFrameId', '__inbrowse_frameWindows',
     '__inbrowse_frameObjects', '__inbrowse_frameElements', '__inbrowse_deliverMessage',
-    '__inbrowse_liveFrameIds', '__inbrowse_forgetFrame',
+    '__inbrowse_liveFrameIds', '__inbrowse_forgetFrame', '__inbrowse_framesLoading',
     '__inbrowse_registerLinkedStylesheet', '__inbrowse_activateLabel',
     '__inbrowse_isDisabled', '__inbrowse_labeledControl', '__inbrowse_interactiveHost',
     '__inbrowse_inputChecked', '__inbrowse_setInputChecked',
     '__inbrowse_inputIndeterminate', '__inbrowse_setInputIndeterminate',
     '__markParserScripts', '__inbrowse_hasPendingDynamicScripts',
     '__inbrowse_hasPendingLoadDelayingScripts', '__inbrowse_hasPendingParserBlockingScripts',
-    '__inbrowse_nextPendingTimeoutDelay',
+    '__inbrowse_nextPendingTimeoutDelay', '__inbrowse_pendingTimeouts',
     '__inbrowse_hw', '__inbrowse_mem',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
@@ -66,7 +66,7 @@ const __inbrowseCore = globalThis.Deno.core;
     // Pre-declaring them non-enumerable here is enough -- per the note above,
     // the later `globalThis.X = X` assignments only update the value.
     'Node', 'Element', 'Document', 'DocumentFragment', 'DocumentType',
-    'Navigator', 'PluginArray', 'Plugin', 'MimeType', 'MimeTypeArray',
+    'DOMImplementation', 'Navigator', 'PluginArray', 'Plugin', 'MimeType', 'MimeTypeArray',
     'Animation', 'KeyframeEffect', 'DocumentTimeline',
     'Text', 'Comment', 'CDATASection', 'ProcessingInstruction', 'CharacterData',
     'CSSStyleDeclaration', 'CSSRule', 'CSSStyleRule', 'CSSGroupingRule',
@@ -133,7 +133,7 @@ Object.defineProperty(globalThis, "__inbrowse_binding_called", {
 globalThis.__inbrowse_errors = [];
 
 globalThis.addEventListener = globalThis.addEventListener || function(){};
-globalThis.onunhandledrejection = function(e) { if (e?.preventDefault) e.preventDefault(); };
+globalThis.onunhandledrejection = null;
 
 globalThis.onerror = function(msg, src, line, col, error) {
   globalThis.__inbrowse_errors.push({msg: String(msg), src: String(src||""), line, error: String(error||"")});
@@ -931,6 +931,9 @@ const _eventRegistry = globalThis._eventRegistry;
 const _formValues = globalThis._formValues;
 const _formChecked = globalThis._formChecked;
 const _formIndeterminate = globalThis._formIndeterminate;
+// Selection of each text control whose caret or selection has been moved; see
+// "Text selection in text controls" further down.
+const _textSelections = new WeakMap();
 const _domParse = (cmd, a1, a2) => { try { return JSON.parse(_dom(cmd, a1, a2)); } catch { return null; } };
 const _formStateLoaded = new Set();
 function _loadFormState(nid) {
@@ -955,6 +958,25 @@ function _setInputChecked(el, value) {
   const checked = !!value;
   _formChecked[el._nid] = checked;
   _dom("set_form_checked", el._nid, String(checked));
+}
+// The other radio buttons in `el`'s radio button group (HTML): same tree, same
+// form owner, same non-empty name. Checking one radio unchecks these, whether
+// by click or by the `checked` setter.
+function _radioGroupOthers(el) {
+  const name = el.getAttribute('name') || '';
+  if (!name) return [];
+  const root = el.getRootNode ? el.getRootNode() : (el.ownerDocument || globalThis.document);
+  if (!root || !root.querySelectorAll) return [];
+  const form = el.form;
+  const all = root.querySelectorAll('input');
+  const others = [];
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
+    if (r === el || ((r.getAttribute('type') || '').toLowerCase()) !== 'radio') continue;
+    if ((r.getAttribute('name') || '') !== name || r.form !== form) continue;
+    others.push(r);
+  }
+  return others;
 }
 function _inputIndeterminate(el) {
   if (_formIndeterminate[el._nid] === undefined) _loadFormState(el._nid);
@@ -1099,15 +1121,24 @@ const _nativeTimerIds = new Map();
 const _timerStates = new Map();
 const _frameTimerStates = new Map();
 const __inbrowsePendingTimeoutDeadlines = new Map();
+// [pending one-shot timers, ms until the nearest or -1]. Intervals are not
+// counted: they never finish, so no settle could wait them out.
+const _pendingTimeoutSummary = () => {
+  const now = performance.now();
+  let nearest = Infinity;
+  for (const deadline of __inbrowsePendingTimeoutDeadlines.values()) {
+    nearest = Math.min(nearest, Math.max(0, deadline - now));
+  }
+  return [__inbrowsePendingTimeoutDeadlines.size, Number.isFinite(nearest) ? nearest : -1];
+};
 Object.defineProperty(globalThis, '__inbrowse_nextPendingTimeoutDelay', {
-  value: function() {
-    const now = performance.now();
-    let nearest = Infinity;
-    for (const deadline of __inbrowsePendingTimeoutDeadlines.values()) {
-      nearest = Math.min(nearest, Math.max(0, deadline - now));
-    }
-    return Number.isFinite(nearest) ? nearest : -1;
-  },
+  value: function() { return _pendingTimeoutSummary()[1]; },
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
+Object.defineProperty(globalThis, '__inbrowse_pendingTimeouts', {
+  value: function() { return _pendingTimeoutSummary(); },
   writable: false,
   enumerable: false,
   configurable: false,
@@ -2091,6 +2122,15 @@ function _shallowCloneNode(node) {
 // framework schedulers work: those targets deliberately have no native node id.
 const _eventTargetListeners = new WeakMap();
 const _eventTargetListenerChanged = new WeakMap();
+// Listeners currently registered on DOM nodes, window and plain EventTargets,
+// kept as a running count so Performance.getMetrics needs no walk.
+let _eventListenerCount = 0;
+Object.defineProperty(globalThis, '__inbrowse_event_listener_count', {
+  value: function() { return _eventListenerCount; },
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 function _eventCapture(options) {
   return typeof options === "boolean" ? options : !!(options && options.capture);
 }
@@ -2122,6 +2162,7 @@ function _eventTargetAdd(target, type, callback, options) {
     abortHandler: null,
   };
   listeners.push(entry);
+  _eventListenerCount++;
   _eventTargetListenerChanged.get(target)?.();
   if (signal && typeof signal.addEventListener === "function") {
     entry.abortHandler = () => _eventTargetRemove(target, type, callback, capture);
@@ -2139,6 +2180,7 @@ function _eventTargetRemove(target, type, callback, options) {
     const entry = listeners[i];
     if (entry.callback !== callback || entry.capture !== capture) continue;
     listeners.splice(i, 1);
+    _eventListenerCount--;
     if (entry.signal && entry.abortHandler && typeof entry.signal.removeEventListener === "function") {
       entry.signal.removeEventListener("abort", entry.abortHandler);
     }
@@ -2202,7 +2244,35 @@ function _eventTargetDispatch(target, event) {
   }
 }
 
+// HTML Standard "current event": `window.event` exposes the event being
+// dispatched, and is restored once the invocation returns so nested dispatches
+// and code outside dispatch see the right value. Legacy handlers rely on it,
+// e.g. `onclick="go()"` with `function go() { event.preventDefault(); }`.
+let _currentWindowEvent;
+Object.defineProperty(globalThis, "event", {
+  get() { return _currentWindowEvent; },
+  // [Replaceable]: assigning replaces the accessor with a plain data property.
+  set(value) {
+    Object.defineProperty(globalThis, "event", {
+      value, writable: true, enumerable: true, configurable: true,
+    });
+  },
+  enumerable: true,
+  configurable: true,
+});
+
 function _domEventInvoke(target, event, capture, phase) {
+  const previousEvent = _currentWindowEvent;
+  // The spec leaves the current event untouched for targets in a shadow tree.
+  if (!event._inShadowTree) _currentWindowEvent = event;
+  try {
+    _domEventInvokeHandlers(target, event, capture, phase);
+  } finally {
+    _currentWindowEvent = previousEvent;
+  }
+}
+
+function _domEventInvokeHandlers(target, event, capture, phase) {
   event.currentTarget = target;
   event.eventPhase = phase;
 
@@ -2264,6 +2334,10 @@ function _domEventDispatch(target, event) {
     path.push(ancestor);
     ancestor = ancestor.parentNode || null;
   }
+  // The parentNode-based path never crosses a shadow boundary, so the tree
+  // root (last path entry, or the target itself) tells which tree every node
+  // on the path belongs to.
+  event._inShadowTree = (path.length ? path[path.length - 1] : target) instanceof ShadowRoot;
   // Detached nodes have no event parent. Connected paths reach Window through
   // Document, except for load, whose Document parent is null by specification.
   const reachesDocument = target === document || path[path.length - 1] === document;
@@ -2462,6 +2536,7 @@ function _runPostConnectionSteps(nodes) {
       __prepareInsertedSubtree(n);
       if (n instanceof Element && n.tagName === 'LINK') _loadLinkedStylesheet(n);
     }
+    for (const n of nodes) _connectCustomElements(n, true);
   } finally {
     _postConnection = outer;
   }
@@ -2478,6 +2553,89 @@ function _iframeConnectionPending(iframe) {
   return false;
 }
 
+// An iframe with no document to fetch has its initial about:blank document
+// from the moment it is inserted, as a browsing context in the frame tree.
+// One with a srcdoc or a src starts that load instead.
+function _isBlankIframe(iframe) {
+  if (iframe.hasAttribute('srcdoc')) return false;
+  const src = iframe.getAttribute('src');
+  return !src || src === 'about:blank';
+}
+function _startInsertedIframe(iframe) {
+  if (iframe.namespaceURI !== 'http://www.w3.org/1999/xhtml') return;
+  if (iframe.hasAttribute('srcdoc')) iframe._loadIframeSrcdoc();
+  else if (_isBlankIframe(iframe)) _ensureInitialFrameRealm(iframe);
+}
+
+// Custom element reactions for connection changes. Only defined names are
+// queried, so a page without definitions pays one Map size check per
+// insertion or removal. The reactions run once the DOM operation is done.
+let _customElementSelector = '';
+let _customElementSelectorSize = 0;
+function _definedCustomElementsIn(root, inclusive) {
+  const registry = globalThis.customElements?._registry;
+  if (!registry || registry.size === 0) return null;
+  const type = root.nodeType;
+  if (type !== 1 && type !== 11) return null;
+  if (_customElementSelectorSize !== registry.size) {
+    _customElementSelector = Array.from(registry.keys(), (name) => name.replace(/\./g, '\\.')).join(',');
+    _customElementSelectorSize = registry.size;
+  }
+  const found = [];
+  if (inclusive && type === 1 && registry.has(root.localName)) _pushCustomElementTree(root, found);
+  const ids = _domParse("query_selector_all_scoped", root._nid, _customElementSelector) || [];
+  for (const nid of ids) {
+    const el = _wrapEl(+nid);
+    if (el) _pushCustomElementTree(el, found);
+  }
+  return found;
+}
+// Shadow-including tree order: a custom element, then the defined elements of
+// its shadow tree, then its light descendants. Only custom element hosts are
+// visited, which is where components keep nested components.
+function _pushCustomElementTree(el, found) {
+  found.push(el);
+  const shadow = _shadowRootForHost(el, true);
+  if (shadow) {
+    const nested = _definedCustomElementsIn(shadow, false);
+    if (nested) for (const inner of nested) found.push(inner);
+  }
+}
+// Upgrades or connects the defined elements of a subtree that just became
+// connected, in tree order.
+function _connectCustomElements(root, inclusive) {
+  const elements = _definedCustomElementsIn(root, inclusive);
+  if (!elements || elements.length === 0 || !root.isConnected) return;
+  const registry = globalThis.customElements;
+  for (const el of elements) {
+    if (!el.__customUpgraded) registry._upgradeElement(el, registry._registry.get(el.localName));
+    else _customElementCallback(el, 'connectedCallback');
+  }
+}
+// Collected before a connected subtree leaves the tree, called after.
+function _connectedCustomElementsIn(root, inclusive) {
+  const elements = _definedCustomElementsIn(root, inclusive);
+  if (!elements || elements.length === 0 || !root.isConnected) return null;
+  return elements;
+}
+function _disconnectCustomElements(elements) {
+  if (elements) for (const el of elements) _customElementCallback(el, 'disconnectedCallback');
+}
+function _customElementCallback(el, name, args) {
+  if (!el.__customUpgraded || el.__customUpgradeFailed) return;
+  const callback = el[name];
+  if (typeof callback !== 'function') return;
+  try { callback.apply(el, args || []); }
+  catch (e) { globalThis.reportError?.(e); }
+}
+// attributeChangedCallback: the old value is only read for an upgraded
+// element whose definition observes the attribute.
+function _customElementObserves(el, localName) {
+  if (!el.__customUpgraded || el.__customUpgradeFailed) return false;
+  const observed = globalThis.customElements?._observedAttributes?.get(el.localName);
+  return !!observed && observed.has(localName);
+}
+
 function __prepareInsertedSubtree(root) {
   // HTML's script preparation algorithm leaves a disconnected script
   // unstarted.  When an ancestor is later connected, insertion steps visit
@@ -2485,12 +2643,11 @@ function __prepareInsertedSubtree(root) {
   if (!root || !root.isConnected) return;
   const scripts = [];
   const seen = new Set();
-  if (root.nodeType === 1 && (root.tagName === 'SCRIPT'
-      || (root.tagName === 'IFRAME' && root.hasAttribute('srcdoc')))) {
+  if (root.nodeType === 1 && (root.tagName === 'SCRIPT' || root.tagName === 'IFRAME')) {
     scripts.push(root);
     seen.add(root._nid);
   }
-  const ids = _domParse("query_selector_all_scoped", root._nid, "script,iframe[srcdoc]") || [];
+  const ids = _domParse("query_selector_all_scoped", root._nid, "script,iframe") || [];
   for (const nid of ids) {
     const script = _wrapEl(+nid);
     if (script && !seen.has(script._nid)) {
@@ -2500,7 +2657,7 @@ function __prepareInsertedSubtree(root) {
   }
   for (const script of scripts) {
     if (_postConnection) _postConnection.cursor = script;
-    if (script.localName === 'iframe') script._loadIframeSrcdoc();
+    if (script.localName === 'iframe') _startInsertedIframe(script);
     else __prepareInsertedScript(script);
   }
 }
@@ -2798,6 +2955,7 @@ function _removeNode(parent, child, suppress, method = "removeChild") {
   const [previousSibling, nextSibling] = observed ? _recordSiblings(child) : [null, null];
   const removedWindowNames = _windowNamedNamesInTree(child);
   if (child instanceof Element) _releaseLinkedStylesheetsIn(child);
+  const leavingCustomElements = _connectedCustomElementsIn(child, true);
   const parentConnected = parent.isConnected;
   const removed = _dom("remove_child", child._nid) === "true";
   if (!removed) {
@@ -2809,12 +2967,14 @@ function _removeNode(parent, child, suppress, method = "removeChild") {
   _detachStyleSheetsInSubtree(child);
   _reconcileWindowNamedProperties(removedWindowNames);
   if (observed) _queueTreeMutationRecord(parent, [], [child], previousSibling, nextSibling);
+  _disconnectCustomElements(leavingCustomElements);
 }
 
 // Move one node under `parent` before `child` (append when null). A node
 // that still has a parent is removed from it first, which old-parent
 // observers see as a removal (adopt runs "remove" before inserting).
 function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
+  let leavingCustomElements = null;
   if (node._shadowParent) {
     node._shadowParent.removeChild(node);
   } else {
@@ -2825,6 +2985,7 @@ function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
         _queueTreeMutationRecord(oldParent, [], [node], previousSibling, nextSibling);
       }
       _detachStyleSheetsInSubtree(node);
+      leavingCustomElements = _connectedCustomElementsIn(node, true);
     }
   }
   const parentConnected = parent.isConnected;
@@ -2839,6 +3000,7 @@ function _insertOneNode(parent, node, child, method, queueOldParentRecord) {
   _seedInsertedTreeState(node, parent, parentConnected);
   if (node._nodeDocument !== undefined) node._nodeDocument = undefined;
   _registerWindowNamedTree(node);
+  _disconnectCustomElements(leavingCustomElements);
 }
 
 // "Insert": returns the inserted nodes. `suppress` skips parent's record.
@@ -2916,7 +3078,25 @@ function _attributePositionKey(node) {
   return _attributePositionOrder.get(node);
 }
 
-class Node {
+// The base of every event target, as in browsers: Node, the Window global
+// (wired where Window is defined) and the non-DOM targets (WebSocket,
+// BroadcastChannel, MediaQueryList, FontFaceSet) all inherit these three
+// methods. Exposed as globalThis.EventTarget next to the other DOM globals.
+// Listener state lives in _eventTargetListeners, so `new EventTarget()` needs
+// no backing node.
+class EventTarget {
+  addEventListener(type, callback, options) {
+    _eventTargetAdd(this, type, callback, options);
+  }
+  removeEventListener(type, callback, options) {
+    _eventTargetRemove(this, type, callback, options);
+  }
+  dispatchEvent(event) {
+    return _eventTargetDispatch(this, event);
+  }
+}
+
+class Node extends EventTarget {
   static ELEMENT_NODE = 1;
   static ATTRIBUTE_NODE = 2;
   static TEXT_NODE = 3;
@@ -2936,7 +3116,7 @@ class Node {
   static DOCUMENT_POSITION_CONTAINED_BY = 16;
   static DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32;
 
-  constructor(nid) { this._nid = nid; }
+  constructor(nid) { super(); this._nid = nid; }
   get nodeType() { return +_dom("node_type", this._nid); }
   get nodeName() { return _domParse("node_name", this._nid) || ""; }
   get ownerDocument() { return _nodeDocumentOf(this); }
@@ -3210,15 +3390,6 @@ class Node {
     return true;
   }
   isSameNode(other) { return !!other && this._nid === other._nid; }
-  addEventListener(type, callback, options) {
-    _eventTargetAdd(this, type, callback, options);
-  }
-  removeEventListener(type, callback, options) {
-    _eventTargetRemove(this, type, callback, options);
-  }
-  dispatchEvent(event) {
-    return _eventTargetDispatch(this, event);
-  }
 }
 class CharacterData extends Node {
   get data() {
@@ -3730,6 +3901,187 @@ function _isSubmitButton(el) {
   if (el.localName === "button") return type !== "reset" && type !== "button";
   if (el.localName === "input") return type === "submit" || type === "image";
   return false;
+}
+
+// The option's `text` IDL value: the text content with ASCII whitespace
+// stripped and collapsed. Callers: option.text, option.label and _optionValue.
+function _optionText(option) {
+  return option.textContent.replace(/[ \t\n\f\r]+/g, ' ').replace(/^ | $/g, '');
+}
+
+// The option's `value` IDL value: the value attribute, else its text.
+// Callers: select.value (getter and setter), option.value and
+// _constructEntryList.
+function _optionValue(option) {
+  const attr = option.getAttribute('value');
+  return attr !== null ? attr : _optionText(option);
+}
+
+// An option is disabled by its own attribute or by a disabled parent
+// <optgroup>. Caller: _constructEntryList, and _selectedOptions' default pick.
+function _isOptionDisabled(option) {
+  if (option.hasAttribute('disabled')) return true;
+  const parent = option.parentNode;
+  return !!parent && parent.localName === 'optgroup' && parent.hasAttribute('disabled');
+}
+
+// The <select> an option belongs to: its parent, or its grandparent through an
+// <optgroup>; null for an orphan option. Caller: _setOptionSelected.
+function _optionSelect(option) {
+  let parent = option.parentNode;
+  if (parent && parent.localName === 'optgroup') parent = parent.parentNode;
+  return parent && parent.localName === 'select' ? parent : null;
+}
+
+// Record one option's selectedness. `option.selected` is the single source of
+// truth for selection state, and the `selected` content attribute is kept in
+// step so the renderer, serializers and CSS (:checked) see the same choice.
+// The attribute is only touched when it disagrees, so redundant writes queue
+// no mutation records. Callers: _setOptionSelected, select.selectedIndex and
+// select.value setters.
+function _writeOptionSelectedness(option, selected) {
+  option._selected = selected;
+  if (option.hasAttribute('selected') === selected) return;
+  if (selected) option.setAttribute('selected', '');
+  else option.removeAttribute('selected');
+}
+
+// The option.selected setter for an <option>. In a select without `multiple`
+// selecting an option deselects the others; any change also asks the select to
+// reset, which re-enables the default first-option choice that an earlier
+// selectedIndex = -1 had suppressed. Caller: Element's `selected` setter.
+function _setOptionSelected(option, selected) {
+  const select = _optionSelect(option);
+  if (select === null) {
+    _writeOptionSelectedness(option, selected);
+    return;
+  }
+  select._noDefaultSelection = false;
+  if (selected && !select.hasAttribute('multiple')) {
+    const opts = select.options;
+    for (let i = 0; i < opts.length; i++) {
+      if (opts[i] !== option) _writeOptionSelectedness(opts[i], false);
+    }
+  }
+  _writeOptionSelectedness(option, selected);
+  if (!selected && !select.hasAttribute('multiple')) {
+    const fallback = _selectedOptions(select);
+    if (fallback.length) _writeOptionSelectedness(fallback[0], true);
+  }
+}
+
+// The options a <select> currently has selected, in tree order. A multiple
+// select reports exactly the options whose selectedness is true. A single
+// select reports at most one: the last of several markup-selected options, or,
+// when none is selected and the display size is 1, the first non-disabled
+// option unless selectedIndex/value explicitly emptied the select.
+// Callers: select.value, select.selectedIndex, select.selectedOptions and
+// _constructEntryList.
+function _selectedOptions(select) {
+  const opts = select.options;
+  const chosen = [];
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i].selected) chosen.push(opts[i]);
+  }
+  if (select.hasAttribute('multiple')) return chosen;
+  if (chosen.length > 1) return [chosen[chosen.length - 1]];
+  if (chosen.length === 1 || select._noDefaultSelection) return chosen;
+  const size = parseInt(select.getAttribute('size'), 10);
+  if (size > 1) return chosen;
+  for (let i = 0; i < opts.length; i++) {
+    if (!_isOptionDisabled(opts[i])) return [opts[i]];
+  }
+  return chosen;
+}
+
+// The form a control belongs to: the form named by its `form` attribute, or
+// else its nearest <form> ancestor; null when neither applies. Callers:
+// requestSubmit, the FormData constructor and _formOwnedControls.
+function _formOwner(control) {
+  const id = control.getAttribute('form');
+  if (id === null) return control.closest('form');
+  const root = control.getRootNode();
+  if (!root || typeof root.querySelectorAll !== 'function') return null;
+  const forms = root.querySelectorAll('form');
+  for (let i = 0; i < forms.length; i++) {
+    if (forms[i].getAttribute('id') === id) return forms[i];
+  }
+  return null;
+}
+
+// The submittable controls whose form owner is `form`, in tree order, including
+// those placed outside it with a form="id" attribute. Caller:
+// _constructEntryList.
+function _formOwnedControls(form) {
+  const root = form.getRootNode();
+  const scope = root && typeof root.querySelectorAll === 'function' ? root : form;
+  const candidates = scope.querySelectorAll('input, select, textarea, button');
+  const owned = [];
+  for (let i = 0; i < candidates.length; i++) {
+    if (_formOwner(candidates[i]) === form) owned.push(candidates[i]);
+  }
+  return owned;
+}
+
+// The HTML "construct the entry list" algorithm: the [name, value] pairs a form
+// submits, for `form` and an optional `submitter` button. It is the single
+// implementation behind both `new FormData(form)` and native submission
+// (_navigateSubmit), so the two cannot disagree. Disabled controls are skipped
+// (including through a disabled <fieldset>); only the submitter among the
+// buttons takes part; unchecked checkboxes and radios send nothing; a select
+// sends one entry per selected, non-disabled option and nothing when none is
+// selected; a textarea sends its value with newlines normalised to LF; an
+// image-button submitter sends its click coordinates (0, 0 without a pointer).
+// Values are strings, or File objects for file inputs. Newlines become CRLF
+// only when an encoder serialises the list (_encodeEntryList).
+function _constructEntryList(form, submitter) {
+  const entries = [];
+  const controls = _formOwnedControls(form);
+  for (let i = 0; i < controls.length; i++) {
+    const el = controls[i];
+    if (el.closest('datalist') || _isActuallyDisabled(el)) continue;
+    const tag = el.localName;
+    const type = tag === 'input' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const isButton = tag === 'button' || type === 'submit' || type === 'image' || type === 'reset' || type === 'button';
+    if (isButton && el !== submitter) continue;
+    if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
+    const name = el.getAttribute('name') || '';
+    if (type === 'image') {
+      const prefix = name === '' ? '' : name + '.';
+      entries.push([prefix + 'x', '0'], [prefix + 'y', '0']);
+      continue;
+    }
+    if (name === '') continue;
+    if (tag === 'select') {
+      const selected = _selectedOptions(el);
+      for (let j = 0; j < selected.length; j++) {
+        if (!_isOptionDisabled(selected[j])) entries.push([name, _optionValue(selected[j])]);
+      }
+    } else if (type === 'file') {
+      const files = el.files;
+      if (files && files.length) {
+        for (let j = 0; j < files.length; j++) entries.push([name, files[j]]);
+      } else {
+        entries.push([name, new File([], '', { type: 'application/octet-stream' })]);
+      }
+    } else if (tag === 'textarea') {
+      entries.push([name, String(el.value).replace(/\r\n?/g, '\n')]);
+    } else {
+      entries.push([name, String(el.value)]);
+    }
+  }
+  return entries;
+}
+
+// application/x-www-form-urlencoded serialisation of an entry list: names and
+// values get CRLF newlines, a File contributes its file name, and each pair is
+// percent-encoded by _formEncode. Callers: _navigateSubmit (GET query and POST
+// body).
+function _encodeEntryList(entries) {
+  const crlf = (s) => s.replace(/\r\n|\r|\n/g, '\r\n');
+  return entries
+    .map(([name, value]) => _formEncode(crlf(name)) + '=' + _formEncode(crlf(typeof value === 'string' ? value : value.name)))
+    .join('&');
 }
 
 // The HTML labelable-elements list (hidden inputs excluded), shared by the
@@ -4252,6 +4604,10 @@ class Element extends Node {
     return this._tagName;
   }
   get nodeName() { return this.tagName; }
+  get prefix() {
+    if (this._prefix === undefined) this._prefix = _domParse("prefix", this._nid);
+    return this._prefix;
+  }
   get localName() {
     // The native tree owns the namespace-aware QualName. Reading its local
     // component directly preserves case-sensitive SVG/MathML names such as
@@ -4312,6 +4668,7 @@ class Element extends Node {
     // retained CSSStyleSheet wrappers cannot keep stale owner/source nodes.
     for (const style of this.querySelectorAll("style")) _detachStyleSheet(style);
     _releaseLinkedStylesheetsIn(this);
+    const leavingCustomElements = _connectedCustomElementsIn(this, false);
     let oldChildren = [];
     let newChildren = [];
     if (globalThis.__mutationObservers?.length) {
@@ -4329,6 +4686,8 @@ class Element extends Node {
       newChildren = _domParse("child_nodes", this._nid) || [];
       globalThis.__notifyMutation('childList', this._nid, newChildren, oldChildren);
     }
+    _disconnectCustomElements(leavingCustomElements);
+    _connectCustomElements(this, false);
   }
   get outerHTML() { return _domParse("outer_html", this._nid) ?? ""; }
   get innerText() { return _innerText(this); }
@@ -4444,6 +4803,7 @@ class Element extends Node {
       ? this.getAttribute(n)
       : null;
     const observedOldValue = _attributeOldValuesWanted() ? this.getAttribute(n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttribute(n) : undefined;
     const value = String(v);
     _dom("set_attribute", this._nid, n + "\0" + value);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
@@ -4471,6 +4831,7 @@ class Element extends Node {
     }
     if (popoverPrev !== undefined) this._popoverTypeMaybeChanged(popoverPrev);
     if (_hasMutationObservers()) _queueAttributeMutationRecord(this, n, null, observedOldValue);
+    if (customOldValue !== undefined) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, value, null]);
     if (this.localName === "source"
         && (n === "srcset" || n === "sizes" || n === "media" || n === "type")) {
       const picture = this.parentElement;
@@ -4492,6 +4853,7 @@ class Element extends Node {
       ? this.hasAttribute('open')
       : null;
     const observedOldValue = _attributeOldValuesWanted() ? this.getAttributeNS(ns, localName) : null;
+    const customOldValue = _customElementObserves(this, localName) ? this.getAttributeNS(ns, localName) : undefined;
     _dom("set_attribute_ns", this._nid, ns + "\0" + n + "\0" + value);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (_hasMutationObservers()) _queueAttributeMutationRecord(this, localName, ns || null, observedOldValue);
@@ -4501,6 +4863,7 @@ class Element extends Node {
     this._nullNamespaceAttrs = null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe') this._loadIframeSrcdoc(true);
     if (ns === "" && n === "style") _elementStyleGet(this)?._replaceFromAttribute(value);
+    if (customOldValue !== undefined) _customElementCallback(this, 'attributeChangedCallback', [localName, customOldValue, value, ns || null]);
   }
   removeAttribute(n) {
     n = _htmlAttrName(this, n);
@@ -4513,6 +4876,7 @@ class Element extends Node {
       ? this.getAttribute(n)
       : null;
     const observedOldValue = _hasMutationObservers() ? this.getAttribute(n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttribute(n) : null;
     _dom("remove_attribute", this._nid, n);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (observedOldValue !== null) _queueAttributeMutationRecord(this, n, null, observedOldValue);
@@ -4541,6 +4905,7 @@ class Element extends Node {
         image._imageSourceChanged();
       }
     }
+    if (customOldValue !== null) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, null, null]);
   }
   removeAttributeNS(ns, n) {
     ns = String(ns == null ? "" : ns);
@@ -4550,12 +4915,14 @@ class Element extends Node {
       : null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe' && this.getAttributeNS(ns, n) === null) return;
     const observedOldValue = _hasMutationObservers() ? this.getAttributeNS(ns, n) : null;
+    const customOldValue = _customElementObserves(this, n) ? this.getAttributeNS(ns, n) : null;
     _dom("remove_attribute_ns", this._nid, ns + "\0" + n);
     if (detailsWasOpen !== null) _queueDetailsToggle(this, detailsWasOpen);
     if (observedOldValue !== null) _queueAttributeMutationRecord(this, n, ns || null, observedOldValue);
     this._nullNamespaceAttrs = null;
     if (ns === '' && n === 'srcdoc' && this.localName === 'iframe') this._loadIframeSrc(this.getAttribute('src') || 'about:blank');
     if (ns === "" && n === "style") _elementStyleGet(this)?._replaceFromAttribute("");
+    if (customOldValue !== null) _customElementCallback(this, 'attributeChangedCallback', [n, customOldValue, null, ns || null]);
   }
   hasAttribute(n) { return this.getAttribute(n) !== null; }
   hasAttributes() { return this.attributes.length > 0; }
@@ -4731,17 +5098,12 @@ class Element extends Node {
       _oldChecked = _inputChecked(this);
       _oldIndeterminate = _inputIndeterminate(this);
       if (_type === 'radio') {
-        const _name = this.getAttribute('name') || '';
-        if (_name) {
-          _radioStates = [];
-          const _all = (this.ownerDocument || globalThis.document).querySelectorAll('input');
-          for (let i = 0; i < _all.length; i++) {
-            const r = _all[i];
-            if (((r.getAttribute('type') || '').toLowerCase()) !== 'radio') continue;
-            if ((r.getAttribute('name') || '') !== _name || r.form !== this.form) continue;
-            _radioStates.push([r, _inputChecked(r)]);
-            if (r !== this) _setInputChecked(r, false);
-          }
+        // Every group member's state, so a cancelled click restores them all.
+        _radioStates = [[this, _oldChecked]];
+        const _others = _radioGroupOthers(this);
+        for (let i = 0; i < _others.length; i++) {
+          _radioStates.push([_others[i], _inputChecked(_others[i])]);
+          _setInputChecked(_others[i], false);
         }
         _setInputChecked(this, true);
       } else {
@@ -4817,6 +5179,7 @@ class Element extends Node {
     }
     globalThis.__inbrowse_focused = this;
     globalThis.__inbrowse_click_target = this;
+    __inbrowseCore.ops.op_note_focus(_realmFrameId);
     this.dispatchEvent(globalThis.__inbrowse_markTrusted(new FocusEvent('focus', { relatedTarget: previous })));
     this.dispatchEvent(globalThis.__inbrowse_markTrusted(new FocusEvent('focusin', { bubbles: true, composed: true, relatedTarget: previous })));
   }
@@ -4979,23 +5342,14 @@ class Element extends Node {
   get value() {
     const tag = this.localName;
     if (tag === 'select') {
-      // Selected option wins; otherwise first option (HTML default).
-      const opts = this.querySelectorAll('option');
-      for (let i = 0; i < opts.length; i++) {
-        if (opts[i].selected) {
-          return opts[i].getAttribute('value') !== null ? opts[i].getAttribute('value') : opts[i].textContent;
-        }
-      }
-      if (opts.length) return opts[0].getAttribute('value') !== null ? opts[0].getAttribute('value') : opts[0].textContent;
-      return '';
+      // The first selected option's value, or "" when nothing is selected.
+      const selected = _selectedOptions(this);
+      return selected.length ? _optionValue(selected[0]) : '';
     }
     if (_formValues[this._nid] === undefined) _loadFormState(this._nid);
     if (_formValues[this._nid] !== undefined) return _formValues[this._nid];
     if (tag === 'textarea') return this.textContent;
-    if (tag === 'option') {
-      const attr = this.getAttribute('value');
-      return attr !== null ? attr : this.textContent;
-    }
+    if (tag === 'option') return _optionValue(this);
     if (tag === 'input') {
       const itype = (this.getAttribute('type') || '').toLowerCase();
       if (itype === 'checkbox' || itype === 'radio') {
@@ -5033,15 +5387,23 @@ class Element extends Node {
       // itself. Dispatching here fed pages that assign inside a change
       // handler back into that handler in an infinite loop.
       const wanted = String(v);
-      const opts = this.querySelectorAll('option');
+      const opts = this.options;
+      let matched = false;
       for (let i = 0; i < opts.length; i++) {
-        const attrV = opts[i].getAttribute('value');
-        const optVal = attrV !== null ? attrV : opts[i].textContent;
-        opts[i].selected = optVal === wanted;
+        const hit = !matched && _optionValue(opts[i]) === wanted;
+        if (hit) matched = true;
+        _writeOptionSelectedness(opts[i], hit);
       }
+      // A value no option carries leaves nothing selected, like selectedIndex = -1.
+      this._noDefaultSelection = !matched;
       return;
     }
     const value = String(v);
+    // HTML "set the value": a different value moves the caret to the end and
+    // drops any selection; assigning the same value leaves the selection alone.
+    if ((tag === 'input' || tag === 'textarea') && _textSelections.has(this) && value !== this.value) {
+      _textSelections.delete(this);
+    }
     _formValues[this._nid] = value;
     _dom("set_form_value", this._nid, value);
     if (tag === 'textarea') {
@@ -5124,6 +5486,10 @@ class Element extends Node {
     return _inputChecked(this);
   }
   set checked(v) {
+    if (v && ((this.getAttribute('type') || '').toLowerCase()) === 'radio') {
+      const others = _radioGroupOthers(this);
+      for (let i = 0; i < others.length; i++) _setInputChecked(others[i], false);
+    }
     _setInputChecked(this, v);
   }
   // `indeterminate` is IDL-only: it has no content attribute to reflect, so
@@ -5141,16 +5507,12 @@ class Element extends Node {
     return this.hasAttribute("selected");
   }
   set selected(v) {
-    this._selected = !!v;
-    // Keep the native DOM tree in sync so layout/paint observes live form
-    // state after scripts construct or change an option.
-    if (this.localName === 'option') {
-      if (this._selected) this.setAttribute('selected', '');
-      else this.removeAttribute('selected');
-    }
+    if (this.localName === 'option') _setOptionSelected(this, !!v);
+    else this._selected = !!v;
   }
   get text() {
-    if (['option', 'script', 'title', 'a'].includes(this.localName)) {
+    if (this.localName === 'option') return _optionText(this);
+    if (['script', 'title', 'a'].includes(this.localName)) {
       return this.textContent;
     }
     return undefined;
@@ -5173,7 +5535,7 @@ class Element extends Node {
   get label() {
     if (this.localName === 'option') {
       const label = this.getAttribute('label');
-      return label !== null ? label : this.textContent;
+      return label !== null ? label : _optionText(this);
     }
     if (this.localName === 'optgroup') return this.getAttribute('label') || '';
     return undefined;
@@ -5295,6 +5657,7 @@ class Element extends Node {
     this.setAttribute("src", v);
   }
   _resetIframeFrame() {
+    _loadingIframes.delete(this);
     _resetIframeElement(this);
   }
   _loadIframeSrc(url, submission) {
@@ -5309,6 +5672,7 @@ class Element extends Node {
     if (!submission && this._iframeLoadingUrl === fullUrl) return;
     this._resetIframeFrame();
     this._iframeLoadingUrl = fullUrl;
+    _loadingIframes.add(this);
     // Distinguish repeated form POSTs to the same URL from an older response.
     const request = this._iframeRequest = {};
     const el = this;
@@ -5316,11 +5680,18 @@ class Element extends Node {
     const method = submission?.method || 'GET';
     const headers = method === 'POST' ? '{"Content-Type":"application/x-www-form-urlencoded"}' : '{}';
     const body = submission?.body ? new TextEncoder().encode(submission.body) : new Uint8Array(0);
-    __inbrowseCore.ops.op_fetch_url(
-      fullUrl, method, headers, body, pageOrigin,
-      'no-cors', submission ? 'include' : 'same-origin', 'Document'
-    ).then(raw => {
+    // A data: document is carried by its URL, so there is nothing to fetch.
+    const fetched = !submission && /^data:/i.test(fullUrl)
+      ? Promise.resolve().then(() => JSON.stringify({
+        status: 200, url: fullUrl, body: _decodeDataScriptUrl(fullUrl),
+      }))
+      : __inbrowseCore.ops.op_fetch_url(
+        fullUrl, method, headers, body, pageOrigin,
+        'no-cors', submission ? 'include' : 'same-origin', 'Document'
+      );
+    fetched.then(raw => {
       if (el._iframeRequest !== request) return;
+      _loadingIframes.delete(el);
       const response = JSON.parse(raw);
       if (!response.blocked && response.status > 0 && response.status < 400) {
         const html = response.body || '';
@@ -5329,10 +5700,16 @@ class Element extends Node {
         el._iframeOpaque = _sandboxOpaqueOrigin;
         try { el._iframeOpaque ||= new URL(loadedUrl).origin !== pageOrigin; } catch (_) { el._iframeOpaque = true; }
         // The host fires load after creating the realm and running its scripts.
+        // The frame's viewport is the iframe's content box, the size the host
+        // keeps it at once laid out (sync_frame_viewports in runtime.rs).
         const box = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        const inset = (...names) => names.reduce((sum, name) => sum + (parseFloat(style[name]) || 0), 0);
+        const contentWidth = Math.round(box.width - inset('borderLeftWidth', 'borderRightWidth', 'paddingLeft', 'paddingRight'));
+        const contentHeight = Math.round(box.height - inset('borderTopWidth', 'borderBottomWidth', 'paddingTop', 'paddingBottom'));
         if (el._frameId) globalThis.__inbrowse_forgetFrame(el._frameId);
         el._frameId = __inbrowseCore.ops.op_frame_document_ready(
-          loadedUrl, html, Math.round(box.width) || 300, Math.round(box.height) || 150, el._nid);
+          loadedUrl, html, contentWidth > 0 ? contentWidth : 300, contentHeight > 0 ? contentHeight : 150, el._nid);
         if (el._frameId) globalThis.__inbrowse_frameElements[el._frameId] = el;
         el._iframeDoc = el._iframeOpaque ? null : new _IframeDocument(html, loadedUrl, el);
         el._iframeWin = el._iframeOpaque ? _remoteWindow(el._frameId) : new _IframeWindow(el._iframeDoc, loadedUrl);
@@ -5357,6 +5734,7 @@ class Element extends Node {
       el.dispatchEvent(new Event('load'));
     }).catch(() => {
       if (el._iframeRequest !== request) return;
+      _loadingIframes.delete(el);
       el._iframeLoadedUrl = fullUrl;
       el._iframeDoc = new _IframeDocument('<!DOCTYPE html><html><head></head><body></body></html>', fullUrl, el);
       el._iframeWin = new _IframeWindow(el._iframeDoc, fullUrl);
@@ -5372,11 +5750,13 @@ class Element extends Node {
     this._resetIframeFrame();
     this._iframeLoadingUrl = 'about:srcdoc';
     this._iframeSrcdoc = html;
+    _loadingIframes.add(this);
     // Coalesce attribute writes into one navigation task, after microtasks.
     if (this._iframeSrcdocTaskPending) return;
     this._iframeSrcdocTaskPending = true;
     _browserPostedTaskEnqueue(() => {
       this._iframeSrcdocTaskPending = false;
+      _loadingIframes.delete(this);
       if (!this.isConnected || this._iframeLoadingUrl !== 'about:srcdoc' || !this.hasAttribute('srcdoc')) return;
       if (this._frameId) globalThis.__inbrowse_forgetFrame(this._frameId);
       this._frameId = 0;
@@ -5384,6 +5764,7 @@ class Element extends Node {
       this._iframeLoadedUrl = 'about:srcdoc';
     }, _schedulerPriorityRank['user-visible'] * 2, _browserPostedTaskGeneration(), () => {
       this._iframeSrcdocTaskPending = false;
+      _loadingIframes.delete(this);
     });
   }
   get contentDocument() {
@@ -5499,19 +5880,24 @@ class Element extends Node {
     }
   }
   get selectedIndex() {
-    const opts = this.options;
-    for (let i = 0; i < opts.length; i++) {
-      if (opts[i].selected || opts[i].hasAttribute('selected')) return i;
-    }
-    // Only a single select implicitly selects its first option; a multiple
-    // select with nothing chosen idles at -1 like a real browser.
-    return opts.length && !this.hasAttribute('multiple') ? 0 : -1;
+    if (this.localName !== 'select') return -1;
+    const selected = _selectedOptions(this);
+    return selected.length ? [...this.options].indexOf(selected[0]) : -1;
   }
+  // WebIDL `long`: the value goes through ToInt32, so NaN and infinities are
+  // 0 and 1.9 is 1. An index outside the option list, including -1, leaves
+  // nothing selected, and the select then stays empty rather than falling back
+  // to its first option.
   set selectedIndex(v) {
+    if (this.localName !== 'select') return;
+    const index = v | 0;
     const opts = this.options;
-    for (let i = 0; i < opts.length; i++) {
-      opts[i]._selected = (i === v);
-    }
+    for (let i = 0; i < opts.length; i++) _writeOptionSelectedness(opts[i], i === index);
+    this._noDefaultSelection = index < 0 || index >= opts.length;
+  }
+  get selectedOptions() {
+    if (this.localName !== 'select') return undefined;
+    return HTMLCollection._from(_selectedOptions(this));
   }
   // Per the HTML spec, the submit() METHOD submits the form WITHOUT firing a
   // cancelable `submit` event: a page's submit listener cannot veto it. Only
@@ -5532,7 +5918,7 @@ class Element extends Node {
           "Failed to execute 'requestSubmit' on 'HTMLFormElement': The specified element is not a submit button."
         );
       }
-      if (submitter.form !== this) {
+      if (_formOwner(submitter) !== this) {
         throw new DOMException(
           "Failed to execute 'requestSubmit' on 'HTMLFormElement': The specified element is not owned by this form element.",
           'NotFoundError'
@@ -5544,35 +5930,7 @@ class Element extends Node {
     this._navigateSubmit(submitter);
   }
   _navigateSubmit(submitter) {
-    const pairs = [];
-    const fields = this.querySelectorAll('input, select, textarea');
-    for (let i = 0; i < fields.length; i++) {
-      const f = fields[i];
-      const name = f.getAttribute('name');
-      if (!name) continue;
-      if (f.getAttribute('disabled') !== null) continue;
-      const tag = f.localName;
-      const type = (f.getAttribute('type') || '').toLowerCase();
-      if ((type === 'checkbox' || type === 'radio') && !f.checked) continue;
-      if (type === 'file' || type === 'reset') continue;
-      if (type === 'button') continue;
-      if (type === 'submit' || tag === 'button') {
-        if (submitter && f !== submitter) continue;
-        if (!submitter) continue; // default submit: don't include submit button value
-      }
-
-      let val;
-      if (tag === 'select') {
-        const opt = f.querySelector('option[selected]') || f.querySelector('option');
-        val = opt ? (opt.getAttribute('value') !== null ? opt.getAttribute('value') : opt.textContent) : '';
-      } else if (tag === 'textarea') {
-        val = f.value || f.textContent || '';
-      } else {
-        val = f.value !== undefined ? f.value : (f.getAttribute('value') || '');
-      }
-      const enc = (s) => encodeURIComponent(s).replace(/%20/g, '+').replace(/!/g, '%21');
-      pairs.push(enc(name) + '=' + enc(val));
-    }
+    const encoded = _encodeEntryList(_constructEntryList(this, submitter || null));
 
     const action = this.getAttribute('action') || '';
     const method = (this.getAttribute('method') || 'GET').toUpperCase();
@@ -5580,7 +5938,6 @@ class Element extends Node {
     let targetUrl;
     try { targetUrl = new URL(action, baseUrl).href; } catch(e) { targetUrl = action; }
 
-    const encoded = pairs.join('&');
     if (method !== 'POST') {
       const sep = targetUrl.includes('?') ? '&' : '?';
       targetUrl += encoded ? sep + encoded : '';
@@ -6446,6 +6803,75 @@ function _throwDocumentDomainSecurityError() {
   throw new DOMException("Failed to set the 'domain' property on 'Document'", "SecurityError");
 }
 
+// document.implementation is one DOMImplementation object per document, and the
+// interface is a global, as in browsers. Consent managers reference the global
+// (`x instanceof DOMImplementation`) while booting, so a plain object threw a
+// ReferenceError there.
+const _domImplementationToken = Symbol("DOMImplementation");
+class DOMImplementation {
+  #doc;
+  constructor() {
+    if (arguments[0] !== _domImplementationToken) {
+      throw new TypeError("Failed to construct 'DOMImplementation': Illegal constructor");
+    }
+    this.#doc = arguments[1];
+  }
+  // Spec: createHTMLDocument returns a NEW detached Document. jQuery
+  // 3.x's selector feature-detect calls `body.innerHTML = '<form>'` on
+  // the result: when we returned `globalThis.document`, the real
+  // `<body>` was wiped, taking every page on the open web that ships
+  // jQuery 3.x with it. Reuse the DOMParser path to build a detached
+  // document, then optionally set the title.
+  createHTMLDocument(title) {
+    const doc = _createDetachedDocument("text/html", false);
+    doc.appendChild(doc.implementation.createDocumentType("html", "", ""));
+    const html = doc.createElement("html");
+    doc.appendChild(html);
+    const head = doc.createElement("head");
+    html.appendChild(head);
+    if (title !== undefined) {
+      const titleEl = doc.createElement("title");
+      titleEl.appendChild(doc.createTextNode(String(title)));
+      head.appendChild(titleEl);
+    }
+    html.appendChild(doc.createElement("body"));
+    return doc;
+  }
+  createDocument(namespace, qualifiedName, doctype) {
+    const ns = namespace == null ? null : String(namespace);
+    const contentType = ns === "http://www.w3.org/1999/xhtml"
+      ? "application/xhtml+xml"
+      : (ns === "http://www.w3.org/2000/svg" ? "image/svg+xml" : "application/xml");
+    const doc = _createDetachedDocument(contentType, true);
+    const name = qualifiedName == null ? "" : String(qualifiedName);
+    const element = name === "" ? null : doc.createElementNS(ns, name);
+    if (doctype != null) doc.appendChild(doctype);
+    if (element) doc.appendChild(element);
+    return doc;
+  }
+  // createDocumentType(qualifiedName, publicId, systemId): build a detached
+  // DocumentType node. Browsers validate leniently here (only a name with
+  // ASCII whitespace or ">" is rejected, matching the WPT cases); the node's
+  // owner document is the document whose implementation was used.
+  createDocumentType(qualifiedName, publicId, systemId) {
+    const name = String(qualifiedName);
+    if (name === "" || /[\t\n\f\r >]/.test(name)) {
+      throw new DOMException("The qualified name '" + name + "' contains an invalid character", "InvalidCharacterError");
+    }
+    const dt = new DocumentType(
+      +_dom("create_doctype", name, publicId === undefined ? "" : String(publicId)),
+      name,
+      publicId === undefined ? "" : String(publicId),
+      systemId === undefined ? "" : String(systemId)
+    );
+    _seedDetachedTreeState(dt);
+    _cache.set(dt._nid, dt);
+    return _stampNodeDocument(dt, this.#doc);
+  }
+  hasFeature() { return true; }
+  get [Symbol.toStringTag]() { return "DOMImplementation"; }
+}
+
 const _documentInstances = new WeakSet();
 class Document extends Node {
   constructor(nid) {
@@ -6647,7 +7073,7 @@ class Document extends Node {
       "http://www.w3.org/1999/xhtml",
       localName,
     );
-    const el = new C(nid);
+    const el = new C(nid, _htmlInterfaceToken);
     // This node was just created from values already known to JS. Seed its
     // immutable metadata instead of rediscovering it through native calls in
     // hydration's tag/local-name checks.
@@ -6670,7 +7096,7 @@ class Document extends Node {
     const namespace = ns == null ? null : String(ns);
     const qualified = String(t);
     _ns_validateQualifiedName(namespace == null ? "" : namespace, qualified);
-    if (namespace === "http://www.w3.org/1999/xhtml") {
+    if (namespace === "http://www.w3.org/1999/xhtml" && qualified === qualified.toLowerCase() && !qualified.includes(':')) {
       const el = this.createElement(qualified);
       if (el) el._ns = namespace;
       return el;
@@ -6680,12 +7106,12 @@ class Document extends Node {
       (namespace == null ? "" : namespace) + "\0" + qualified,
     );
     const effectiveNamespace = namespace == null ? "" : namespace;
-    const C = _elementClassForKnownName(effectiveNamespace, qualified);
-    const el = new C(nid);
     const localName = qualified.includes(":")
       ? qualified.slice(qualified.indexOf(":") + 1)
       : qualified;
-    el._tagName = qualified;
+    const C = _elementClassForKnownName(effectiveNamespace, localName);
+    const el = new C(nid, _htmlInterfaceToken);
+    el._tagName = effectiveNamespace === "http://www.w3.org/1999/xhtml" ? qualified.toUpperCase() : qualified;
     el._lname = localName;
     el._ns = effectiveNamespace;
     el._nullNamespaceAttrs = new Map();
@@ -7006,62 +7432,10 @@ class Document extends Node {
   // body, but we never parse in quirks mode.
   get scrollingElement() { return this.documentElement; }
   get implementation() {
-    const ownerDoc = this;
-    return {
-      // Spec: createHTMLDocument returns a NEW detached Document. jQuery
-      // 3.x's selector feature-detect calls `body.innerHTML = '<form>'` on
-      // the result: when we returned `globalThis.document`, the real
-      // `<body>` was wiped, taking every page on the open web that ships
-      // jQuery 3.x with it. Reuse the DOMParser path to build a detached
-      // document, then optionally set the title.
-      createHTMLDocument(title) {
-        const doc = _createDetachedDocument("text/html", false);
-        doc.appendChild(doc.implementation.createDocumentType("html", "", ""));
-        const html = doc.createElement("html");
-        doc.appendChild(html);
-        const head = doc.createElement("head");
-        html.appendChild(head);
-        if (title !== undefined) {
-          const titleEl = doc.createElement("title");
-          titleEl.appendChild(doc.createTextNode(String(title)));
-          head.appendChild(titleEl);
-        }
-        html.appendChild(doc.createElement("body"));
-        return doc;
-      },
-      createDocument(namespace, qualifiedName, doctype) {
-        const ns = namespace == null ? null : String(namespace);
-        const contentType = ns === "http://www.w3.org/1999/xhtml"
-          ? "application/xhtml+xml"
-          : (ns === "http://www.w3.org/2000/svg" ? "image/svg+xml" : "application/xml");
-        const doc = _createDetachedDocument(contentType, true);
-        const name = qualifiedName == null ? "" : String(qualifiedName);
-        const element = name === "" ? null : doc.createElementNS(ns, name);
-        if (doctype != null) doc.appendChild(doctype);
-        if (element) doc.appendChild(element);
-        return doc;
-      },
-      // createDocumentType(qualifiedName, publicId, systemId): build a detached
-      // DocumentType node. Browsers validate leniently here (only a name with
-      // ASCII whitespace or ">" is rejected, matching the WPT cases); the node's
-      // owner document is the document whose implementation was used.
-      createDocumentType(qualifiedName, publicId, systemId) {
-        const name = String(qualifiedName);
-        if (name === "" || /[\t\n\f\r >]/.test(name)) {
-          throw new DOMException("The qualified name '" + name + "' contains an invalid character", "InvalidCharacterError");
-        }
-        const dt = new DocumentType(
-          +_dom("create_doctype", name, publicId === undefined ? "" : String(publicId)),
-          name,
-          publicId === undefined ? "" : String(publicId),
-          systemId === undefined ? "" : String(systemId)
-        );
-        _seedDetachedTreeState(dt);
-        _cache.set(dt._nid, dt);
-        return _stampNodeDocument(dt, ownerDoc);
-      },
-      hasFeature() { return true; },
-    };
+    if (!this._implementation) {
+      this._implementation = new DOMImplementation(_domImplementationToken, this);
+    }
+    return this._implementation;
   }
   get styleSheets() {
     if (!this._styleSheetList) this._styleSheetList = new StyleSheetList(this);
@@ -7222,12 +7596,15 @@ class DocumentFragment extends Node {
   get innerHTML() { return _domParse("inner_html", this._nid) ?? ""; }
   set innerHTML(v) {
     const html = String(v ?? "");
+    const leavingCustomElements = _connectedCustomElementsIn(this, false);
     if (this._fragmentContext) {
       _dom("set_inner_html_context", this._nid, _fragmentContextPayload(this._fragmentContext, html));
     } else {
       _dom("set_inner_html", this._nid, html);
     }
     _connectSrcdocFrames(this, html);
+    _disconnectCustomElements(leavingCustomElements);
+    _connectCustomElements(this, false);
   }
   querySelector(s) { return _wrapEl(+_dom("query_selector_scoped", this._nid, s)); }
   querySelectorAll(s) {
@@ -7820,8 +8197,13 @@ globalThis.TextTrackCue = TextTrackCue;
 globalThis.TextTrackCueList = TextTrackCueList;
 globalThis.VTTCue = VTTCue;
 
+const _htmlInterfaceToken = {};
+const _additionalHtmlElementClasses = Object.create(null);
 const _elementClassFor = (function _elementClassFor(nid) {
   const tag = _domParse("tag_name", nid);
+  if (tag.includes(":") && _domParse("namespace_uri", nid) === "http://www.w3.org/1999/xhtml") {
+    return _elementClassForKnownName("http://www.w3.org/1999/xhtml", _domParse("local_name", nid));
+  }
   // HTML tagName values are ASCII-uppercase. Foreign SVG names retain their
   // case, so keep the common HTML path fast and only inspect the native
   // namespace for possible SVG wrappers.
@@ -7860,12 +8242,12 @@ const _elementClassFor = (function _elementClassFor(nid) {
   if (tag === "AUDIO") return HTMLAudioElement;
   if (tag === "VIDEO") return HTMLVideoElement;
   if (tag === "TRACK") return HTMLTrackElement;
+  const additional = _additionalHtmlElementClasses[tag];
+  if (additional && _domParse("namespace_uri", nid) === "http://www.w3.org/1999/xhtml"
+      && _domParse("local_name", nid) === tag.toLowerCase()) return additional;
   return Element;
 });
-const _elementClassForKnownName = (function _elementClassForKnownName(namespace, qualifiedName) {
-  const localName = qualifiedName.includes(":")
-    ? qualifiedName.slice(qualifiedName.indexOf(":") + 1)
-    : qualifiedName;
+const _elementClassForKnownName = (function _elementClassForKnownName(namespace, localName) {
   if (namespace === "http://www.w3.org/2000/svg") {
     const svgClass = _svgElementClasses[localName];
     if (svgClass) return svgClass;
@@ -7886,15 +8268,18 @@ const _elementClassForKnownName = (function _elementClassForKnownName(namespace,
     if (tag === "AUDIO") return HTMLAudioElement;
     if (tag === "VIDEO") return HTMLVideoElement;
     if (tag === "TRACK") return HTMLTrackElement;
+    const additional = _additionalHtmlElementClasses[localName];
+    if (additional && localName === localName.toLowerCase()) return additional;
   }
   return Element;
 });
 const _wrap = (function _wrap(nid) {
   if (nid < 0 || nid === null || nid === undefined || isNaN(nid)) return null;
-  if (_cache.has(nid)) return _cache.get(nid);
+  const cached = _cache.get(nid);
+  if (cached !== undefined) return cached;
   const t = +_dom("node_type", nid);
   let n;
-  if (t === 1) { const C = _elementClassFor(nid); n = new C(nid); }
+  if (t === 1) { const C = _elementClassFor(nid); n = new C(nid, _htmlInterfaceToken); }
   else if (t === 3) n = new Text(nid);
   else if (t === 8) n = new Comment(nid);
   else if (t === 9) n = new Document(nid);
@@ -7905,11 +8290,13 @@ const _wrap = (function _wrap(nid) {
   _cache.set(nid, n);
   return n;
 });
+// Keep the common cached-node path small enough for V8 to inline.
 const _wrapEl = (function _wrapEl(nid) {
   if (nid < 0 || nid === null || nid === undefined || isNaN(nid)) return null;
-  if (_cache.has(nid)) return _cache.get(nid);
+  const cached = _cache.get(nid);
+  if (cached !== undefined) return cached;
   const C = _elementClassFor(nid);
-  const n = new C(nid);
+  const n = new C(nid, _htmlInterfaceToken);
   _cache.set(nid, n);
   return n;
 });
@@ -8010,6 +8397,30 @@ Object.defineProperty(globalThis, 'location', {
   enumerable: true,
 });
 
+// Window.origin is replaceable and reads the document origin, including
+// inherited about:blank/srcdoc origins, rather than a pending navigation URL.
+const _windowOriginDescriptor = Object.getOwnPropertyDescriptor({
+  get origin() {
+    if (this === globalThis) return _realmOrigin();
+    const get = _documentRealmMember(this, 'windowOrigin');
+    if (get) return get.call(this);
+    throw new TypeError('Illegal invocation');
+  },
+  set origin(value) {
+    if (this !== globalThis) {
+      const set = _documentRealmMember(this, 'setWindowOrigin');
+      if (set) return set.call(this, value);
+      throw new TypeError('Illegal invocation');
+    }
+    Object.defineProperty(this, 'origin', {
+      value, writable: true, enumerable: true, configurable: true,
+    });
+  },
+}, 'origin');
+_markNative(_windowOriginDescriptor.get);
+_markNative(_windowOriginDescriptor.set);
+Object.defineProperty(globalThis, 'origin', _windowOriginDescriptor);
+
 globalThis.window = globalThis;
 globalThis.self = globalThis;
 globalThis.top = globalThis;
@@ -8108,6 +8519,16 @@ Object.defineProperty(globalThis, 'constructor', {
   configurable: true,
   enumerable: false,
 });
+// The global inherits Window.prototype -> EventTarget.prototype, as in
+// browsers, so `window instanceof EventTarget` holds and a patch made on
+// EventTarget.prototype reaches window. Web-component polyfills save each
+// native method under another name there and then call that name on window;
+// without this chain that call threw and the page's components never
+// rendered. The
+// global keeps its own add/remove/dispatchEvent (defined near the top) so a
+// bare `addEventListener(...)` call with no receiver still targets window.
+Object.setPrototypeOf(globalThis.Window.prototype, EventTarget.prototype);
+Object.setPrototypeOf(globalThis, globalThis.Window.prototype);
 
 
 // Remove the static _iframeRegistry and replace with dynamic getters.
@@ -8572,6 +8993,27 @@ function _bodyToUint8Array(body) {
 
 function _arrayBufferFromBytes(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+async function _readResponseStream(stream) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (Object.prototype.toString.call(value) !== '[object Uint8Array]') {
+        throw new TypeError('Response body stream must contain Uint8Array chunks');
+      }
+      const chunk = value.slice();
+      chunks.push(chunk); total += chunk.byteLength;
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
 }
 
 function _installWasmStreamingFallback() {
@@ -9259,7 +9701,10 @@ if (typeof Response === 'undefined') {
       } else if (this.status === 204 || this.status === 205 || this.status === 304) {
         body = null;
       }
-      this._bodyBytes = _bodyToUint8Array(body);
+      const stream = typeof ReadableStream === 'function' && body instanceof ReadableStream ? body : null;
+      if (stream && (stream.locked || stream._disturbed)) throw new TypeError('Body stream is locked or disturbed');
+      if (stream) this._streamSource = stream;
+      this._bodyBytes = stream ? new Uint8Array() : _bodyToUint8Array(body);
       this.ok = this.status >= 200 && this.status < 300;
       this.headers = new Headers(headers);
       this.type = internal ? (init.type || 'default') : 'default';
@@ -9276,11 +9721,12 @@ if (typeof Response === 'undefined') {
       this._bodyAbortReason = undefined;
     }
     _consumeBody() {
-      if (this._bodyUsed) throw new TypeError("Body is already consumed");
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) throw new TypeError("Body is already consumed or locked");
       this._bodyUsed = true;
       if (this._bodyAborted) throw this._bodyAbortReason;
     }
     get body() {
+      if (this._streamSource) return this._streamSource;
       if (this._bodyNull) return null;
       if (this._bodyUsed) throw new TypeError("Body is already consumed");
       if (!this._bodyStream) {
@@ -9301,15 +9747,16 @@ if (typeof Response === 'undefined') {
             }
           },
         });
-        // bodyUsed flips the moment the stream is locked for reading
-        // (spec: the body becomes "disturbed"), which no state probe can
-        // observe on a native ReadableStream, so hook getReader instead.
+        // Locking alone does not disturb a body; reading or cancelling does.
         const response = this;
         const stream = this._bodyStream;
         const getReader = stream.getReader.bind(stream);
         stream.getReader = function () {
-          response._bodyUsed = true;
-          return getReader();
+          const reader = getReader();
+          const read = reader.read.bind(reader), cancel = reader.cancel.bind(reader);
+          reader.read = function () { response._bodyUsed = true; return read(); };
+          reader.cancel = function (reason) { response._bodyUsed = true; return cancel(reason); };
+          return reader;
         };
         stream.releaseLock = function () {
           response._bodyUsed = true;
@@ -9318,12 +9765,19 @@ if (typeof Response === 'undefined') {
       }
       return this._bodyStream;
     }
-    get bodyUsed() { return this._bodyUsed; }
-    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
-    async json() { this._consumeBody(); return JSON.parse(await _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
-    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
-    async blob() { this._consumeBody(); return new Blob([this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
+    get bodyUsed() { return this._bodyUsed || !!this._streamSource?._disturbed; }
+    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
+    async json() { this._consumeBody(); return JSON.parse(await _decodeBodyWithCharset(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
+    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
+    async blob() { this._consumeBody(); return new Blob([this._streamSource ? await _readResponseStream(this._streamSource) : this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
     clone() {
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) throw new TypeError('Body is already consumed or locked');
+      if (this._streamSource) {
+        const [left, right] = this._streamSource.tee();
+        this._streamSource = left;
+        return _createInternalResponse(right, {status: this.status, statusText: this.statusText,
+          headers: this.headers, type: this.type, url: this.url, redirected: this.redirected});
+      }
       const copy = _createInternalResponse(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
       if (this._fetchBody) {
         const promise = this._fetchBody.promise.then(bytes => bytes.slice());
@@ -10914,11 +11368,14 @@ function _replaceAdoptedStyleSheets(root, sheets) {
   return list;
 }
 
+// configurable like every WebIDL attribute: constructable-stylesheet polyfills
+// redefine it on Document.prototype and threw "Cannot redefine property".
 Object.defineProperty(Document.prototype, 'adoptedStyleSheets', {
   get() { return _adoptedStyleSheetsFor(this); },
   set(sheets) {
     _replaceAdoptedStyleSheets(this, sheets);
   },
+  configurable: true,
 });
 
 globalThis.__mutationObservers = [];
@@ -11201,8 +11658,18 @@ function _isValidCustomElementName(name) {
   // PotentialCustomElementName (approx): lowercase start, a hyphen, no uppercase.
   return /^[a-z][a-z0-9._\u00b7\u00c0-\uffff-]*-[a-z0-9._\u00b7\u00c0-\uffff-]*$/.test(name);
 }
+// Read once at define time, as the spec does, and only when the class has an
+// attributeChangedCallback.
+function _observedAttributesOf(cls) {
+  if (typeof cls.prototype?.attributeChangedCallback !== 'function') return null;
+  const list = cls.observedAttributes;
+  if (list == null) return null;
+  const names = new Set();
+  for (const name of list) names.add(String(name));
+  return names.size ? names : null;
+}
 class CustomElementRegistry {
-  constructor() { this._registry = new Map(); this._byCtor = new Map(); this._whenDefinedResolvers = new Map(); this._defining = false; }
+  constructor() { this._registry = new Map(); this._byCtor = new Map(); this._observedAttributes = new Map(); this._whenDefinedResolvers = new Map(); this._defining = false; }
   define(name, cls, opts) {
     if (!_isConstructorCE(cls)) throw new TypeError("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not a constructor.");
     if (!_isValidCustomElementName(name)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': \"" + name + "\" is not a valid custom element name", "SyntaxError");
@@ -11210,7 +11677,12 @@ class CustomElementRegistry {
     if (this._registry.has(name)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': the name \"" + name + "\" has already been used with this registry", "NotSupportedError");
     if (this._byCtor.has(cls)) throw new DOMException("Failed to execute 'define' on 'CustomElementRegistry': the constructor has already been used with this registry", "NotSupportedError");
     this._defining = true;
-    try { this._byCtor.set(cls, name); this._defineInner(name, cls, opts); } finally { this._defining = false; }
+    try {
+      const observed = _observedAttributesOf(cls);
+      this._byCtor.set(cls, name);
+      if (observed) this._observedAttributes.set(name, observed);
+      this._defineInner(name, cls, opts);
+    } finally { this._defining = false; }
   }
   _defineInner(name, cls, opts) {
     this._registry.set(name, cls);
@@ -11249,9 +11721,15 @@ class CustomElementRegistry {
       if (constructed !== el) {
         throw new TypeError("Custom element constructor did not produce the element being upgraded");
       }
-      if (typeof el.connectedCallback === 'function' && globalThis.document?.contains?.(el)) {
-        try { el.connectedCallback(); } catch (e) {}
+      const observed = this._observedAttributes.get(el.localName);
+      if (observed) {
+        for (const attr of Array.from(el.attributes)) {
+          if (observed.has(attr.localName)) {
+            _customElementCallback(el, 'attributeChangedCallback', [attr.localName, null, attr.value, attr.namespaceURI]);
+          }
+        }
       }
+      if (el.isConnected) _customElementCallback(el, 'connectedCallback');
     } catch (e) {
       el.__customUpgradeFailed = true;
     }
@@ -11795,6 +12273,252 @@ globalThis.__inbrowse_setFieldValue = function(el, field, value) {
   } catch (_e) {}
   el[field] = value;
 };
+
+// ---- Text selection in text controls ----
+//
+// Every text-entry <input> and <textarea> has a selection: a start and end
+// offset in UTF-16 code units plus a direction. Until something moves it the
+// caret sits at the end of the value, and assigning a different value moves it
+// back there (HTML "set the value"), which is why _textSelections only holds a
+// control's selection once it has been moved. The IDL members below follow HTML:
+// they apply only to <input> types text, search, tel, url and password (and to
+// <textarea>), report null for the other types, and throw InvalidStateError
+// when set. The __inbrowse_* helpers at the end serve the CDP input domain,
+// which types into, deletes from and selects in every text-entry control,
+// including types such as email and number whose IDL members report null.
+const _INPUT_TYPES = new Set([
+  'hidden', 'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month',
+  'week', 'time', 'datetime-local', 'number', 'range', 'color', 'checkbox', 'radio',
+  'file', 'submit', 'image', 'reset', 'button',
+]);
+const _SELECTION_API_TYPES = new Set(['text', 'search', 'tel', 'url', 'password']);
+const _SELECT_METHOD_TYPES = new Set([
+  'text', 'search', 'tel', 'url', 'password', 'email', 'number', 'date', 'month',
+  'week', 'time', 'datetime-local', 'color', 'file',
+]);
+const _NON_TEXT_ENTRY_TYPES = new Set([
+  'hidden', 'checkbox', 'radio', 'file', 'submit', 'image', 'reset', 'button', 'range', 'color',
+]);
+
+// The input type state of an <input>: its type attribute, or "text" when that
+// is missing or not a known type. Callers: the selection predicates below.
+function _controlInputType(el) {
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  return _INPUT_TYPES.has(type) ? type : 'text';
+}
+
+// True for the elements that have a selection at all: <textarea> and <input>.
+function _isTextControl(el) {
+  return !!el && (el.localName === 'textarea' || el.localName === 'input')
+    && el.namespaceURI === 'http://www.w3.org/1999/xhtml';
+}
+
+// True when the selection IDL members (selectionStart, setSelectionRange, ...)
+// apply: a <textarea>, or an <input> of a type in _SELECTION_API_TYPES.
+function _selectionApplies(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || _SELECTION_API_TYPES.has(_controlInputType(el)));
+}
+
+// True when select() applies, which covers a few more input types.
+function _selectMethodApplies(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || _SELECT_METHOD_TYPES.has(_controlInputType(el)));
+}
+
+// True for controls the user can type into: a <textarea> or an <input> whose
+// type takes text. Callers: the __inbrowse_* selection helpers.
+function _isTextEntry(el) {
+  return _isTextControl(el) && (el.localName === 'textarea' || !_NON_TEXT_ENTRY_TYPES.has(_controlInputType(el)));
+}
+
+// The current selection of a text control, clamped to its value, with the
+// caret at the end for a control whose selection was never moved.
+function _readSelection(el) {
+  const length = String(el.value).length;
+  const stored = _textSelections.get(el);
+  if (!stored) return { start: length, end: length, dir: 'none' };
+  const end = Math.min(stored.end, length);
+  return { start: Math.min(stored.start, end), end, dir: stored.dir };
+}
+
+// HTML "set the selection range": clamp both offsets to the value, make end
+// not precede start, normalise the direction, and store it. When `notify` is
+// true and the range or direction changed, queue the `select` event a browser
+// fires for script and user selection changes; caret movement caused by typing
+// passes false. Callers: setSelectionRange, the selectionStart, selectionEnd and
+// selectionDirection setters, select(), and __inbrowse_setSelection.
+function _writeSelection(el, start, end, direction, notify) {
+  const length = String(el.value).length;
+  end = Math.min(end, length);
+  start = Math.min(start, end);
+  if (direction !== 'forward' && direction !== 'backward') direction = 'none';
+  const before = _readSelection(el);
+  _textSelections.set(el, { start, end, dir: direction });
+  if (notify && (before.start !== start || before.end !== end || before.dir !== direction)) {
+    setTimeout(() => {
+      el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event('select', { bubbles: true })));
+    }, 0);
+  }
+}
+
+// WebIDL `unsigned long`: ToNumber, then modulo 2^32, so NaN is 0 and -1
+// becomes 4294967295 (which the clamp in _writeSelection then limits).
+function _unsignedLong(v) {
+  return Number(v) >>> 0;
+}
+
+// The InvalidStateError a selection member throws on an <input> type it does
+// not apply to. `verb` is "set"/"execute", `what` the member name.
+function _selectionTypeError(el, verb, what) {
+  const subject = verb === 'execute' ? `execute '${what}'` : `${verb} the '${what}' property`;
+  return new DOMException(
+    `Failed to ${subject} on 'HTMLInputElement': The input element's type ('${_controlInputType(el)}') does not support selection.`,
+    'InvalidStateError');
+}
+
+// Define a selection attribute. On a text control it follows HTML; on any other
+// element (all HTML elements share this prototype) it is an ordinary expando.
+function _defineSelectionAttribute(name, get, set) {
+  Object.defineProperty(Element.prototype, name, {
+    get() {
+      if (!_isTextControl(this)) return undefined;
+      return _selectionApplies(this) ? get(_readSelection(this)) : null;
+    },
+    set(v) {
+      if (!_isTextControl(this)) {
+        Object.defineProperty(this, name, { value: v, writable: true, enumerable: true, configurable: true });
+        return;
+      }
+      if (!_selectionApplies(this)) throw _selectionTypeError(this, 'set', name);
+      set(this, _readSelection(this), v);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+}
+_defineSelectionAttribute('selectionStart', (s) => s.start, (el, s, v) => {
+  const start = _unsignedLong(v);
+  _writeSelection(el, start, Math.max(start, s.end), s.dir, true);
+});
+_defineSelectionAttribute('selectionEnd', (s) => s.end, (el, s, v) => {
+  _writeSelection(el, s.start, _unsignedLong(v), s.dir, true);
+});
+_defineSelectionAttribute('selectionDirection', (s) => s.dir, (el, s, v) => {
+  _writeSelection(el, s.start, s.end, String(v), true);
+});
+
+Element.prototype.setSelectionRange = _markNative(function setSelectionRange(start, end, direction) {
+  if (arguments.length < 2) {
+    throw new TypeError(`Failed to execute 'setSelectionRange' on 'HTMLInputElement': 2 arguments required, but only ${arguments.length} present.`);
+  }
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectionApplies(this)) throw _selectionTypeError(this, 'execute', 'setSelectionRange');
+  _writeSelection(this, _unsignedLong(start), _unsignedLong(end), direction === undefined ? 'none' : String(direction), true);
+});
+
+// HTML setRangeText(): replace a range of the value, then place the selection
+// according to selectMode. The selection is captured before the value changes
+// because assigning a value moves the caret to the end.
+Element.prototype.setRangeText = _markNative(function setRangeText(replacement, start, end, selectMode) {
+  if (arguments.length < 1) {
+    throw new TypeError("Failed to execute 'setRangeText' on 'HTMLInputElement': 1 argument required, but only 0 present.");
+  }
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectionApplies(this)) throw _selectionTypeError(this, 'execute', 'setRangeText');
+  const text = String(replacement);
+  const value = String(this.value);
+  const selection = _readSelection(this);
+  if (arguments.length >= 3) {
+    start = _unsignedLong(start);
+    end = _unsignedLong(end);
+    if (start > end) {
+      throw new DOMException("Failed to execute 'setRangeText' on 'HTMLInputElement': The provided start value (" + start + ") is larger than the provided end value (" + end + ").", 'IndexSizeError');
+    }
+  } else {
+    start = selection.start;
+    end = selection.end;
+  }
+  start = Math.min(start, value.length);
+  end = Math.min(end, value.length);
+  const mode = selectMode === undefined ? 'preserve' : String(selectMode);
+  if (mode !== 'select' && mode !== 'start' && mode !== 'end' && mode !== 'preserve') {
+    throw new TypeError("Failed to execute 'setRangeText' on 'HTMLInputElement': The provided value '" + mode + "' is not a valid enum value of type SelectionMode.");
+  }
+  const delta = text.length - (end - start);
+  let newStart = selection.start, newEnd = selection.end;
+  if (mode === 'select') { newStart = start; newEnd = start + text.length; }
+  else if (mode === 'start') { newStart = newEnd = start; }
+  else if (mode === 'end') { newStart = newEnd = start + text.length; }
+  else {
+    if (newStart > end) newStart += delta; else if (newStart > start) newStart = start;
+    if (newEnd > end) newEnd += delta; else if (newEnd > start) newEnd = start;
+  }
+  globalThis.__inbrowse_setFieldValue(this, 'value', value.slice(0, start) + text + value.slice(end));
+  _writeSelection(this, newStart, newEnd, mode === 'preserve' ? selection.dir : 'none', false);
+});
+
+// HTML select(): select the whole value and fire `select`.
+Element.prototype.select = _markNative(function select() {
+  if (!_isTextControl(this)) throw new TypeError('Illegal invocation');
+  if (!_selectMethodApplies(this)) return;
+  _writeSelection(this, 0, String(this.value).length, 'none', true);
+});
+
+// The [start, end] offsets of a text-entry control's selection, whatever its
+// input type, or null for any other element. Callers: the CDP input domain's
+// text insertion, Backspace, Delete and Enter handling.
+globalThis.__inbrowse_selectionRange = function(el) {
+  if (!_isTextEntry(el)) return null;
+  const selection = _readSelection(el);
+  return [selection.start, selection.end];
+};
+
+// Move a text-entry control's selection without firing `select`, as typing and
+// deleting do. Callers: the CDP input domain after it edits a value.
+globalThis.__inbrowse_setSelection = function(el, start, end) {
+  if (_isTextEntry(el)) _writeSelection(el, start, end, 'none', false);
+};
+
+// Select all (Ctrl/Cmd+A, a triple click): the whole value of a focused
+// text-entry control, otherwise the whole document body. Returns whether
+// anything was selected. Callers: the CDP input domain.
+globalThis.__inbrowse_selectAll = function(el) {
+  if (_isTextEntry(el)) {
+    _writeSelection(el, 0, String(el.value).length, 'none', true);
+    return true;
+  }
+  const selection = globalThis.getSelection();
+  if (!selection || !document.body) return false;
+  selection.selectAllChildren(document.body);
+  return true;
+};
+
+// Select the word around a text-entry control's caret (a double click). The
+// word is the run of letters, digits and underscores containing the caret or
+// ending at it; on whitespace it is the whitespace run, and each other
+// character stands alone. Returns whether the control took the selection.
+// Callers: the CDP input domain.
+globalThis.__inbrowse_selectWord = function(el) {
+  if (!_isTextEntry(el)) return false;
+  const value = String(el.value);
+  if (value.length === 0) return false;
+  const kind = (index) => {
+    if (index > 0 && /[\uDC00-\uDFFF]/.test(value[index]) && /[\uD800-\uDBFF]/.test(value[index - 1])) index--;
+    const ch = String.fromCodePoint(value.codePointAt(index));
+    if (/[\p{L}\p{N}_]/u.test(ch)) return 'word';
+    if (/\s/.test(ch)) return 'space';
+    return 'other' + index;
+  };
+  const caret = _readSelection(el).end;
+  let anchor = Math.min(caret, value.length - 1);
+  if (caret < value.length && kind(caret) === 'word') anchor = caret;
+  else if (caret > 0 && kind(caret - 1) === 'word') anchor = caret - 1;
+  const wanted = kind(anchor);
+  let start = anchor, end = anchor + 1;
+  while (start > 0 && kind(start - 1) === wanted) start--;
+  while (end < value.length && kind(end) === wanted) end++;
+  _writeSelection(el, start, end, 'none', true);
+  return true;
+};
 globalThis.__inbrowse_setHovered = function(el) {
   if (typeof __inbrowseCore.ops.op_set_hovered === 'function') {
     __inbrowseCore.ops.op_set_hovered(el?._nid | 0, 0);
@@ -11818,14 +12542,18 @@ function _emptyFileList() { return _makeFileList([]); }
 // Rust side. Real File objects (backed by the bytes) are created so page code can
 // read them via FileReader or upload them via fetch/FormData, then input+change
 // fire as a genuine selection would (issue #359).
-globalThis.__inbrowse_setInputFiles = function(el, specs) {
-  const files = (specs || []).map((s) => {
-    let bytes;
-    try {
-      const bin = atob(s.b64 || "");
-      bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    } catch (_e) { bytes = new Uint8Array(0); }
+globalThis.__inbrowse_setInputFiles = function(el, specs, validateOnly = false) {
+  // Only a live file input of this document is a valid target. With
+  // `validateOnly` nothing changes, so the caller can check the target before
+  // it reads any file from disk. A single-file input takes the first file.
+  if (!el || _cache.get(el._nid) !== el || !(el instanceof HTMLInputElement)
+      || (el.getAttribute('type') || '').toLowerCase() !== 'file') return false;
+  if (validateOnly) return true;
+  const selected = el.hasAttribute('multiple') ? (specs || []) : (specs || []).slice(0, 1);
+  const files = selected.map((s) => {
+    const bin = atob(s.b64 || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return new File([bytes], s.name || "", { type: s.type || "" });
   });
   el._files = _makeFileList(files);
@@ -11834,8 +12562,9 @@ globalThis.__inbrowse_setInputFiles = function(el, specs) {
   // trusted events; upload flows that gate their change handler on
   // event.isTrusted (common in frameworks and anti-bot code) ignore untrusted
   // ones, which would silently break the exact case this feature targets.
-  try { el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("input", { bubbles: true }))); } catch (_e) {}
-  try { el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("change", { bubbles: true }))); } catch (_e) {}
+  el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("input", { bubbles: true })));
+  el.dispatchEvent(globalThis.__inbrowse_markTrusted(new Event("change", { bubbles: true })));
+  return true;
 };
 globalThis.Event = class Event {
   constructor(t,o={}) { if (arguments.length < 1) throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present."); this.type=String(t);this.bubbles=!!o.bubbles;this.cancelable=!!o.cancelable;this.composed=!!o.composed;this.defaultPrevented=false;this.target=null;this.currentTarget=null;this.eventPhase=0;this.timeStamp=performance.now();this._dispatching=false;this._propagationStopped=false;this._immediatePropagationStopped=false; }
@@ -11964,7 +12693,7 @@ __inbrowseCore.setReportExceptionCallback(error => {
   catch (_) { message = "Uncaught exception"; }
   const event = new _browserErrorEvent("error", { message, error, cancelable: true });
   if (_eventTargetDispatch(globalThis, event)) {
-    __inbrowseCore.ops.op_report_browser_exception(error, globalThis.__inbrowse_frameId || 0);
+    __inbrowseCore.ops.op_report_browser_exception(error, globalThis.__inbrowse_frameId || 0, false);
     _consoleFn("error", [error]);
   }
 });
@@ -12374,9 +13103,14 @@ __inbrowseCore.setUnhandledPromiseRejectionHandler((promise, reason) => {
     reason,
     cancelable: true,
   });
-  globalThis.dispatchEvent(event);
-  // Browsers report an unhandled rejection without terminating the page's
-  // event loop. Returning true tells deno_core that the host delivered it.
+  // A page handler that cancels the event has handled the rejection. Otherwise
+  // it is an uncaught error, which a browser logs to the console and reports
+  // as an exception, without terminating the page's event loop.
+  if (globalThis.dispatchEvent(event)) {
+    __inbrowseCore.ops.op_report_browser_exception(reason, globalThis.__inbrowse_frameId || 0, true);
+    _consoleFn("error", ["Uncaught (in promise)", reason]);
+  }
+  // Returning true tells deno_core that the host delivered the rejection.
   return true;
 });
 
@@ -12676,32 +13410,24 @@ function _isFormBlob(v) {
     (v._bytes !== undefined || (typeof Blob === "function" && v instanceof Blob));
 }
 if (typeof FormData === "undefined") globalThis.FormData = class FormData {
-  constructor(form) {
+  constructor(form, submitter) {
     this._d = [];
-    // `new FormData(form)` reads the form's current successful controls (the
-    // spec's "constructing the entry list"): skip disabled controls, buttons,
-    // and unchecked checkboxes/radios; a checkbox with no value submits "on".
+    // `new FormData(form, submitter)` is the spec's "construct the entry list",
+    // the same _constructEntryList that native form submission uses.
     if (form === undefined || form === null) return;
     const isForm = form.nodeType === 1 && String(form.tagName || "").toUpperCase() === "FORM";
     if (!isForm) {
       throw new TypeError("Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.");
     }
-    if (typeof form.querySelectorAll === "function") {
-      const controls = form.querySelectorAll("input,select,textarea");
-      for (let i = 0; i < controls.length; i++) {
-        const el = controls[i];
-        const name = el.getAttribute ? el.getAttribute("name") : el.name;
-        if (!name || el.disabled) continue;
-        const tag = (el.tagName || "").toLowerCase();
-        const type = (((el.getAttribute && el.getAttribute("type")) || el.type || "")).toLowerCase();
-        if (tag === "input" && (type === "checkbox" || type === "radio")) {
-          if (el.checked) this._d.push([name, el.value != null ? String(el.value) : "on"]);
-          continue;
-        }
-        if (type === "submit" || type === "reset" || type === "button" || type === "image" || type === "file") continue;
-        this._d.push([name, el.value != null ? String(el.value) : ""]);
+    if (submitter !== undefined && submitter !== null) {
+      if (!_isSubmitButton(submitter)) {
+        throw new TypeError("Failed to construct 'FormData': The specified element is not a submit button.");
+      }
+      if (_formOwner(submitter) !== form) {
+        throw new DOMException("Failed to construct 'FormData': The specified element is not owned by this form element.", "NotFoundError");
       }
     }
+    this._d = _constructEntryList(form, submitter || null);
   }
   append(k, v) { this._d.push([String(k), _isFormBlob(v) ? v : String(v)]); }
   set(k, v) { k = String(k); this._d = this._d.filter(([a]) => a !== k); this._d.push([k, _isFormBlob(v) ? v : String(v)]); }
@@ -12853,6 +13579,12 @@ const _checkXmlWellFormed = (html) => {
 // "well-formed" whenever the scan is ambiguous, so valid XML is never falsely
 // flagged. Quoted attribute regions, comments, CDATA, PIs and the doctype are
 // skipped; a literal '<' in text (invalid in XML) reads as a bad tag.
+// Pages replace String.prototype.startsWith with polyfills that ignore the
+// position argument (`this.substr(0, a.length) === a`; iasWorld county sites
+// ship one). Every `startsWith(x, i)` below then tested the start of the
+// input, so any XML beginning with `<?xml` read as a parse error.
+const _startsWithAt = Function.prototype.call.bind(String.prototype.startsWith);
+
 function _xmlWellFormed(src) {
   const s = String(src);
   const stack = [];
@@ -12863,10 +13595,10 @@ function _xmlWellFormed(src) {
     const lt = s.indexOf('<', i);
     if (lt === -1) break;
     i = lt;
-    if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
-    if (s.startsWith('<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
+    if (_startsWithAt(s, '<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
+    if (_startsWithAt(s, '<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
     // A start/end/self-closing tag: find its '>' while skipping quoted regions.
     let j = i + 1, quote = null;
     while (j < n) {
@@ -13666,9 +14398,10 @@ Object.defineProperty(Storage.prototype, 'length', {
 });
 
 const _mkStore = (local) => {
-  const target = Object.create(Storage.prototype);
+  const prototype = Storage.prototype;
+  const target = Object.create(prototype);
   const slot = { local: !!local };
-  const isReal = (p) => p === 'constructor' || (p in Storage.prototype);
+  const isReal = (p) => p === 'constructor' || (p in prototype);
   const proxy = new Proxy(target, {
     get(t, p, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.get(t, p, recv); const v = t.getItem(p); return v === null ? undefined : v; },
     set(t, p, v, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.set(t, p, v, recv); t.setItem(p, v); return true; },
@@ -14706,6 +15439,39 @@ globalThis.HTMLLegendElement = Element;
 globalThis.HTMLProgressElement = Element;
 globalThis.HTMLDetailsElement = Element;
 globalThis.HTMLDialogElement = Element;
+// Identity-only interfaces still need distinct prototypes. Inheriting Element
+// preserves implemented DOM behavior without making unrelated tags pass brand checks.
+for (const [name, tags] of Object.entries({
+  HTMLAreaElement: ['area'], HTMLBaseElement: ['base'], HTMLDListElement: ['dl'],
+  HTMLDataElement: ['data'], HTMLDirectoryElement: ['dir'], HTMLEmbedElement: ['embed'],
+  HTMLFontElement: ['font'], HTMLFrameElement: ['frame'], HTMLFrameSetElement: ['frameset'],
+  HTMLMapElement: ['map'], HTMLMarqueeElement: ['marquee'], HTMLMenuElement: ['menu'],
+  HTMLMeterElement: ['meter'], HTMLModElement: ['del', 'ins'], HTMLObjectElement: ['object'],
+  HTMLOptGroupElement: ['optgroup'], HTMLOutputElement: ['output'], HTMLParamElement: ['param'],
+  HTMLPictureElement: ['picture'], HTMLQuoteElement: ['blockquote', 'q'], HTMLSourceElement: ['source'],
+  HTMLTableCaptionElement: ['caption'], HTMLTableCellElement: ['td', 'th'],
+  HTMLTableColElement: ['col', 'colgroup'], HTMLTableRowElement: ['tr'],
+  HTMLTableSectionElement: ['tbody', 'thead', 'tfoot'], HTMLTimeElement: ['time'], HTMLTitleElement: ['title'],
+})) {
+  if (globalThis[name] !== undefined) continue;
+  const Interface = class extends Element {
+    constructor(nid, token) {
+      if (token !== _htmlInterfaceToken) {
+        const entry = _customElementConstructionStack[_customElementConstructionStack.length - 1];
+        if (!entry || new.target !== entry.constructor || entry.constructed) throw new TypeError('Illegal constructor');
+      }
+      super(nid);
+    }
+  };
+  Object.defineProperty(Interface, 'name', {value: name, configurable: true});
+  Object.defineProperty(Interface.prototype, Symbol.toStringTag, {value: name, configurable: true});
+  Object.defineProperty(globalThis, name, {value: Interface, writable: true, configurable: true});
+  for (const tag of tags) {
+    _additionalHtmlElementClasses[tag] = Interface;
+    _additionalHtmlElementClasses[tag.toUpperCase()] = Interface;
+  }
+}
+
 // SVGAnimatedString backs the className and href reflections on SVG elements.
 // baseVal and animVal both read the live attribute (no SMIL animation), and
 // baseVal is writable. Used by the SVG-aware get className()/get href() above.
@@ -14940,6 +15706,7 @@ function _isValidPITarget(target) {
 }
 globalThis.DocumentFragment = DocumentFragment;
 globalThis.DocumentType = DocumentType;
+globalThis.DOMImplementation = DOMImplementation;
 globalThis.Node = Node;
 globalThis.Element = Element;
 globalThis.Document = Document;
@@ -14976,7 +15743,7 @@ for (const _proto of [Document.prototype, DocumentFragment.prototype]) {
   _proto.prepend = Element.prototype.prepend;
   _proto.replaceChildren = Element.prototype.replaceChildren;
 }
-globalThis.EventTarget = Node;
+globalThis.EventTarget = EventTarget;
 globalThis.HTMLCollection = class HTMLCollection extends Array {
   item(i) {
     i = i >>> 0;
@@ -15836,6 +16603,18 @@ globalThis.__inbrowse_frameObjects = Object.create(null);
 // a shadow root is absent from `document.querySelectorAll('iframe')` (the
 // shape a challenge widget uses), while `isConnected` reports it correctly.
 // Treating it as gone would tear down a frame that is still in the page.
+// Connected iframe elements whose document has not been handed to the host
+// yet. A document's load event waits for its frames, so the host drains this
+// before it fires the page's load.
+const _loadingIframes = new Set();
+globalThis.__inbrowse_framesLoading = function () {
+  let loading = 0;
+  for (const element of _loadingIframes) {
+    if (element.isConnected) loading++;
+    else _loadingIframes.delete(element);
+  }
+  return loading;
+};
 globalThis.__inbrowse_liveFrameIds = function () {
   const live = [];
   for (const id in globalThis.__inbrowse_frameElements) {
@@ -15939,6 +16718,7 @@ function _ensureInitialFrameRealm(element, srcdoc) {
     for (const name of Object.keys(__inbrowseCore.ops)) core.ops[name] = __inbrowseCore.ops[name];
     delete child.__inbrowse_core_handoff;
     delete child.Deno;
+    delete child.__bootstrap;
     for (const name of ['__inbrowse_ua', '__inbrowse_platform', '__inbrowse_ua_platform',
                        '__inbrowse_ua_platform_version', '__inbrowse_stealth',
                        '__inbrowse_geo_lat', '__inbrowse_geo_lon']) {
@@ -16947,6 +17727,21 @@ navigator.wakeLock = { request() { return Promise.reject(new DOMException('Not a
 
 globalThis.opener = null;
 
+const WORKER_GLOBALS = [
+  'Object', 'Function', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN', 'undefined',
+  'Boolean', 'String', 'Symbol', 'Date', 'Promise', 'RegExp', 'Error', 'AggregateError', 'EvalError',
+  'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'JSON', 'Math', 'Intl',
+  'ArrayBuffer', 'SharedArrayBuffer', 'Atomics', 'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
+  'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array', 'Uint8ClampedArray', 'BigUint64Array',
+  'BigInt64Array', 'DataView', 'Map', 'BigInt', 'Set', 'WeakMap', 'WeakSet', 'WeakRef',
+  'FinalizationRegistry', 'Proxy', 'Reflect', 'WebAssembly', 'decodeURI', 'decodeURIComponent',
+  'encodeURI', 'encodeURIComponent', 'escape', 'unescape', 'isFinite', 'isNaN',
+  'queueMicrotask', 'structuredClone', 'URL', 'URLSearchParams', 'Blob', 'File', 'FormData', 'Headers',
+  'Request', 'Response', 'AbortController', 'AbortSignal', 'Event', 'CustomEvent', 'EventTarget',
+  'MessageChannel', 'MessagePort', 'BroadcastChannel', 'ReadableStream', 'WritableStream',
+  'TransformStream', 'XMLHttpRequest', 'WebSocket', 'indexedDB', 'navigator', 'DOMException',
+];
+
 globalThis.Worker = class Worker {
   constructor(url) {
     this.onmessage = null;
@@ -17016,6 +17811,19 @@ globalThis.Worker = class Worker {
       location: globalThis.location,
     };
     scope.self = scope;
+    // A worker global carries the ECMAScript builtins and the worker-visible
+    // web APIs as properties. Bare identifiers already resolved through the
+    // page global via `with (scope)`, but code that treats `self` as the global
+    // object (Go's wasm_exec runs with `global = self`, reading `self.Object`,
+    // `self.Promise`, `self.JSON`, ...) saw undefined and the wasm panicked with
+    // "syscall/js: call of Value.Invoke on undefined".
+    for (const name of WORKER_GLOBALS) {
+      if (!(name in scope) && name in globalThis) {
+        Object.defineProperty(scope, name, { value: globalThis[name], writable: true, configurable: true });
+      }
+    }
+    // Bare `globalThis` inside a worker is the worker scope, not the page window.
+    Object.defineProperty(scope, 'globalThis', { value: scope, writable: true, configurable: true });
     return scope;
   }
   _autoRun() {
@@ -17193,7 +18001,7 @@ globalThis.focus = function() {}; _markNative(globalThis.focus);
 globalThis.blur = function() {}; _markNative(globalThis.blur);
 globalThis.print = function() {}; _markNative(globalThis.print);
 globalThis.alert = function() {}; _markNative(globalThis.alert);
-globalThis.confirm = function() { return true; }; _markNative(globalThis.confirm);
+globalThis.confirm = function() { return false; }; _markNative(globalThis.confirm);
 globalThis.prompt = function() { return null; }; _markNative(globalThis.prompt);
 globalThis.open = function() { return null; }; _markNative(globalThis.open);
 globalThis.close = function() {}; _markNative(globalThis.close);
@@ -17219,6 +18027,12 @@ if (typeof ReadableStream === 'undefined') {
       this._state = "readable";
       this._error = null;
       this.locked = false;
+      this._disturbed = false;
+      this._started = false;
+      this._pulling = false;
+      this._pullAgain = false;
+      this._highWaterMark = strategy.highWaterMark === undefined ? 1 : Number(strategy.highWaterMark);
+      if (Number.isNaN(this._highWaterMark) || this._highWaterMark < 0) throw new RangeError('Invalid highWaterMark');
       const stream = this;
       this._controller = {
         enqueue(chunk) {
@@ -17226,6 +18040,7 @@ if (typeof ReadableStream === 'undefined') {
           const pending = stream._reads.shift();
           if (pending) pending.resolve({value: chunk, done: false});
           else stream._queue.push(chunk);
+          stream._pullIfNeeded();
         },
         close() {
           if (stream._state !== "readable") return;
@@ -17245,16 +18060,27 @@ if (typeof ReadableStream === 'undefined') {
           while (stream._reads.length) stream._reads.shift().reject(error);
           while (stream._closedWaiters.length) stream._closedWaiters.shift().reject(error);
         },
-        get desiredSize() { return Math.max(0, 1 - stream._queue.length); },
+        get desiredSize() { return stream._highWaterMark - stream._queue.length; },
       };
       try {
         const started = source.start?.(this._controller);
         if (started && typeof started.then === "function") {
-          started.catch((error) => this._controller.error(error));
+          Promise.resolve(started).then(() => { this._started = true; this._pullIfNeeded(); }, (error) => this._controller.error(error));
+        } else {
+          this._started = true;
+          if (typeof source.pull === 'function') queueMicrotask(() => this._pullIfNeeded());
         }
-      } catch (error) {
-        this._controller.error(error);
-      }
+      } catch (error) { this._controller.error(error); }
+    }
+    _pullIfNeeded() {
+      if (!this._started || this._state !== 'readable' || this._closeRequested || typeof this._source.pull !== 'function'
+          || (!this._reads.length && this._controller.desiredSize <= 0)) return;
+      if (this._pulling) { this._pullAgain = true; return; }
+      this._pulling = true;
+      Promise.resolve().then(() => this._source.pull(this._controller)).then(() => {
+        this._pulling = false;
+        if (this._pullAgain) { this._pullAgain = false; this._pullIfNeeded(); }
+      }, error => { this._pulling = false; this._controller.error(error); });
     }
     getReader() {
       if (this.locked) throw new TypeError("ReadableStream is locked");
@@ -17263,14 +18089,16 @@ if (typeof ReadableStream === 'undefined') {
       let closedPromise;
       return {
         read() {
+          stream._disturbed = true;
           if (stream._queue.length > 0) {
             const value = stream._queue.shift();
             if (!stream._queue.length && stream._closeRequested) stream._controller.close();
+            stream._pullIfNeeded();
             return Promise.resolve({ value, done: false });
           }
           if (stream._state === "closed") return Promise.resolve({ value: undefined, done: true });
           if (stream._state === "errored") return Promise.reject(stream._error);
-          return new Promise((resolve, reject) => stream._reads.push({resolve, reject}));
+          return new Promise((resolve, reject) => { stream._reads.push({resolve, reject}); stream._pullIfNeeded(); });
         },
         releaseLock() { stream.locked = false; },
         cancel(reason) { return stream.cancel(reason); },
@@ -17288,6 +18116,7 @@ if (typeof ReadableStream === 'undefined') {
       };
     }
     cancel(reason) {
+      this._disturbed = true;
       if (this._state === "errored") return Promise.reject(this._error);
       this._queue.length = 0;
       if (this._state === "closed") return Promise.resolve();
@@ -17320,27 +18149,43 @@ if (typeof ReadableStream === 'undefined') {
       return transform.readable;
     }
     tee() {
-      let leftController;
-      let rightController;
-      const left = new ReadableStream({start(controller) { leftController = controller; }});
-      const right = new ReadableStream({start(controller) { rightController = controller; }});
-      (async () => {
-        try {
-          const reader = this.getReader();
-          while (true) {
-            const {value, done} = await reader.read();
-            if (done) break;
-            leftController.enqueue(value);
-            rightController.enqueue(value);
-          }
-          leftController.close();
-          rightController.close();
-        } catch (error) {
-          leftController.error(error);
-          rightController.error(error);
+      const reader = this.getReader(), controllers = [], cancelled = [false, false], reasons = [];
+      let reading = null, finished = false, completeCancel, rejectCancel;
+      const cancellation = new Promise((resolve, reject) => { completeCancel = resolve; rejectCancel = reject; });
+      cancellation.catch(() => {});
+      const errorBranches = error => {
+        if (finished) return;
+        finished = true;
+        for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].error(error);
+        reader.releaseLock(); completeCancel();
+      };
+      reader.closed.catch(errorBranches);
+      const pull = () => {
+        if (!reading && !finished) {
+          reading = reader.read().then(({value, done}) => {
+            if (finished) return;
+            if (done) {
+              finished = true;
+              for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].close();
+              reader.releaseLock(); completeCancel();
+            } else {
+              for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].enqueue(value);
+            }
+          }, errorBranches).finally(() => { reading = null; });
         }
-      })();
-      return [left, right];
+        return reading;
+      };
+      return [0, 1].map(index => new ReadableStream({
+        start(controller) { controllers[index] = controller; }, pull,
+        cancel(reason) {
+          cancelled[index] = true; reasons[index] = reason;
+          if (cancelled[0] && cancelled[1]) {
+            finished = true;
+            Promise.resolve(reader.cancel(reasons)).then(completeCancel, rejectCancel).finally(() => reader.releaseLock());
+          }
+          return cancellation;
+        },
+      }));
     }
     [Symbol.asyncIterator]() {
       const reader = this.getReader();
@@ -17572,6 +18417,14 @@ if (!globalThis.crypto.subtle) {
     }
   }
 
+  async function runOpAsync(fn) {
+    try { return await fn(); }
+    catch (e) {
+      if (e instanceof DOMException) throw e;
+      throw new DOMException(String((e && e.message) || e), "OperationError");
+    }
+  }
+
   // The JWK `alg` of an AES or HMAC key, or undefined for the others.
   function jwkAlg(key, bytes) {
     const algorithm = keyMaterial.get(key).algorithm;
@@ -17696,7 +18549,7 @@ if (!globalThis.crypto.subtle) {
         const hash = normalizeHash(alg.hash);
         const salt = toBytes(alg.salt);
         const iterations = alg.iterations >>> 0;
-        return bufferOf(runOp(() => __inbrowseCore.ops.op_subtle_pbkdf2(hash, bytes, salt, iterations, lenBytes)));
+        return bufferOf(await runOpAsync(() => __inbrowseCore.ops.op_subtle_pbkdf2(hash, bytes, salt, iterations, lenBytes)));
       }
       if (alg.name === "HKDF") {
         const hash = normalizeHash(alg.hash);
@@ -17939,9 +18792,9 @@ if (typeof FileReader === 'undefined') {
 // forever otherwise. Fire `open` after a microtask so the consumer at least
 // proceeds; subsequent messages never arrive, which is no worse than the
 // current "no signal whatsoever" behaviour.
-// Minimal EventTarget shared by socket-like classes. Real `EventTarget` is
-// currently aliased to `Node`, which would drag DOM-tree assumptions into a
-// `WebSocket`. Defining a private shim avoids that.
+// Minimal per-instance listener box shared by socket-like classes. Their
+// prototypes still link to EventTarget.prototype, so `instanceof EventTarget`
+// holds; these own methods shadow the inherited ones.
 function _makeListenerBox(self) {
   const map = new Map();
   self.addEventListener = function (type, fn) {
@@ -18298,8 +19151,8 @@ if (typeof BroadcastChannel === 'undefined') {
     }
     get [Symbol.toStringTag]() { return 'BroadcastChannel'; }
   };
-  // EventTarget is currently Node-backed in this runtime; link the prototype
-  // without invoking Node's DOM-node constructor or exposing a fake `_nid`.
+  // Link the prototype so BroadcastChannel inherits EventTarget's methods and
+  // `instanceof EventTarget` holds.
   Object.setPrototypeOf(globalThis.BroadcastChannel.prototype, globalThis.EventTarget.prototype);
 }
 
@@ -19012,6 +19865,8 @@ const _documentMembers = Object.freeze(Object.fromEntries([
   }],
   ['checkVisibility', Element.prototype.checkVisibility],
   ['elementStyle', function() { return _elementStyle(this); }],
+  ['windowOrigin', _windowOriginDescriptor.get],
+  ['setWindowOrigin', _windowOriginDescriptor.set],
 ]));
 
 globalThis.__inbrowse_init = (function() {
@@ -19110,6 +19965,7 @@ globalThis.__inbrowse_init = (function() {
     const src = frame.getAttribute('src');
     if (frame.hasAttribute('srcdoc')) frame._loadIframeSrcdoc();
     else if (src && src !== 'about:blank') frame._loadIframeSrc(src);
+    else if (frame.namespaceURI === 'http://www.w3.org/1999/xhtml') _ensureInitialFrameRealm(frame);
   }
 
   // Hide internals (_*, inbrowse, Inbrowse). The set of keys is static at
@@ -19524,109 +20380,6 @@ if (!Element.prototype.setCustomValidity) {
     }
   };
   _markNative(Element.prototype.setCustomValidity);
-}
-
-// Text selection on Element.prototype
-const _ns_selectionStart = new WeakMap();
-const _ns_selectionEnd = new WeakMap();
-const _ns_selectionDir = new WeakMap();
-
-// Element.prototype.selectionStart - get/set selection start position
-if (!Element.prototype.selectionStart) {
-  Object.defineProperty(Element.prototype, 'selectionStart', {
-    get: function() {
-      return _ns_selectionStart.get(this) ?? null;
-    },
-    set: function(v) {
-      _ns_selectionStart.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.selectionEnd - get/set selection end position
-if (!Element.prototype.selectionEnd) {
-  Object.defineProperty(Element.prototype, 'selectionEnd', {
-    get: function() {
-      return _ns_selectionEnd.get(this) ?? null;
-    },
-    set: function(v) {
-      _ns_selectionEnd.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.selectionDirection - get/set selection direction
-if (!Element.prototype.selectionDirection) {
-  Object.defineProperty(Element.prototype, 'selectionDirection', {
-    get: function() {
-      return _ns_selectionDir.get(this) ?? 'none';
-    },
-    set: function(v) {
-      _ns_selectionDir.set(this, v === 'forward' || v === 'backward' ? v : 'none');
-    },
-    enumerable: true,
-    configurable: true
-  });
-}
-
-// Element.prototype.setSelectionRange - set text selection range
-if (!Element.prototype.setSelectionRange) {
-  Element.prototype.setSelectionRange = function setSelectionRange(start, end, direction) {
-    start = Math.max(0, parseInt(start, 10) || 0);
-    end = Math.max(0, parseInt(end, 10) || 0);
-    direction = direction === 'forward' || direction === 'backward' ? direction : 'none';
-    _ns_selectionStart.set(this, start);
-    _ns_selectionEnd.set(this, end);
-    _ns_selectionDir.set(this, direction);
-  };
-  _markNative(Element.prototype.setSelectionRange);
-}
-
-// Element.prototype.setRangeText - replace selection with text
-if (!Element.prototype.setRangeText) {
-  Element.prototype.setRangeText = function setRangeText(replacement, start, end, selectMode) {
-    const val = this.value;
-    if (!val) return;
-    const strVal = String(val);
-    start = start === undefined ? (this.selectionStart ?? 0) : Math.max(0, parseInt(start, 10) || 0);
-    end = end === undefined ? (this.selectionEnd ?? 0) : Math.max(0, parseInt(end, 10) || 0);
-    const newValue = strVal.slice(0, start) + String(replacement) + strVal.slice(end);
-    this.value = newValue;
-    selectMode = selectMode || 'preserve';
-    if (selectMode === 'select') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'start') {
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'end') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start + replLen);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    }
-  };
-  _markNative(Element.prototype.setRangeText);
-}
-
-// Element.prototype.select - select all text in the element
-if (!Element.prototype.select) {
-  Element.prototype.select = function select() {
-    const val = this.value;
-    if (val === undefined || val === null) return;
-    const len = String(val).length;
-    _ns_selectionStart.set(this, 0);
-    _ns_selectionEnd.set(this, len);
-    _ns_selectionDir.set(this, 'none');
-  };
-  _markNative(Element.prototype.select);
 }
 
 

@@ -7,7 +7,7 @@ description = "Text extraction from PDF, Office and OpenDocument files for Inbro
 
 [dependencies]
 pdf-extract = "=0.12.1"
-calamine = "=0.37.0"
+calamine = "=0.38.0"
 # Office and OpenDocument files only use deflate; the default features would
 # add AES, bzip2, LZMA, xz and zstd. Matches calamine's own zip features, so
 # the workspace keeps one copy.

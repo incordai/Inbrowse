@@ -30,6 +30,11 @@ A few notes to keep the project maintainable:
 
 ## Building
 
+The quickest start is the dev container in [`.devcontainer/`](.devcontainer),
+for VS Code Dev Containers or GitHub Codespaces (choose an 8-core machine). It
+installs CMake, Clang/libclang, nasm, libvpx and cargo-nextest; otherwise see
+[docs/Build-from-source.md](docs/Build-from-source.md).
+
 Inbrowse supports four release configurations. Keep all four building when you
 change feature gates or shared code:
 
@@ -80,7 +85,7 @@ runs each test in its own process, which is the only supported way.
 
 The authoritative behavioral gate is the **obstacle course** in the companion
 repo [`Inbrowse-benchmark`](https://github.com/incordai/Inbrowse-benchmark)
-(33 capability and speed stages, must stay 33/33):
+(38 capability and speed stages, must stay 38/38):
 
 ```bash
 INBROWSE_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
@@ -138,7 +143,7 @@ For any code change:
 1. `cargo nextest run --release --features render` passes for the crates you touched.
 2. The full render-feature nextest command above passes.
 3. `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo build --release -p inbrowse-cli --bins --features render` compiles clean.
-4. The obstacle course still reports **33/33**.
+4. The obstacle course still reports **38/38**.
 5. **Performance is a hard constraint.** Inbrowse is roughly 12x faster and uses
    about 6x less memory than headless Chrome on framework pages. Keep native
    Rust fast paths and add a JS fallback only for real spec edge cases. If your
@@ -155,9 +160,12 @@ Keep ops panic-safe: a panic in an op must degrade to a null result, never
 unwind into V8's FFI frame. Do not remove the robustness guards described in
 AGENTS.md (the V8 watchdog, the `tree.rs` reparenting guards, the CLI deadline).
 
-Do not bulk-run `cargo fmt`. The tree is not rustfmt-clean, so a blanket format
-produces a large unrelated diff. Match the surrounding style in the files you
-edit. Comments should explain non-obvious "why", not restate the code.
+Run `scripts/ci/fmt.sh` before committing; CI fails on unformatted code. It
+formats the workspace crates only. Do not use `cargo fmt --all`, which would
+also reformat the vendored crates under `vendor/`. Formatting-only commits are
+listed in `.git-blame-ignore-revs`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` so `git blame` skips
+them. Comments should explain non-obvious "why", not restate the code.
 
 ## Commit messages
 
@@ -170,7 +178,7 @@ fix(cdp): honor text selection on Backspace and typing
 Backspace trimmed the last character and typing always appended, ignoring
 any selection. Both now respect a non-collapsed selection.
 
-Fixes #316.
+Fixes #<issue number>.
 ```
 
 - `type` is one of `fix`, `feat`, `docs`, `test`, `perf`, `chore`. The `scope`
@@ -208,6 +216,26 @@ Multi-statement `--eval` that starts with `const` returns `null` (V8 gives
 
 **Security issues:** do not open a public issue. See [SECURITY.md](SECURITY.md)
 for private reporting.
+
+## Relationship to obscura
+
+Inbrowse began as a fork of [obscura](https://github.com/h4ckf0r0day/obscura)
+(Apache-2.0, credited in [NOTICE](NOTICE)). The repository was imported with
+its full history rather than created as a GitHub fork, so there is no "forked
+from" banner and the contributor graph includes obscura's authors.
+
+- **Where to report a bug.** Report bugs in Inbrowse here, even when the same
+  bug also reproduces in obscura. We fix it here; telling obscura about it as
+  well is welcome but optional.
+- **How upstream changes arrive.** The crates, binaries, environment variables
+  and identifiers were renamed (`obscura` to `inbrowse`), so upstream commits
+  do not merge cleanly. Maintainers review obscura periodically and port the
+  fixes that apply, adapted to this tree; each one is listed in
+  [CHANGELOG.md](CHANGELOG.md) with "(from upstream obscura)". There is no
+  automatic sync.
+- **Old issue and PR numbers.** Numbers like `#316` in commits before the
+  rename to Inbrowse (`e854753`) refer to obscura's issues and pull requests,
+  not to this repository's.
 
 ## Scope and direction
 

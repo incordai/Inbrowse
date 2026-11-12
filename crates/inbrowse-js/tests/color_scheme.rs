@@ -100,7 +100,7 @@ fn color_scheme_invalidates_live_styles_geometry_and_print_selection() {
     );
     assert_eq!(
         rt.evaluate("box.getBoundingClientRect().width").unwrap(),
-        json!(60.0)
+        json!(60)
     );
     rt.set_render_media(previous);
     rt.set_media_preferences(false, false);

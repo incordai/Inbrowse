@@ -18,7 +18,7 @@ use moq_video::decode::{Config as DecoderConfig, Decoder, Kind as DecoderKind};
 use moq_video::{Output, Size, Surface, I420};
 
 use crate::demux::{Codec, Sample, Track};
-use crate::{FrameReport, FrameReason};
+use crate::{FrameReason, FrameReport};
 
 /// A decoded picture: tightly packed I420 at even dimensions.
 pub(crate) struct Picture {
@@ -82,17 +82,26 @@ impl VideoDecoder {
             }
             #[cfg(feature = "vpx")]
             Codec::Vp8 | Codec::Vp9 => Ok(Self {
-                backend: Backend::Vpx(crate::vpx::VpxDecoder::new(matches!(track.codec, Codec::Vp9))?),
+                backend: Backend::Vpx(crate::vpx::VpxDecoder::new(matches!(
+                    track.codec,
+                    Codec::Vp9
+                ))?),
             }),
-            _ => Err(format!("{} video is not supported in this build", track.codec_name)),
+            _ => Err(format!(
+                "{} video is not supported in this build",
+                track.codec_name
+            )),
         }
     }
 
     fn decode(&mut self, sample: &Sample) -> Result<Vec<Picture>, String> {
         match &mut self.backend {
             Backend::Moq(decoder) => {
-                let ts = Timestamp::from_micros(sample.pts_us.max(0) as u64).map_err(|e| e.to_string())?;
-                let frames = decoder.decode(&sample.data, ts, sample.key).map_err(|e| e.to_string())?;
+                let ts = Timestamp::from_micros(sample.pts_us.max(0) as u64)
+                    .map_err(|e| e.to_string())?;
+                let frames = decoder
+                    .decode(&sample.data, ts, sample.key)
+                    .map_err(|e| e.to_string())?;
                 frames.into_iter().map(moq_picture).collect()
             }
             #[cfg(feature = "vpx")]
@@ -118,7 +127,10 @@ impl VideoDecoder {
 }
 
 fn moq_picture(frame: moq_video::Frame) -> Result<Picture, String> {
-    let pts_us = frame.timestamp.as_scale(Timescale::MICRO).min(i64::MAX as u128) as i64;
+    let pts_us = frame
+        .timestamp
+        .as_scale(Timescale::MICRO)
+        .min(i64::MAX as u128) as i64;
     let i420 = frame.surface.into_i420().map_err(|e| e.to_string())?;
     Ok(Picture {
         pts_us,
@@ -154,7 +166,10 @@ fn grid(plane: &[u8], w: usize, h: usize, cells: usize) -> Vec<f64> {
             counts[i] += 1;
         }
     }
-    sums.iter().zip(&counts).map(|(s, &c)| if c == 0 { 0.0 } else { s / f64::from(c) }).collect()
+    sums.iter()
+        .zip(&counts)
+        .map(|(s, &c)| if c == 0 { 0.0 } else { s / f64::from(c) })
+        .collect()
 }
 
 fn distance(a: &[f64], b: &[f64]) -> f64 {
@@ -215,7 +230,13 @@ fn picture_at(
         .filter(|(_, p)| p.pts_us >= target_us)
         .min_by_key(|(_, p)| p.pts_us)
         .map(|(i, _)| i);
-    let index = after.or_else(|| pictures.iter().enumerate().max_by_key(|(_, p)| p.pts_us).map(|(i, _)| i))?;
+    let index = after.or_else(|| {
+        pictures
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, p)| p.pts_us)
+            .map(|(i, _)| i)
+    })?;
     Some(pictures.swap_remove(index))
 }
 
@@ -227,7 +248,12 @@ pub(crate) fn extract_frames(
     warnings: &mut Vec<String>,
 ) -> Vec<FrameReport> {
     let samples = &track.samples;
-    let keyframes: Vec<usize> = samples.iter().enumerate().filter(|(_, s)| s.key).map(|(i, _)| i).collect();
+    let keyframes: Vec<usize> = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.key)
+        .map(|(i, _)| i)
+        .collect();
     if samples.is_empty() || keyframes.is_empty() || opts.max_frames == 0 {
         return Vec::new();
     }
@@ -299,9 +325,15 @@ pub(crate) fn extract_frames(
                 continue;
             };
             let sig = signature(&p);
-            let changed = previous.as_ref().is_some_and(|prev| distance(prev, &sig) > SCENE_THRESHOLD);
+            let changed = previous
+                .as_ref()
+                .is_some_and(|prev| distance(prev, &sig) > SCENE_THRESHOLD);
             previous = Some(sig);
-            if changed && !taken.iter().any(|(t, _)| (t.pts_us - p.pts_us).abs() < MIN_GAP_US) {
+            if changed
+                && !taken
+                    .iter()
+                    .any(|(t, _)| (t.pts_us - p.pts_us).abs() < MIN_GAP_US)
+            {
                 taken.push((p, FrameReason::SceneChange));
             }
         }
@@ -335,13 +367,27 @@ pub(crate) fn extract_frames(
 
 /// Convert to RGBA with moq-video's colour conversion, scale so the longer
 /// side is at most `max_side`, and save as PNG.
-fn write_png(picture: &Picture, max_side: u32, out_dir: &Path, index: usize) -> Result<(String, u32, u32), String> {
-    let i420 = I420::new(Size::new(picture.width, picture.height), picture.i420.clone()).map_err(|e| e.to_string())?;
+fn write_png(
+    picture: &Picture,
+    max_side: u32,
+    out_dir: &Path,
+    index: usize,
+) -> Result<(String, u32, u32), String> {
+    let i420 = I420::new(
+        Size::new(picture.width, picture.height),
+        picture.i420.clone(),
+    )
+    .map_err(|e| e.to_string())?;
     let rgba = Surface::I420(i420)
         .to_rgba(&moq_video::convert::Config::new())
         .map_err(|e| e.to_string())?;
     let (w, h) = (rgba.width(), rgba.height());
-    let image = image::RgbaImage::from_raw(w, h, rgba.into_data()).ok_or("pixel buffer size mismatch")?;
-    let path = out_dir.join(format!("frame-{:04}-{}ms.png", index, picture.pts_us.max(0) / 1000));
+    let image =
+        image::RgbaImage::from_raw(w, h, rgba.into_data()).ok_or("pixel buffer size mismatch")?;
+    let path = out_dir.join(format!(
+        "frame-{:04}-{}ms.png",
+        index,
+        picture.pts_us.max(0) / 1000
+    ));
     crate::image_out::save_png(image, max_side, &path)
 }

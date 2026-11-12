@@ -7,7 +7,10 @@ use serde_json::Value;
 use url::Url;
 
 use crate::http::{self, i, s, Req};
-use crate::{time, Auth, Comment, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort};
+use crate::{
+    time, Auth, Comment, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session,
+    SocialError, Sort,
+};
 
 const SITE: &str = "GitHub";
 
@@ -22,16 +25,23 @@ fn request<'a>(credentials: Option<&Credentials>) -> Result<(Req<'a>, Auth), Soc
     };
     match credentials {
         Some(c) if c.provider.eq_ignore_ascii_case("github") => {
-            req.headers.push(("Authorization", format!("Bearer {}", c.key)));
+            req.headers
+                .push(("Authorization", format!("Bearer {}", c.key)));
             Ok((req, Auth::Api))
         }
-        Some(c) => Err(SocialError::Invalid(format!("credentials for {} cannot be used with GitHub", c.provider))),
+        Some(c) => Err(SocialError::Invalid(format!(
+            "credentials for {} cannot be used with GitHub",
+            c.provider
+        ))),
         None => Ok((req, Auth::Anonymous)),
     }
 }
 
 fn repo_name(v: &Value) -> Option<String> {
-    s(v, "repository_url").and_then(|u| u.strip_prefix("https://api.github.com/repos/").map(String::from))
+    s(v, "repository_url").and_then(|u| {
+        u.strip_prefix("https://api.github.com/repos/")
+            .map(String::from)
+    })
 }
 
 fn to_item(v: &Value) -> Option<Item> {
@@ -46,7 +56,11 @@ fn to_item(v: &Value) -> Option<Item> {
         author: v.get("user").and_then(|u| s(u, "login")),
         community: repo_name(v),
         published_at: secs.map(time::to_rfc3339),
-        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+        date_confidence: if secs.is_some() {
+            DateConfidence::Exact
+        } else {
+            DateConfidence::Unknown
+        },
         engagement: Engagement {
             likes: v.get("reactions").and_then(|r| i(r, "total_count")),
             comments: i(v, "comments"),
@@ -71,22 +85,32 @@ pub(crate) async fn search(
         let (options, a) = request(req.credentials.as_ref())?;
         auth = a;
         let mut url = http::url("https://api.github.com/search/issues")?;
-        let q = format!("{} created:{}..{} {kind}", req.query, time::to_date(from), time::to_date(to));
+        let q = format!(
+            "{} created:{}..{} {kind}",
+            req.query,
+            time::to_date(from),
+            time::to_date(to)
+        );
         url.query_pairs_mut()
             .append_pair("q", &q)
             .append_pair("per_page", &req.limit.min(100).to_string());
         match req.sort {
             Sort::Top => {
-                url.query_pairs_mut().append_pair("sort", "reactions").append_pair("order", "desc");
+                url.query_pairs_mut()
+                    .append_pair("sort", "reactions")
+                    .append_pair("order", "desc");
             }
             Sort::Recent => {
-                url.query_pairs_mut().append_pair("sort", "created").append_pair("order", "desc");
+                url.query_pairs_mut()
+                    .append_pair("sort", "created")
+                    .append_pair("order", "desc");
             }
             Sort::Relevance => {}
         }
         let body = http::json(session, &url, options, SITE).await?;
         if body.get("incomplete_results").and_then(Value::as_bool) == Some(true) {
-            warnings.push("GitHub returned incomplete results (search timed out on their side)".into());
+            warnings
+                .push("GitHub returned incomplete results (search timed out on their side)".into());
         }
         if let Some(list) = body.get("items").and_then(Value::as_array) {
             items.extend(list.iter().filter_map(to_item));
@@ -97,7 +121,10 @@ pub(crate) async fn search(
 
 /// `https://github.com/{owner}/{repo}/(issues|pull)/{n}`.
 fn parse_thread_url(url: &Url) -> Result<(String, String, String), SocialError> {
-    let parts: Vec<&str> = url.path_segments().map(|s| s.filter(|p| !p.is_empty()).collect()).unwrap_or_default();
+    let parts: Vec<&str> = url
+        .path_segments()
+        .map(|s| s.filter(|p| !p.is_empty()).collect())
+        .unwrap_or_default();
     match parts.as_slice() {
         [owner, repo, "issues" | "pull", n, ..] if n.chars().all(|c| c.is_ascii_digit()) => {
             Ok((owner.to_string(), repo.to_string(), n.to_string()))
@@ -119,16 +146,26 @@ pub(crate) async fn thread(
     let base = format!("https://api.github.com/repos/{owner}/{repo}/issues/{n}");
     let (options, auth) = request(credentials)?;
     let issue = http::json(session, &http::url(&base)?, options, SITE).await?;
-    let mut item = to_item(&issue).ok_or_else(|| SocialError::Failed("GitHub: issue without a URL".into()))?;
+    let mut item =
+        to_item(&issue).ok_or_else(|| SocialError::Failed("GitHub: issue without a URL".into()))?;
     if comments > 0 {
         let (options, _) = request(credentials)?;
-        let list = http::json(session, &http::url(&format!("{base}/comments?per_page=100"))?, options, SITE).await?;
+        let list = http::json(
+            session,
+            &http::url(&format!("{base}/comments?per_page=100"))?,
+            options,
+            SITE,
+        )
+        .await?;
         let mut all: Vec<(i64, Comment)> = list
             .as_array()
             .map(|a| {
                 a.iter()
                     .map(|c| {
-                        let reactions = c.get("reactions").and_then(|r| i(r, "total_count")).unwrap_or(0);
+                        let reactions = c
+                            .get("reactions")
+                            .and_then(|r| i(r, "total_count"))
+                            .unwrap_or(0);
                         (
                             reactions,
                             Comment {
@@ -154,9 +191,15 @@ mod tests {
 
     #[test]
     fn thread_urls() {
-        let u = Url::parse("https://github.com/rust-lang/rust/issues/164250#issuecomment-1").unwrap();
-        assert_eq!(parse_thread_url(&u).unwrap(), ("rust-lang".into(), "rust".into(), "164250".into()));
-        assert!(parse_thread_url(&Url::parse("https://github.com/rust-lang/rust").unwrap()).is_err());
+        let u =
+            Url::parse("https://github.com/rust-lang/rust/issues/164250#issuecomment-1").unwrap();
+        assert_eq!(
+            parse_thread_url(&u).unwrap(),
+            ("rust-lang".into(), "rust".into(), "164250".into())
+        );
+        assert!(
+            parse_thread_url(&Url::parse("https://github.com/rust-lang/rust").unwrap()).is_err()
+        );
     }
 
     #[test]

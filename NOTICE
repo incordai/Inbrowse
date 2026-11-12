@@ -9,3 +9,8 @@ variables and internal identifiers to "inbrowse", and has added new files.
 
 Both the original code and the Incord AI changes are distributed under the
 Apache License, Version 2.0; see the LICENSE file.
+
+The test fixtures under crates/inbrowse-cli/tests/fixtures/reader/ and the
+page-to-Markdown cases in crates/inbrowse-cli/tests/reader_conformance.rs are
+adapted from the tests of jina-ai/reader (https://github.com/jina-ai/reader),
+licensed under the Apache License, Version 2.0.

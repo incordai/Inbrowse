@@ -15,6 +15,11 @@ pub struct BrowserContext {
     pub indexed_db: Arc<inbrowse_js::indexed_db::IndexedDbStorage>,
     pub http_client: Arc<InbrowseHttpClient>,
     pub user_agent: String,
+    /// The user agent the caller set explicitly (`--user-agent`), or `None`
+    /// when the profile default was resolved. Stealth mode sends it on the
+    /// wire and reports it as `navigator.userAgent`; `None` keeps the stealth
+    /// defaults.
+    pub user_agent_override: Option<String>,
     pub platform: String,
     pub ua_platform: String,
     pub ua_platform_version: String,
@@ -70,8 +75,9 @@ const INDEXED_DB_FILE_LIMIT: u64 = 6 * 64 * 1024 * 1024;
 
 /// Whether `origin` is a serialized origin a profile may restore into.
 fn is_valid_stored_origin(origin: &str) -> bool {
-    origin == "file://" || url::Url::parse(origin)
-        .is_ok_and(|url| url.origin().ascii_serialization() == origin && origin != "null")
+    origin == "file://"
+        || url::Url::parse(origin)
+            .is_ok_and(|url| url.origin().ascii_serialization() == origin && origin != "null")
 }
 
 /// Filename-safe stem for an origin: a sanitized prefix for readability plus the
@@ -81,7 +87,13 @@ fn storage_file_stem(origin: &str) -> String {
     let prefix: String = origin
         .chars()
         .take(48)
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in origin.as_bytes() {
@@ -104,24 +116,30 @@ fn load_web_storage(storage: &OriginStorage, dir: Option<&PathBuf>) {
     use std::io::Read;
     let Some(dir) = dir else { return };
     let root = dir.join("localStorage");
-    let Ok(read_dir) = std::fs::read_dir(&root) else { return };
+    let Ok(read_dir) = std::fs::read_dir(&root) else {
+        return;
+    };
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json")
-            || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            || !entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
             continue;
         }
         // A 5 MiB store can expand sixfold when encoded as JSON escapes.
         let mut contents = String::new();
         let limit = 32 * 1024 * 1024;
-        let read = std::fs::File::open(&path).and_then(|file| file.take(limit + 1).read_to_string(&mut contents));
+        let read = std::fs::File::open(&path)
+            .and_then(|file| file.take(limit + 1).read_to_string(&mut contents));
         if read.is_err() || contents.len() as u64 > limit {
             tracing::warn!("Failed to read {}", path.display());
             continue;
         }
         match serde_json::from_str::<StoredOriginStorage>(&contents) {
             Ok(stored) => {
-                if !is_valid_stored_origin(&stored.origin) || !storage.load(&stored.origin, stored.entries) {
+                if !is_valid_stored_origin(&stored.origin)
+                    || !storage.load(&stored.origin, stored.entries)
+                {
                     tracing::warn!("Ignoring invalid or over-budget {}", path.display());
                 }
             }
@@ -135,23 +153,30 @@ fn load_web_storage(storage: &OriginStorage, dir: Option<&PathBuf>) {
 fn load_indexed_db(storage: &IndexedDbStorage, dir: &std::path::Path) {
     use std::io::Read;
     let root = dir.join("indexedDB");
-    let Ok(read_dir) = std::fs::read_dir(&root) else { return };
+    let Ok(read_dir) = std::fs::read_dir(&root) else {
+        return;
+    };
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json")
-            || !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            || !entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
             continue;
         }
         let mut contents = String::new();
-        let read = std::fs::File::open(&path)
-            .and_then(|file| file.take(INDEXED_DB_FILE_LIMIT + 1).read_to_string(&mut contents));
+        let read = std::fs::File::open(&path).and_then(|file| {
+            file.take(INDEXED_DB_FILE_LIMIT + 1)
+                .read_to_string(&mut contents)
+        });
         if read.is_err() || contents.len() as u64 > INDEXED_DB_FILE_LIMIT {
             tracing::warn!("Failed to read {}", path.display());
             continue;
         }
         match serde_json::from_str::<StoredOriginIndexedDb>(&contents) {
             Ok(stored) => {
-                if !is_valid_stored_origin(&stored.origin) || !storage.load(&stored.origin, stored.databases) {
+                if !is_valid_stored_origin(&stored.origin)
+                    || !storage.load(&stored.origin, stored.databases)
+                {
                     tracing::warn!("Ignoring invalid or over-budget {}", path.display());
                 }
             }
@@ -168,10 +193,7 @@ impl BrowserContext {
     /// Create a BrowserContext with an optional storage directory.
     /// When `storage_dir` is set, cookies are automatically loaded from
     /// `{storage_dir}/cookies.json` on creation.
-    pub fn with_storage(
-        id: String,
-        storage_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn with_storage(id: String, storage_dir: Option<PathBuf>) -> Self {
         Self::_new_inner(id, None, false, None, storage_dir, false)
     }
 
@@ -197,7 +219,14 @@ impl BrowserContext {
         storage_dir: Option<PathBuf>,
         allow_private_network: bool,
     ) -> Self {
-        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, allow_private_network)
+        Self::_new_inner(
+            id,
+            proxy_url,
+            stealth,
+            user_agent,
+            storage_dir,
+            allow_private_network,
+        )
     }
 
     fn _new_inner(
@@ -220,7 +249,11 @@ impl BrowserContext {
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::warn!("Failed to load cookies from {}: {}", cookie_path.display(), e);
+                        tracing::warn!(
+                            "Failed to load cookies from {}: {}",
+                            cookie_path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -245,6 +278,7 @@ impl BrowserContext {
             client.block_trackers = true;
         }
         let profile = crate::profiles::select_profile();
+        let user_agent_override = user_agent.clone();
         let resolved_ua = user_agent.unwrap_or_else(|| profile.user_agent.to_string());
         let platform = profile.platform.to_string();
         let ua_platform = profile.ua_platform.to_string();
@@ -272,6 +306,7 @@ impl BrowserContext {
             indexed_db,
             http_client,
             user_agent: resolved_ua,
+            user_agent_override,
             platform,
             ua_platform,
             ua_platform_version,
@@ -344,10 +379,14 @@ impl BrowserContext {
             } else {
                 Arc::new(OriginStorage::default())
             },
-            indexed_db: if persistent { self.indexed_db.clone() }
-                else { Arc::new(inbrowse_js::indexed_db::IndexedDbStorage::default()) },
+            indexed_db: if persistent {
+                self.indexed_db.clone()
+            } else {
+                Arc::new(inbrowse_js::indexed_db::IndexedDbStorage::default())
+            },
             http_client: Arc::new(client),
             user_agent: self.user_agent.clone(),
+            user_agent_override: self.user_agent_override.clone(),
             platform: self.platform.clone(),
             ua_platform: self.ua_platform.clone(),
             ua_platform_version: self.ua_platform_version.clone(),
@@ -359,6 +398,19 @@ impl BrowserContext {
             storage_dir: persistent.then(|| self.storage_dir.clone()).flatten(),
             allow_private_network: self.allow_private_network,
         }
+    }
+
+    /// Create a private context for one CDP connection. Cookies start from the
+    /// template's snapshot like a persistent copy, but `localStorage` and
+    /// IndexedDB are independent snapshots of the template's, and there is no
+    /// storage directory: only the server's persistence context writes the
+    /// profile, so one client's live storage never reaches another client.
+    pub fn connection_copy(&self, id: String) -> Self {
+        let mut copy = self.isolated_copy(id, true);
+        copy.local_storage = Arc::new(self.local_storage.isolated_snapshot());
+        copy.indexed_db = Arc::new(self.indexed_db.isolated_snapshot());
+        copy.storage_dir = None;
+        copy
     }
 
     /// Flush `localStorage` to `{storage_dir}/localStorage`. Only the origins
@@ -386,13 +438,20 @@ impl BrowserContext {
                     result => result,
                 }
             } else {
-                let stored = StoredOriginStorage { origin: origin.to_string(), entries: entries.to_vec() };
-                serde_json::to_vec(&stored).map_err(std::io::Error::other)
+                let stored = StoredOriginStorage {
+                    origin: origin.to_string(),
+                    entries: entries.to_vec(),
+                };
+                serde_json::to_vec(&stored)
+                    .map_err(std::io::Error::other)
                     .and_then(|bytes| write_file_atomically(&path, &bytes))
             };
             match result {
                 Ok(()) => true,
-                Err(e) => { tracing::warn!("Failed to persist {}: {}", path.display(), e); false }
+                Err(e) => {
+                    tracing::warn!("Failed to persist {}: {}", path.display(), e);
+                    false
+                }
             }
         });
     }
@@ -421,12 +480,16 @@ impl BrowserContext {
                 }
             } else {
                 let stored = StoredOriginIndexedDbRef { origin, databases };
-                serde_json::to_vec(&stored).map_err(std::io::Error::other)
+                serde_json::to_vec(&stored)
+                    .map_err(std::io::Error::other)
                     .and_then(|bytes| write_file_atomically(&path, &bytes))
             };
             match result {
                 Ok(()) => true,
-                Err(e) => { tracing::warn!("Failed to persist {}: {}", path.display(), e); false }
+                Err(e) => {
+                    tracing::warn!("Failed to persist {}: {}", path.display(), e);
+                    false
+                }
             }
         });
     }
@@ -472,12 +535,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn with_full_options_falls_back_to_chrome_default() {
-        let ctx = BrowserContext::with_full_options(
-            "test".to_string(),
-            None,
-            false,
-            None,
-        );
+        let ctx = BrowserContext::with_full_options("test".to_string(), None, false, None);
         assert!(ctx.user_agent.contains("Chrome"));
         let client_ua = ctx.http_client.user_agent.read().await.clone();
         assert!(client_ua.contains("Chrome"));
@@ -491,10 +549,8 @@ mod tests {
     }
 
     fn temp_storage_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "inbrowse-storage-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("inbrowse-storage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -512,17 +568,73 @@ mod tests {
         let failed = root.join(format!("{}.json", storage_file_stem("https://failed.test")));
         let blocked = failed.with_extension("json.tmp");
         std::fs::create_dir(&blocked).unwrap();
-        assert!(context.local_storage.set("https://failed.test", "token".into(), "kept".into()));
-        assert!(context.local_storage.set("https://saved.test", "token".into(), "saved".into()));
+        assert!(context
+            .local_storage
+            .set("https://failed.test", "token".into(), "kept".into()));
+        assert!(context
+            .local_storage
+            .set("https://saved.test", "token".into(), "saved".into()));
         context.save_local_storage();
-        assert!(context.local_storage.is_dirty(), "failed writes must remain retryable");
-        assert_eq!(context.local_storage.changed_origins(), vec!["https://failed.test"]);
+        assert!(
+            context.local_storage.is_dirty(),
+            "failed writes must remain retryable"
+        );
+        assert_eq!(
+            context.local_storage.changed_origins(),
+            vec!["https://failed.test"]
+        );
         std::fs::remove_dir(&blocked).unwrap();
         context.save_local_storage();
         assert!(!context.local_storage.is_dirty());
         let reloaded = BrowserContext::with_storage("reloaded".into(), Some(dir.clone()));
-        assert_eq!(reloaded.local_storage.get("https://failed.test", "token").as_deref(), Some("kept"));
-        assert_eq!(reloaded.local_storage.get("https://saved.test", "token").as_deref(), Some("saved"));
+        assert_eq!(
+            reloaded
+                .local_storage
+                .get("https://failed.test", "token")
+                .as_deref(),
+            Some("kept")
+        );
+        assert_eq!(
+            reloaded
+                .local_storage
+                .get("https://saved.test", "token")
+                .as_deref(),
+            Some("saved")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn connection_copies_isolate_live_storage_and_cannot_write_the_profile() {
+        let dir = temp_storage_dir("connection-copy");
+        let profile = BrowserContext::with_storage("profile".into(), Some(dir.clone()));
+        assert!(profile
+            .local_storage
+            .load("https://app.test", vec![("seed".into(), "initial".into())]));
+        let a = profile.connection_copy("a".into());
+        let b = profile.connection_copy("b".into());
+        assert!(a.storage_dir.is_none());
+        assert!(a
+            .local_storage
+            .set("https://app.test", "secret".into(), "a".into()));
+        assert_eq!(
+            b.local_storage.get("https://app.test", "seed").as_deref(),
+            Some("initial")
+        );
+        assert_eq!(b.local_storage.get("https://app.test", "secret"), None);
+        assert_eq!(
+            profile.local_storage.get("https://app.test", "secret"),
+            None
+        );
+        assert!(!Arc::ptr_eq(&a.indexed_db, &b.indexed_db));
+        assert!(!Arc::ptr_eq(&a.indexed_db, &profile.indexed_db));
+        a.save_local_storage();
+        assert!(!dir.join("localStorage").exists());
+        let persistent = profile.isolated_copy("persistent".into(), true);
+        assert!(Arc::ptr_eq(
+            &persistent.local_storage,
+            &profile.local_storage
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -533,7 +645,11 @@ mod tests {
         let root = dir.join("localStorage");
         std::fs::create_dir_all(&root).unwrap();
         let pipe = root.join("blocked.json");
-        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success());
         let (tx, rx) = std::sync::mpsc::channel();
         let profile = dir.clone();
         let reader = std::thread::spawn(move || {
@@ -547,21 +663,32 @@ mod tests {
         }
         reader.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
-        assert_eq!(completed.ok(), Some(false), "profile loading must not block on a FIFO");
+        assert_eq!(
+            completed.ok(),
+            Some(false),
+            "profile loading must not block on a FIFO"
+        );
     }
 
     #[test]
     fn local_storage_retries_failed_deletions() {
         let dir = temp_storage_dir("delete-retry");
         let context = BrowserContext::with_storage("delete-retry".into(), Some(dir.clone()));
-        assert!(context.local_storage.set("https://app.test", "token".into(), "old".into()));
+        assert!(context
+            .local_storage
+            .set("https://app.test", "token".into(), "old".into()));
         context.save_local_storage();
-        let path = dir.join("localStorage").join(format!("{}.json", storage_file_stem("https://app.test")));
+        let path = dir
+            .join("localStorage")
+            .join(format!("{}.json", storage_file_stem("https://app.test")));
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
         context.local_storage.clear("https://app.test");
         context.save_local_storage();
-        assert!(context.local_storage.is_dirty(), "a failed deletion must not be acknowledged");
+        assert!(
+            context.local_storage.is_dirty(),
+            "a failed deletion must not be acknowledged"
+        );
         std::fs::remove_dir(&path).unwrap();
         context.save_local_storage();
         assert!(!context.local_storage.is_dirty());
@@ -575,15 +702,24 @@ mod tests {
         use std::io::Read;
         use std::sync::mpsc;
         let dir = temp_storage_dir("concurrent-flush");
-        let context = Arc::new(BrowserContext::with_storage("writer".into(), Some(dir.clone())));
+        let context = Arc::new(BrowserContext::with_storage(
+            "writer".into(),
+            Some(dir.clone()),
+        ));
         let other = context.isolated_copy("mutator".into(), true);
         let root = dir.join("localStorage");
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join(format!("{}.json", storage_file_stem("https://app.test")));
         let pipe = path.with_extension("json.tmp");
-        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success());
         let old = "x".repeat(64 * 1024);
-        assert!(context.local_storage.set("https://app.test", "token".into(), old.clone()));
+        assert!(context
+            .local_storage
+            .set("https://app.test", "token".into(), old.clone()));
         let (opened_tx, opened_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let reader = std::thread::spawn(move || {
@@ -596,15 +732,21 @@ mod tests {
         });
         let writer_context = context.clone();
         let writer = std::thread::spawn(move || writer_context.save_local_storage());
-        opened_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        opened_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         let (attempted_tx, attempted_rx) = mpsc::channel();
         let (changed_tx, changed_rx) = mpsc::channel();
         let mutator = std::thread::spawn(move || {
             attempted_tx.send(()).unwrap();
-            assert!(other.local_storage.set("https://app.test", "token".into(), "latest".into()));
+            assert!(other
+                .local_storage
+                .set("https://app.test", "token".into(), "latest".into()));
             changed_tx.send(()).unwrap();
         });
-        attempted_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        attempted_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         // Let the old unlocked writer lose a mutation while its FIFO is held.
         // A serialized writer keeps the mutation blocked until the flush ends.
         let _ = changed_rx.recv_timeout(std::time::Duration::from_millis(500));
@@ -613,10 +755,19 @@ mod tests {
         mutator.join().unwrap();
         let written: StoredOriginStorage = serde_json::from_slice(&reader.join().unwrap()).unwrap();
         assert_eq!(written.entries, vec![("token".into(), old)]);
-        assert!(context.local_storage.is_dirty(), "a newer mutation must survive the older flush acknowledgement");
+        assert!(
+            context.local_storage.is_dirty(),
+            "a newer mutation must survive the older flush acknowledgement"
+        );
         context.save_local_storage();
         let reloaded = BrowserContext::with_storage("reloaded".into(), Some(dir.clone()));
-        assert_eq!(reloaded.local_storage.get("https://app.test", "token").as_deref(), Some("latest"));
+        assert_eq!(
+            reloaded
+                .local_storage
+                .get("https://app.test", "token")
+                .as_deref(),
+            Some("latest")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -624,9 +775,15 @@ mod tests {
     fn local_storage_round_trips_through_the_storage_dir() {
         let dir = temp_storage_dir("roundtrip");
         let first = BrowserContext::with_storage("profile-a".into(), Some(dir.clone()));
-        first.local_storage.set("https://app.example", "token".into(), "abc".into());
-        first.local_storage.set("https://app.example", "theme".into(), "dark".into());
-        first.local_storage.set("https://other.example", "k".into(), "v".into());
+        first
+            .local_storage
+            .set("https://app.example", "token".into(), "abc".into());
+        first
+            .local_storage
+            .set("https://app.example", "theme".into(), "dark".into());
+        first
+            .local_storage
+            .set("https://other.example", "k".into(), "v".into());
         first.save_local_storage();
 
         let files: Vec<String> = std::fs::read_dir(dir.join("localStorage"))
@@ -667,7 +824,9 @@ mod tests {
     fn local_storage_stays_in_memory_without_a_storage_dir() {
         let persistent = BrowserContext::with_storage("no-dir".into(), None);
         assert!(persistent.storage_dir.is_none());
-        persistent.local_storage.set("https://app.example", "k".into(), "v".into());
+        persistent
+            .local_storage
+            .set("https://app.example", "k".into(), "v".into());
         persistent.save_local_storage();
         // No directory is configured, so the write is a no-op and the entry
         // stays in this process only.
@@ -678,7 +837,10 @@ mod tests {
         );
 
         let incognito = persistent.isolated_copy("incognito".into(), false);
-        assert_eq!(incognito.local_storage.get("https://app.example", "k"), None);
+        assert_eq!(
+            incognito.local_storage.get("https://app.example", "k"),
+            None
+        );
         // The template keeps its own entry.
         assert_eq!(
             persistent.local_storage.get("https://app.example", "k"),
@@ -692,17 +854,21 @@ mod tests {
     fn save_local_storage_skips_untouched_origins() {
         let dir = temp_storage_dir("dirty");
         let context = BrowserContext::with_storage("dirty-check".into(), Some(dir.clone()));
-        context.local_storage.set("https://app.example", "k".into(), "v".into());
+        context
+            .local_storage
+            .set("https://app.example", "k".into(), "v".into());
         context.save_local_storage();
         let first_write = std::fs::metadata(
-            dir.join("localStorage").join(format!("{}.json", storage_file_stem("https://app.example"))),
+            dir.join("localStorage")
+                .join(format!("{}.json", storage_file_stem("https://app.example"))),
         )
         .and_then(|meta| meta.modified())
         .expect("the first write must land");
         std::thread::sleep(std::time::Duration::from_millis(1100));
         context.save_local_storage();
         let second_write = std::fs::metadata(
-            dir.join("localStorage").join(format!("{}.json", storage_file_stem("https://app.example"))),
+            dir.join("localStorage")
+                .join(format!("{}.json", storage_file_stem("https://app.example"))),
         )
         .and_then(|meta| meta.modified())
         .expect("the file must still exist");
@@ -712,7 +878,9 @@ mod tests {
         );
 
         // A write to one origin must leave another origin's file alone.
-        context.local_storage.set("https://other.example", "x".into(), "y".into());
+        context
+            .local_storage
+            .set("https://other.example", "x".into(), "y".into());
         context.save_local_storage();
         let other_path = dir.join("localStorage").join(format!(
             "{}.json",
@@ -720,19 +888,29 @@ mod tests {
         ));
         let other_first = std::fs::metadata(&other_path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        context.local_storage.set("https://app.example", "k2".into(), "v2".into());
+        context
+            .local_storage
+            .set("https://app.example", "k2".into(), "v2".into());
         context.save_local_storage();
         let other_second = std::fs::metadata(&other_path).unwrap().modified().unwrap();
-        assert_eq!(other_first, other_second, "an untouched origin must not be rewritten");
+        assert_eq!(
+            other_first, other_second,
+            "an untouched origin must not be rewritten"
+        );
 
         // Clearing an origin removes its file instead of leaving it behind for
         // the next load to resurrect.
         context.local_storage.clear("https://other.example");
         context.save_local_storage();
-        assert!(!other_path.exists(), "a cleared origin must not keep its file");
-        let after_clear =
-            BrowserContext::with_storage("dirty-check-3".into(), Some(dir.clone()));
-        assert_eq!(after_clear.local_storage.get("https://other.example", "x"), None);
+        assert!(
+            !other_path.exists(),
+            "a cleared origin must not keep its file"
+        );
+        let after_clear = BrowserContext::with_storage("dirty-check-3".into(), Some(dir.clone()));
+        assert_eq!(
+            after_clear.local_storage.get("https://other.example", "x"),
+            None
+        );
 
         let reloaded = BrowserContext::with_storage("dirty-check-2".into(), Some(dir.clone()));
         assert_eq!(
@@ -750,7 +928,10 @@ mod tests {
             false,
             Some("Template-UA/1.0".to_string()),
         );
-        source.cookie_jar.set_cookie("sid=source", &url::Url::parse("https://example.com").unwrap());
+        source.cookie_jar.set_cookie(
+            "sid=source",
+            &url::Url::parse("https://example.com").unwrap(),
+        );
 
         let persistent = source.isolated_copy("persistent".to_string(), true);
         let incognito = source.isolated_copy("incognito".to_string(), false);
@@ -762,9 +943,15 @@ mod tests {
             .get_cookie_header(&url::Url::parse("https://sub.example.com").unwrap())
             .is_empty());
         persistent.cookie_jar.clear();
-        persistent.http_client.set_user_agent("Changed-UA/2.0").await;
+        persistent
+            .http_client
+            .set_user_agent("Changed-UA/2.0")
+            .await;
 
         assert_eq!(source.cookie_jar.get_all_cookies().len(), 1);
-        assert_eq!(source.http_client.user_agent.read().await.as_str(), "Template-UA/1.0");
+        assert_eq!(
+            source.http_client.user_agent.read().await.as_str(),
+            "Template-UA/1.0"
+        );
     }
 }

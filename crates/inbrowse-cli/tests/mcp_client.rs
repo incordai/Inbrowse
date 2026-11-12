@@ -10,15 +10,21 @@ const INBROWSE: &str = env!("CARGO_BIN_EXE_inbrowse");
 
 #[test]
 fn mcp_font_directory_is_validated_before_either_transport_starts() {
-    let missing = std::env::temp_dir().join(format!("inbrowse-missing-fonts-{}", std::process::id()));
+    let missing =
+        std::env::temp_dir().join(format!("inbrowse-missing-fonts-{}", std::process::id()));
     assert!(!missing.exists());
     for http in [false, true] {
         let mut command = Command::new(INBROWSE);
-        command.args(["mcp", "--font-dir"]).arg(&missing).stdin(Stdio::null());
+        command
+            .args(["mcp", "--font-dir"])
+            .arg(&missing)
+            .stdin(Stdio::null());
         if http {
             command.args(["--http", "--port", "0"]);
         }
-        let output = command.output().expect("start MCP with invalid font directory");
+        let output = command
+            .output()
+            .expect("start MCP with invalid font directory");
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("Font directory does not exist"));
     }
@@ -33,10 +39,15 @@ fn mcp_font_directory_respects_render_feature() {
         .output()
         .expect("start MCP with existing font directory");
     if cfg!(feature = "render") {
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     } else {
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("--font-dir requires a render-enabled build"));
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("--font-dir requires a render-enabled build"));
     }
 }
 
@@ -80,7 +91,9 @@ impl TestPageServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         // Accepted sockets inherit nonblocking mode on macOS.
-                        stream.set_nonblocking(false).expect("blocking fixture client");
+                        stream
+                            .set_nonblocking(false)
+                            .expect("blocking fixture client");
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
                         let mut request = [0u8; 2048];
                         let _ = stream.read(&mut request);
@@ -132,8 +145,14 @@ struct McpClient {
 
 impl McpClient {
     fn spawn() -> Self {
+        Self::spawn_with(&[])
+    }
+
+    /// `inbrowse mcp` with extra arguments, initialized.
+    fn spawn_with(args: &[&str]) -> Self {
         let mut child = Command::new(INBROWSE)
-            .args(["mcp"])
+            .arg("mcp")
+            .args(args)
             .env("INBROWSE_ALLOW_PRIVATE_NETWORK", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -194,7 +213,10 @@ impl McpClient {
     }
 
     fn tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
-        self.call("tools/call", serde_json::json!({ "name": name, "arguments": args }))
+        self.call(
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": args }),
+        )
     }
 
     fn write_msg(&mut self, msg: &serde_json::Value) {
@@ -221,9 +243,7 @@ impl Drop for McpClient {
 
 // helper: extract first content text from a tools/call response
 fn content_text(resp: &serde_json::Value) -> &str {
-    resp["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or("")
+    resp["result"]["content"][0]["text"].as_str().unwrap_or("")
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -244,6 +264,78 @@ fn test_initialize() {
 }
 
 #[test]
+fn idle_pages_close_and_the_next_call_says_so() {
+    let mut client = McpClient::spawn_with(&["--idle-timeout", "1"]);
+    let first = client.tool(
+        "browser_navigate",
+        serde_json::json!({ "url": TIMER_TEST_INITIAL_PAGE }),
+    );
+    assert_ne!(first["result"]["isError"], true, "{first}");
+    // A page that always has work queued must not keep itself open.
+    let busy = client.tool(
+        "browser_evaluate",
+        serde_json::json!({ "expression": "setInterval(() => {}, 0), 'busy'" }),
+    );
+    assert_eq!(content_text(&busy), "busy", "{busy}");
+
+    std::thread::sleep(Duration::from_millis(2_500));
+    let tabs = client.tool("browser_tab_list", serde_json::json!({}));
+    assert_eq!(
+        content_text(&tabs),
+        "No tabs open.",
+        "idle pages must close: {tabs}"
+    );
+
+    let reopened = client.tool(
+        "browser_navigate",
+        serde_json::json!({ "url": INLINE_TEXT_URL }),
+    );
+    let content = reopened["result"]["content"]
+        .as_array()
+        .expect("tool content");
+    assert_eq!(content.len(), 2, "{reopened}");
+    let note = content[1]["text"].as_str().unwrap_or("");
+    assert!(note.contains("after 1 second with no requests"), "{note}");
+    assert!(note.contains("The last page was data:text/html,"), "{note}");
+    let snapshot = client.tool("browser_snapshot", serde_json::json!({}));
+    assert!(
+        content_text(&snapshot).contains("Hello, world!"),
+        "the new page works: {snapshot}"
+    );
+    assert_eq!(
+        snapshot["result"]["content"].as_array().map(Vec::len),
+        Some(1),
+        "the note is given once"
+    );
+}
+
+#[test]
+fn a_message_that_is_not_json_rpc_2_is_an_invalid_request() {
+    let mut client = McpClient::spawn();
+    let response =
+        client.call_raw(serde_json::json!({ "jsonrpc": "1.0", "id": 7, "method": "ping" }));
+    assert_eq!(response["id"], 7, "{response}");
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+    let ping = client.call("ping", serde_json::json!({}));
+    assert!(
+        ping.get("error").is_none(),
+        "the server keeps answering: {ping}"
+    );
+}
+
+#[test]
+fn idle_timeout_zero_keeps_pages_open() {
+    let mut client = McpClient::spawn_with(&["--idle-timeout", "0"]);
+    client.tool(
+        "browser_navigate",
+        serde_json::json!({ "url": TIMER_TEST_INITIAL_PAGE }),
+    );
+    std::thread::sleep(Duration::from_millis(1_500));
+    let tabs = client.tool("browser_tab_list", serde_json::json!({}));
+    assert!(content_text(&tabs).contains("tab-1"), "{tabs}");
+}
+
+#[test]
 fn snapshot_preserves_whitespace_between_inline_spans() {
     let mut client = McpClient::spawn();
     let navigation = client.tool(
@@ -261,7 +353,106 @@ fn snapshot_preserves_whitespace_between_inline_spans() {
         text.contains("Hello world.\n\nHello, world!"),
         "snapshot mangled inline text: {text}"
     );
-    assert!(!text.contains("H e l l o"), "snapshot inserted spaces: {text}");
+    assert!(
+        !text.contains("H e l l o"),
+        "snapshot inserted spaces: {text}"
+    );
+}
+
+#[test]
+fn browser_markdown_returns_the_page_as_json_on_request() {
+    let page = "data:text/html,<html lang=fr><title>Page</title>\
+        <meta name=description content=About>\
+        <h1>Hello</h1><p>See <a href=https://x.test/a>a link</a> <img src=https://x.test/i.png alt=pic></p>";
+    let mut client = McpClient::spawn();
+    let navigation = client.tool("browser_navigate", serde_json::json!({ "url": page }));
+    assert!(
+        navigation.get("error").is_none(),
+        "navigation failed: {navigation}"
+    );
+
+    let response = client.tool("browser_markdown", serde_json::json!({ "format": "json" }));
+    let json: serde_json::Value = serde_json::from_str(content_text(&response))
+        .expect("browser_markdown format json is JSON");
+    assert_eq!(json["title"], "Page");
+    assert_eq!(json["description"], "About");
+    assert_eq!(json["lang"], "fr");
+    assert_eq!(json["status"], 200);
+    assert_eq!(
+        json["content"],
+        "# Hello\n\nSee [a link](https://x.test/a) ![pic](https://x.test/i.png)"
+    );
+    assert_eq!(
+        json["links"],
+        serde_json::json!({ "https://x.test/a": "a link" })
+    );
+    assert_eq!(
+        json["images"],
+        serde_json::json!({ "https://x.test/i.png": "pic" })
+    );
+    assert!(json.get("publishedTime").is_none(), "{json}");
+
+    let truncated = client.tool(
+        "browser_markdown",
+        serde_json::json!({ "format": "json", "max_chars": 7 }),
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(content_text(&truncated)).expect("still JSON when truncated");
+    assert!(
+        json["content"].as_str().unwrap().starts_with("# Hello"),
+        "{json}"
+    );
+    assert!(
+        json["content"].as_str().unwrap().contains("truncated"),
+        "{json}"
+    );
+
+    let plain = client.tool("browser_markdown", serde_json::json!({}));
+    assert!(content_text(&plain).starts_with("# Hello"), "{plain}");
+    let bad = client.tool("browser_markdown", serde_json::json!({ "format": "yaml" }));
+    assert_eq!(bad["result"]["isError"], true, "{bad}");
+}
+
+#[test]
+fn browser_markdown_drops_page_boilerplate_unless_asked_to_keep_it() {
+    let page = "data:text/html,<nav><a href=https://x.test/n>Menu</a></nav><p>Body</p><footer>Foot</footer>";
+    let mut client = McpClient::spawn();
+    let navigation = client.tool("browser_navigate", serde_json::json!({ "url": page }));
+    assert!(
+        navigation.get("error").is_none(),
+        "navigation failed: {navigation}"
+    );
+
+    let default = client.tool("browser_markdown", serde_json::json!({}));
+    assert_eq!(content_text(&default), "Body");
+    let keep = client.tool(
+        "browser_markdown",
+        serde_json::json!({ "boilerplate": "keep" }),
+    );
+    assert_eq!(
+        content_text(&keep),
+        "[Menu](https://x.test/n)\n\nBody\n\nFoot"
+    );
+
+    let json = client.tool("browser_markdown", serde_json::json!({ "format": "json" }));
+    let json: serde_json::Value = serde_json::from_str(content_text(&json)).expect("JSON");
+    assert_eq!(json["content"], "Body");
+    assert_eq!(json["links"], serde_json::json!({}));
+    let json = client.tool(
+        "browser_markdown",
+        serde_json::json!({ "format": "json", "boilerplate": "keep" }),
+    );
+    let json: serde_json::Value = serde_json::from_str(content_text(&json)).expect("JSON");
+    assert_eq!(
+        json["links"],
+        serde_json::json!({ "https://x.test/n": "Menu" })
+    );
+
+    let bad = client.tool(
+        "browser_markdown",
+        serde_json::json!({ "boilerplate": "none" }),
+    );
+    assert_eq!(bad["result"]["isError"], true, "{bad}");
 }
 
 #[test]
@@ -343,9 +534,15 @@ fn test_navigate_and_snapshot() {
     assert!(text.contains("127.0.0.1"), "unexpected nav text: {text}");
 
     let snap = c.tool("browser_snapshot", serde_json::json!({}));
-    assert!(snap["result"]["isError"].is_null(), "snapshot failed: {snap}");
+    assert!(
+        snap["result"]["isError"].is_null(),
+        "snapshot failed: {snap}"
+    );
     let text = content_text(&snap);
-    assert!(text.contains("Example Domain"), "unexpected snapshot: {text}");
+    assert!(
+        text.contains("Example Domain"),
+        "unexpected snapshot: {text}"
+    );
     assert!(text.contains("URL:"), "snapshot missing URL line");
 }
 
@@ -422,7 +619,10 @@ fn test_wait_for_selector() {
         "browser_wait_for",
         serde_json::json!({"selector": "h1", "timeout": 5}),
     );
-    assert!(resp["result"]["isError"].is_null(), "wait_for failed: {resp}");
+    assert!(
+        resp["result"]["isError"].is_null(),
+        "wait_for failed: {resp}"
+    );
     assert!(content_text(&resp).contains("Found"));
 }
 

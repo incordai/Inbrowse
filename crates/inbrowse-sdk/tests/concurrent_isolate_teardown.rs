@@ -54,7 +54,7 @@ async fn a_second_browser_can_be_dropped_without_aborting() {
     drop(first);
 
     assert_eq!(
-        page_two.evaluate("document.title"),
+        page_two.evaluate("document.title").unwrap(),
         serde_json::json!("fixture"),
         "the surviving page should still work after its neighbour was dropped"
     );
@@ -70,7 +70,7 @@ async fn one_browser_one_page_drops_cleanly() {
     let mut page = browser.new_page().await.unwrap();
     page.goto(&base).await.unwrap();
     assert_eq!(
-        page.evaluate("document.title"),
+        page.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
 }
@@ -86,7 +86,10 @@ async fn two_pages_on_one_browser_drop_cleanly() {
     let mut two = browser.new_page().await.unwrap();
     two.goto(&base).await.unwrap();
     drop(one);
-    assert_eq!(two.evaluate("document.title"), serde_json::json!("fixture"));
+    assert_eq!(
+        two.evaluate("document.title").unwrap(),
+        serde_json::json!("fixture")
+    );
 }
 
 /// Dropping from the *middle* of the stack, which needs the isolates entered
@@ -110,11 +113,11 @@ async fn a_page_in_the_middle_can_be_dropped_and_the_rest_keep_working() {
     // hole on the entry stack and the one above it, which was exited and
     // re-entered to reach it.
     assert_eq!(
-        first.evaluate("document.title"),
+        first.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
     assert_eq!(
-        last.evaluate("document.title"),
+        last.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
 
@@ -123,18 +126,18 @@ async fn a_page_in_the_middle_can_be_dropped_and_the_rest_keep_working() {
     let mut fresh = browser.new_page().await.unwrap();
     fresh.goto(&base).await.unwrap();
     assert_eq!(
-        fresh.evaluate("document.title"),
+        fresh.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
 
     // Finally drop out of order again, oldest first, and keep using the rest.
     drop(first);
     assert_eq!(
-        last.evaluate("document.title"),
+        last.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
     assert_eq!(
-        fresh.evaluate("document.title"),
+        fresh.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
 }
@@ -156,16 +159,16 @@ async fn an_older_page_still_runs_script_while_a_newer_one_is_alive() {
 
     // The newest page always worked; the older one is what aborted.
     assert_eq!(
-        second.evaluate("document.title"),
+        second.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
     assert_eq!(
-        first.evaluate("document.title"),
+        first.evaluate("document.title").unwrap(),
         serde_json::json!("fixture")
     );
 
     // Interleaving the two must keep working in both directions.
-    assert_eq!(first.evaluate("1 + 1"), serde_json::json!(2.0));
-    assert_eq!(second.evaluate("2 + 2"), serde_json::json!(4.0));
-    assert_eq!(first.evaluate("3 + 3"), serde_json::json!(6.0));
+    assert_eq!(first.evaluate("1 + 1").unwrap(), serde_json::json!(2));
+    assert_eq!(second.evaluate("2 + 2").unwrap(), serde_json::json!(4));
+    assert_eq!(first.evaluate("3 + 3").unwrap(), serde_json::json!(6));
 }

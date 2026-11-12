@@ -144,10 +144,16 @@ async fn a_child_frame_runs_its_own_script() {
     );
     // The frame's writes must not reach the parent's document.
     assert_eq!(
-        page.evaluate("document.title").as_str().unwrap_or(""),
+        page.evaluate("document.title")
+            .unwrap()
+            .as_str()
+            .unwrap_or(""),
         "parent",
     );
-    assert_eq!(page.evaluate("window.__ran"), serde_json::Value::Null);
+    assert_eq!(
+        page.evaluate("window.__ran").unwrap(),
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]
@@ -205,18 +211,18 @@ async fn a_child_frame_reaches_its_parent_with_post_message() {
     page.settle(2000).await;
 
     assert_eq!(
-        page.evaluate("window.__res.parentGot"),
+        page.evaluate("window.__res.parentGot").unwrap(),
         serde_json::json!(["FROM-CHILD"]),
         "the child's message never reached the parent"
     );
     // A widget gates on isTrusted and drops anything else without a word.
     assert_eq!(
-        page.evaluate("window.__res.trusted"),
+        page.evaluate("window.__res.trusted").unwrap(),
         serde_json::json!([true]),
     );
     // And it replies through event.source, so that has to be the frame's window.
     assert_eq!(
-        page.evaluate("window.__res.fromChildWindow"),
+        page.evaluate("window.__res.fromChildWindow").unwrap(),
         serde_json::json!([true]),
     );
 }
@@ -232,7 +238,8 @@ async fn a_parent_reaches_its_child_with_post_message() {
     page.goto(&base).await.unwrap();
     page.settle(2000).await;
 
-    page.evaluate("document.querySelector('iframe').contentWindow.postMessage('TO-CHILD', '*')");
+    page.evaluate("document.querySelector('iframe').contentWindow.postMessage('TO-CHILD', '*')")
+        .unwrap();
     page.settle(1000).await;
 
     assert_eq!(
@@ -263,11 +270,14 @@ async fn window_post_message_delivers_to_the_same_window() {
     page.settle(1000).await;
 
     assert_eq!(
-        page.evaluate("window.__got"),
+        page.evaluate("window.__got").unwrap(),
         serde_json::json!([["SELF", true]]),
     );
     // postMessage never delivers synchronously.
-    assert_eq!(page.evaluate("window.__syncGot").as_f64(), Some(0.0));
+    assert_eq!(
+        page.evaluate("window.__syncGot").unwrap(),
+        serde_json::json!(0)
+    );
 }
 
 /// SEC-001 / #704 — a self-post must honour targetOrigin: a message restricted
@@ -292,7 +302,7 @@ async fn window_post_message_honours_target_origin() {
     page.settle(1000).await;
 
     assert_eq!(
-        page.evaluate("window.__got"),
+        page.evaluate("window.__got").unwrap(),
         serde_json::json!(["OK", "SLASH"]),
         "a self-post with a non-matching targetOrigin must be dropped; matching ones delivered",
     );
@@ -337,7 +347,10 @@ async fn a_rejected_child_frame_does_not_leave_js_references() {
     page.goto(&base).await.unwrap();
     page.settle(2000).await;
 
-    assert!(page.frame_urls().is_empty(), "the frame cap was not applied");
+    assert!(
+        page.frame_urls().is_empty(),
+        "the frame cap was not applied"
+    );
     for registry in [
         "__inbrowse_frameObjects",
         "__inbrowse_frameWindows",
@@ -345,8 +358,8 @@ async fn a_rejected_child_frame_does_not_leave_js_references() {
     ] {
         assert_eq!(
             page.evaluate(&format!("Object.keys(globalThis.{registry}).length"))
-                .as_f64(),
-            Some(0.0),
+                .unwrap(),
+            serde_json::json!(0),
             "rejected frame stayed in {registry}",
         );
     }
@@ -364,7 +377,10 @@ async fn navigating_blank_releases_child_realms() {
     assert_eq!(page.frame_urls().len(), 1);
 
     page.goto("about:blank").await.unwrap();
-    assert!(page.frame_urls().is_empty(), "old frame realm survived navigation");
+    assert!(
+        page.frame_urls().is_empty(),
+        "old frame realm survived navigation"
+    );
 }
 
 #[tokio::test]
@@ -377,12 +393,15 @@ async fn changing_iframe_src_releases_the_previous_realm() {
     page.goto(&base).await.unwrap();
     page.settle(1000).await;
 
-    assert!(page.frame_urls().is_empty(), "old src realm survived replacement");
+    assert!(
+        page.frame_urls().is_empty(),
+        "old src realm survived replacement"
+    );
     for registry in ["__inbrowse_frameWindows", "__inbrowse_frameElements"] {
         assert_eq!(
             page.evaluate(&format!("Object.keys(globalThis.{registry}).length"))
-                .as_f64(),
-            Some(0.0),
+                .unwrap(),
+            serde_json::json!(0),
             "old iframe stayed in {registry}",
         );
     }

@@ -79,14 +79,22 @@ fn credentials(args: &Value) -> Result<Option<Credentials>, String> {
 }
 
 fn session(ctx: &Arc<BrowserContext>) -> inbrowse_social::Session {
-    inbrowse_social::session(ctx.cookie_jar.clone(), ctx.proxy_url.clone(), ctx.user_agent.clone())
+    inbrowse_social::session(
+        ctx.cookie_jar.clone(),
+        ctx.proxy_url.clone(),
+        ctx.user_agent.clone(),
+    )
 }
 
 /// Run a social tool on a browser context (its cookies, proxy and user
 /// agent), or None when `name` is not one. Callers: `lib.rs::handle_tool_call`
 /// (MCP, the session's context) and inbrowse-cli `run_social` (`inbrowse
 /// social`, a context built from the CLI flags), so both share one code path.
-pub async fn call(name: &str, args: &Value, ctx: &Arc<BrowserContext>) -> Option<Result<String, String>> {
+pub async fn call(
+    name: &str,
+    args: &Value,
+    ctx: &Arc<BrowserContext>,
+) -> Option<Result<String, String>> {
     let result = match name {
         "social_search" => search(args, ctx).await,
         "social_thread" => thread(args, ctx).await,
@@ -101,7 +109,12 @@ async fn search(args: &Value, ctx: &Arc<BrowserContext>) -> Result<String, Strin
         .and_then(Value::as_str)
         .and_then(Source::parse)
         .ok_or("invalid: source must be reddit, x, hackernews, github or polymarket")?;
-    let query = args.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let sort = match args.get("sort").and_then(Value::as_str) {
         None => Sort::Relevance,
         Some(s) => Sort::parse(s).ok_or("invalid: sort must be relevance, recent or top")?,
@@ -109,10 +122,21 @@ async fn search(args: &Value, ctx: &Arc<BrowserContext>) -> Result<String, Strin
     let request = SearchRequest {
         source,
         query,
-        days: args.get("days").and_then(Value::as_u64).unwrap_or(30).min(365) as u32,
-        limit: args.get("limit").and_then(Value::as_u64).unwrap_or(25).min(100) as usize,
+        days: args
+            .get("days")
+            .and_then(Value::as_u64)
+            .unwrap_or(30)
+            .min(365) as u32,
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(25)
+            .min(100) as usize,
         sort,
-        community: args.get("community").and_then(Value::as_str).map(String::from),
+        community: args
+            .get("community")
+            .and_then(Value::as_str)
+            .map(String::from),
         credentials: credentials(args)?,
     };
     let results = if source == Source::X && request.credentials.is_none() {
@@ -125,8 +149,15 @@ async fn search(args: &Value, ctx: &Arc<BrowserContext>) -> Result<String, Strin
 }
 
 async fn thread(args: &Value, ctx: &Arc<BrowserContext>) -> Result<String, String> {
-    let url = args.get("url").and_then(Value::as_str).ok_or("invalid: missing url")?;
-    let comments = args.get("comments").and_then(Value::as_u64).unwrap_or(10).min(50) as usize;
+    let url = args
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("invalid: missing url")?;
+    let comments = args
+        .get("comments")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(50) as usize;
     let credentials = credentials(args)?;
     let results = inbrowse_social::thread(&session(ctx), url, comments, credentials.as_ref())
         .await
@@ -161,9 +192,13 @@ async fn capture_page(
     keep: impl Fn(&url::Url) -> bool + Send + Sync + 'static,
     enough: impl Fn(&[(String, Vec<u8>)]) -> bool,
 ) -> Result<Capture, SocialError> {
-    let captured: Arc<Mutex<(Vec<(String, Vec<u8>)>, usize)>> = Arc::new(Mutex::new((Vec::new(), 0)));
+    let captured: Arc<Mutex<(Vec<(String, Vec<u8>)>, usize)>> =
+        Arc::new(Mutex::new((Vec::new(), 0)));
     let sink = captured.clone();
-    let mut page = Page::new(format!("mcp-social-{}", site.to_ascii_lowercase()), ctx.clone());
+    let mut page = Page::new(
+        format!("mcp-social-{}", site.to_ascii_lowercase()),
+        ctx.clone(),
+    );
     page.on_response(Arc::new(move |_request, response| {
         if response.body.len() > MAX_CAPTURE_BYTES || !keep(&response.url) {
             return;
@@ -171,7 +206,8 @@ async fn capture_page(
         if let Ok(mut held) = sink.lock() {
             if held.1 + response.body.len() <= MAX_CAPTURE_TOTAL {
                 held.1 += response.body.len();
-                held.0.push((response.url.to_string(), response.body.clone()));
+                held.0
+                    .push((response.url.to_string(), response.body.clone()));
             }
         }
     }));
@@ -184,7 +220,8 @@ async fn capture_page(
         if done {
             break;
         }
-        let _ = page.evaluate_script("window.scrollTo(0, document.documentElement.scrollHeight); true");
+        let _ =
+            page.evaluate_script("window.scrollTo(0, document.documentElement.scrollHeight); true");
         page.settle(4_000).await;
     }
     let landed = page.url_string();
@@ -193,7 +230,10 @@ async fn capture_page(
 }
 
 /// X search through a scratch page signed in with the session's cookies.
-async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Result<inbrowse_social::Results, SocialError> {
+async fn x_page_search(
+    ctx: &Arc<BrowserContext>,
+    request: SearchRequest,
+) -> Result<inbrowse_social::Results, SocialError> {
     let request = SearchRequest {
         days: request.days.clamp(1, inbrowse_social::MAX_DAYS),
         limit: request.limit.clamp(1, inbrowse_social::MAX_LIMIT),
@@ -204,7 +244,10 @@ async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Res
     }
     let home = url::Url::parse("https://x.com/").expect("static URL");
     let cookies = ctx.cookie_jar.get_cookie_header_same_site(&home);
-    if !cookies.split(';').any(|c| c.trim().starts_with("auth_token=")) {
+    if !cookies
+        .split(';')
+        .any(|c| c.trim().starts_with("auth_token="))
+    {
         return Err(SocialError::LoginRequired(
             "X search needs the account's cookies (auth_token, ct0) set in this session, or an X API key".into(),
         ));
@@ -218,7 +261,10 @@ async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Res
         &url,
         |u| {
             let host = u.host_str().unwrap_or("");
-            let is_x = host == "x.com" || host.ends_with(".x.com") || host == "twitter.com" || host.ends_with(".twitter.com");
+            let is_x = host == "x.com"
+                || host.ends_with(".x.com")
+                || host == "twitter.com"
+                || host.ends_with(".twitter.com");
             is_x && u.path().contains("/graphql/")
         },
         |bodies| {
@@ -234,7 +280,9 @@ async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Res
 
     let landed = capture.landed;
     if landed.contains("/i/flow/login") || landed.contains("/login") {
-        return Err(SocialError::LoginRequired("X sent the page to its login screen; the cookies have expired".into()));
+        return Err(SocialError::LoginRequired(
+            "X sent the page to its login screen; the cookies have expired".into(),
+        ));
     }
     if landed.contains("/account/access") || landed.contains("/i/flow/consent") {
         return Err(SocialError::AccountChallenge(
@@ -257,8 +305,16 @@ async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Res
                         detail: "X rate limit".into(),
                     })
                 }
-                32 | 215 => return Err(SocialError::LoginRequired("X rejected the session cookies".into())),
-                326 | 64 => return Err(SocialError::AccountChallenge("X locked or suspended the account".into())),
+                32 | 215 => {
+                    return Err(SocialError::LoginRequired(
+                        "X rejected the session cookies".into(),
+                    ))
+                }
+                326 | 64 => {
+                    return Err(SocialError::AccountChallenge(
+                        "X locked or suspended the account".into(),
+                    ))
+                }
                 _ => {}
             }
         }
@@ -271,7 +327,14 @@ async fn x_page_search(ctx: &Arc<BrowserContext>, request: SearchRequest) -> Res
             bodies.len()
         ));
     }
-    Ok(inbrowse_social::finish(&request, from, to, items, Auth::Cookies, warnings))
+    Ok(inbrowse_social::finish(
+        &request,
+        from,
+        to,
+        items,
+        Auth::Cookies,
+        warnings,
+    ))
 }
 
 #[cfg(test)]
@@ -280,11 +343,20 @@ mod tests {
 
     #[test]
     fn credentials_errors_do_not_echo_the_key() {
-        let err = credentials(&json!({"credentials": {"provider": "x", "key": "SECRET-123"}})).unwrap_err();
+        let err = credentials(&json!({"credentials": {"provider": "x", "key": "SECRET-123"}}))
+            .unwrap_err();
         assert!(!err.contains("SECRET-123"), "{err}");
-        let ok = credentials(&json!({"credentials": {"kind": "api_key", "provider": "x", "key": "k"}})).unwrap();
+        let ok =
+            credentials(&json!({"credentials": {"kind": "api_key", "provider": "x", "key": "k"}}))
+                .unwrap();
         assert_eq!(ok.unwrap().provider, "x");
-        assert!(!format!("{:?}", credentials(&json!({"credentials": {"kind": "api_key", "provider": "x", "key": "SECRET-123"}}))).contains("SECRET-123"));
+        assert!(!format!(
+            "{:?}",
+            credentials(
+                &json!({"credentials": {"kind": "api_key", "provider": "x", "key": "SECRET-123"}})
+            )
+        )
+        .contains("SECRET-123"));
     }
 
     /// The page route end to end against a local site: the page's own script
@@ -292,7 +364,9 @@ mod tests {
     /// the X parser finds the post in it.
     #[tokio::test(flavor = "current_thread")]
     async fn page_route_captures_script_fetched_graphql() {
-        if crate::fresh_process::run_alone("social::tests::page_route_captures_script_fetched_graphql") {
+        if crate::fresh_process::run_alone(
+            "social::tests::page_route_captures_script_fetched_graphql",
+        ) {
             return;
         }
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -302,7 +376,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             loop {
-                let Ok((mut stream, _)) = listener.accept().await else { return };
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
                 let mut buf = vec![0u8; 8192];
                 let n = stream.read(&mut buf).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buf[..n]).to_string();
@@ -325,9 +401,15 @@ mod tests {
 
         let state = crate::BrowserState::new(None, None, false);
         let url = format!("http://127.0.0.1:{port}/search");
-        let capture = capture_page(&state.context, "test", &url, |u| u.path().contains("/graphql/"), |b| !b.is_empty())
-            .await
-            .unwrap();
+        let capture = capture_page(
+            &state.context,
+            "test",
+            &url,
+            |u| u.path().contains("/graphql/"),
+            |b| !b.is_empty(),
+        )
+        .await
+        .unwrap();
         assert_eq!(capture.bodies.len(), 1, "landed on {}", capture.landed);
         let body: Value = serde_json::from_slice(&capture.bodies[0].1).unwrap();
         let items = inbrowse_social::x_items_from_graphql(&body);
@@ -339,14 +421,21 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn x_without_cookies_or_key_asks_for_login() {
         let state = crate::BrowserState::new(None, None, false);
-        let err = search(&json!({"source": "x", "query": "rust"}), &state.context).await.unwrap_err();
+        let err = search(&json!({"source": "x", "query": "rust"}), &state.context)
+            .await
+            .unwrap_err();
         assert!(err.starts_with("login_required:"), "{err}");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn bad_source_and_wrong_provider() {
         let state = crate::BrowserState::new(None, None, false);
-        let err = search(&json!({"source": "myspace", "query": "rust"}), &state.context).await.unwrap_err();
+        let err = search(
+            &json!({"source": "myspace", "query": "rust"}),
+            &state.context,
+        )
+        .await
+        .unwrap_err();
         assert!(err.starts_with("invalid:"), "{err}");
         let err = search(
             &json!({"source": "reddit", "query": "rust", "credentials": {"kind": "api_key", "provider": "x", "key": "k"}}),
@@ -354,6 +443,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.starts_with("invalid:") && !err.contains("\"k\""), "{err}");
+        assert!(
+            err.starts_with("invalid:") && !err.contains("\"k\""),
+            "{err}"
+        );
     }
 }

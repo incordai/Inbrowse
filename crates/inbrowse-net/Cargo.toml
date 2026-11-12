@@ -12,6 +12,9 @@ stealth = ["wreq", "wreq-util"]
 [dependencies]
 inbrowse-ssrf = { workspace = true }
 reqwest = { workspace = true }
+# Already in the graph through reqwest; named here so the connection retry can
+# recognise a connection closed before any response (hyper::Error) by type.
+hyper = { version = "1", default-features = false }
 tokio = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }

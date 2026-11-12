@@ -260,6 +260,7 @@ async fn unparsable_continue_rewrite_is_blocked() {
         page.settle(500).await;
         outcome = page
             .evaluate("document.title")
+            .unwrap()
             .as_str()
             .unwrap_or("")
             .to_string();
@@ -304,8 +305,14 @@ async fn on_response_callback_can_be_detached() {
     assert!(after_first >= 1, "on_response should fire while attached");
 
     // Detach it; off_response must report success and the id must be gone.
-    assert!(page.off_response(id), "off_response must remove the callback");
-    assert!(!page.off_response(id), "removing an already-removed id returns false");
+    assert!(
+        page.off_response(id),
+        "off_response must remove the callback"
+    );
+    assert!(
+        !page.off_response(id),
+        "removing an already-removed id returns false"
+    );
 
     // Second navigation: the detached callback must not fire again.
     page.goto(&base).await.unwrap();

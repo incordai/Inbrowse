@@ -1,0 +1,23 @@
+{
+  // A ready-to-build Inbrowse environment for VS Code Dev Containers and
+  // GitHub Codespaces. post-create.sh installs the native build dependencies
+  // from docs/Build-from-source.md and cargo-nextest. The first build compiles
+  // V8 bindings and takes several minutes; 8 cores are recommended.
+  "name": "Inbrowse",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "hostRequirements": {
+    "cpus": 8,
+    "memory": "16gb",
+    "storage": "64gb"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"],
+      "settings": {
+        // The crates are rustfmt-clean and CI checks it (scripts/ci/fmt.sh).
+        "[rust]": { "editor.formatOnSave": true }
+      }
+    }
+  }
+}

@@ -7,7 +7,8 @@ async fn media_query_list_delivers_changes_and_honors_listener_lifecycle() {
     rt.set_dom(inbrowse_dom::parse_html("<body></body>"));
     rt.set_viewport(1280.0, 720.0);
     rt.run_page_init();
-    rt.evaluate(r#"(() => {
+    rt.evaluate(
+        r#"(() => {
         globalThis.events = [];
         globalThis.q = matchMedia('(min-width: 1200px)');
         globalThis.legacy = e => events.push(['legacy', e.matches, e.target === q]);
@@ -19,9 +20,14 @@ async fn media_query_list_delivers_changes_and_honors_listener_lifecycle() {
         q.addEventListener('change', () => events.push(['aborted']), {signal: ac.signal});
         ac.abort();
         return null;
-    })()"#).unwrap();
+    })()"#,
+    )
+    .unwrap();
     rt.set_viewport(1000.0, 700.0);
-    assert_eq!(rt.evaluate("[q.matches, events.length]").unwrap(), json!([false, 0]));
+    assert_eq!(
+        rt.evaluate("[q.matches, events.length]").unwrap(),
+        json!([false, 0])
+    );
     // The change is delivered at a later rendering step; a single short turn
     // can miss it on a loaded host, so pump until it arrives (bounded).
     for _ in 0..100 {
@@ -30,14 +36,28 @@ async fn media_query_list_delivers_changes_and_honors_listener_lifecycle() {
             break;
         }
     }
-    rt.evaluate("(() => { q.removeListener(legacy); q.onchange = null; })()").unwrap();
+    rt.evaluate("(() => { q.removeListener(legacy); q.onchange = null; })()")
+        .unwrap();
     rt.set_viewport(1280.0, 720.0);
     rt.run_event_loop_bounded(30).await.unwrap();
-    assert_eq!(rt.evaluate("events").unwrap(), json!([
-        ["legacy", false, true], ["once", false], ["property", false]
-    ]));
-    assert_eq!(rt.evaluate("[q instanceof MediaQueryList, q instanceof EventTarget, q.matches]").unwrap(), json!([true, true, true]));
-    assert_eq!(rt.evaluate("(() => { try { new MediaQueryList(); } catch(e) { return e.name; } })()").unwrap(), json!("TypeError"));
+    assert_eq!(
+        rt.evaluate("events").unwrap(),
+        json!([
+            ["legacy", false, true],
+            ["once", false],
+            ["property", false]
+        ])
+    );
+    assert_eq!(
+        rt.evaluate("[q instanceof MediaQueryList, q instanceof EventTarget, q.matches]")
+            .unwrap(),
+        json!([true, true, true])
+    );
+    assert_eq!(
+        rt.evaluate("(() => { try { new MediaQueryList(); } catch(e) { return e.name; } })()")
+            .unwrap(),
+        json!("TypeError")
+    );
 }
 
 #[test]
@@ -45,7 +65,9 @@ fn media_query_property_handler_is_independent_and_keeps_listener_order() {
     let mut rt = InbrowseJsRuntime::new();
     rt.set_dom(inbrowse_dom::parse_html("<body></body>"));
     rt.run_page_init();
-    let result = rt.evaluate(r#"(() => {
+    let result = rt
+        .evaluate(
+            r#"(() => {
         const q = matchMedia('(min-width: 1px)'), seen = [], results = [];
         const shared = () => seen.push('shared');
         const emit = () => {
@@ -66,12 +88,17 @@ fn media_query_property_handler_is_independent_and_keeps_listener_order() {
         q.removeEventListener('change', shared);
         emit();
         return results;
-    })()"#).unwrap();
-    assert_eq!(result, json!([
-        ["shared", "shared", "last"],
-        ["shared", "replacement", "last"],
-        ["shared", "last"],
-        ["shared", "last", "shared"],
-        ["last", "shared"]
-    ]));
+    })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        json!([
+            ["shared", "shared", "last"],
+            ["shared", "replacement", "last"],
+            ["shared", "last"],
+            ["shared", "last", "shared"],
+            ["last", "shared"]
+        ])
+    );
 }

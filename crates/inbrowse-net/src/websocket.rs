@@ -41,7 +41,11 @@ pub enum WsEvent {
     Binary(Vec<u8>),
     /// The connection is finished. `clean` is false when it dropped without a
     /// closing handshake (code 1006).
-    Close { code: u16, reason: String, clean: bool },
+    Close {
+        code: u16,
+        reason: String,
+        clean: bool,
+    },
 }
 
 pub struct WsHandle {
@@ -87,7 +91,11 @@ fn forbidden(ip: std::net::IpAddr, allow_private_network: bool) -> bool {
     !(allow_private_network || crate::env_allows_private_network()) && crate::is_forbidden_ip(ip)
 }
 
-async fn connect_direct(host: &str, port: u16, allow_private_network: bool) -> Result<TcpStream, String> {
+async fn connect_direct(
+    host: &str,
+    port: u16,
+    allow_private_network: bool,
+) -> Result<TcpStream, String> {
     let addrs: Vec<_> = tokio::net::lookup_host((host, port))
         .await
         .map_err(|e| format!("DNS lookup for {host} failed: {e}"))?
@@ -110,7 +118,10 @@ async fn connect_direct(host: &str, port: u16, allow_private_network: bool) -> R
             Err(e) => last = Some(e),
         }
     }
-    Err(format!("connect to {host}:{port} failed: {}", last.map(|e| e.to_string()).unwrap_or_default()))
+    Err(format!(
+        "connect to {host}:{port} failed: {}",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }
 
 async fn connect_http_proxy(proxy: &Url, host: &str, port: u16) -> Result<TcpStream, String> {
@@ -119,7 +130,11 @@ async fn connect_http_proxy(proxy: &Url, host: &str, port: u16) -> Result<TcpStr
     let mut stream = TcpStream::connect((proxy_host, proxy_port))
         .await
         .map_err(|e| format!("connect to proxy {proxy_host}:{proxy_port} failed: {e}"))?;
-    let authority = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
     let mut request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
     if !proxy.username().is_empty() {
         let user = percent_decode(proxy.username());
@@ -128,7 +143,10 @@ async fn connect_http_proxy(proxy: &Url, host: &str, port: u16) -> Result<TcpStr
         request.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
     }
     request.push_str("\r\n");
-    stream.write_all(request.as_bytes()).await.map_err(|e| e.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     // Read the proxy's reply byte by byte so nothing past the header block is
     // consumed from what becomes the tunnelled stream.
     let mut head = Vec::with_capacity(256);
@@ -146,7 +164,10 @@ async fn connect_http_proxy(proxy: &Url, host: &str, port: u16) -> Result<TcpStr
     let status_line = String::from_utf8_lossy(&head);
     let status = status_line.split_whitespace().nth(1).unwrap_or("");
     if status != "200" {
-        return Err(format!("proxy CONNECT refused: {}", status_line.lines().next().unwrap_or("")));
+        return Err(format!(
+            "proxy CONNECT refused: {}",
+            status_line.lines().next().unwrap_or("")
+        ));
     }
     Ok(stream)
 }
@@ -159,7 +180,13 @@ async fn connect_socks_proxy(proxy: &Url, host: &str, port: u16) -> Result<TcpSt
     } else {
         let user = percent_decode(proxy.username());
         let pass = percent_decode(proxy.password().unwrap_or(""));
-        tokio_socks::tcp::Socks5Stream::connect_with_password(proxy_addr, (host, port), &user, &pass).await
+        tokio_socks::tcp::Socks5Stream::connect_with_password(
+            proxy_addr,
+            (host, port),
+            &user,
+            &pass,
+        )
+        .await
     }
     .map_err(|e| format!("SOCKS5 proxy connect failed: {e}"))?;
     Ok(stream.into_inner())
@@ -227,8 +254,14 @@ pub async fn connect(opts: WsConnectOptions) -> Result<WsHandle, String> {
 async fn connect_inner(opts: WsConnectOptions) -> Result<WsHandle, String> {
     let url = &opts.url;
     let secure = url.scheme() == "wss";
-    let host = url.host_str().ok_or("WebSocket URL has no host")?.trim_matches(|c| c == '[' || c == ']').to_string();
-    let port = url.port_or_known_default().unwrap_or(if secure { 443 } else { 80 });
+    let host = url
+        .host_str()
+        .ok_or("WebSocket URL has no host")?
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(if secure { 443 } else { 80 });
 
     let tcp = match opts.proxy.as_deref().map(Url::parse) {
         Some(Ok(proxy)) => match proxy.scheme() {
@@ -295,7 +328,9 @@ async fn connect_inner(opts: WsConnectOptions) -> Result<WsHandle, String> {
     };
     let protocol = header("sec-websocket-protocol");
     if !protocol.is_empty() && !opts.protocols.iter().any(|p| p == &protocol) {
-        return Err(format!("server selected unrequested subprotocol '{protocol}'"));
+        return Err(format!(
+            "server selected unrequested subprotocol '{protocol}'"
+        ));
     }
     let extensions = header("sec-websocket-extensions");
     let set_cookies = response
@@ -364,7 +399,13 @@ async fn connect_inner(opts: WsConnectOptions) -> Result<WsHandle, String> {
         }
     });
 
-    Ok(WsHandle { protocol, extensions, set_cookies, commands: cmd_tx, events: ev_rx })
+    Ok(WsHandle {
+        protocol,
+        extensions,
+        set_cookies,
+        commands: cmd_tx,
+        events: ev_rx,
+    })
 }
 
 #[cfg(test)]
@@ -374,7 +415,10 @@ mod tests {
     #[test]
     fn maps_ws_schemes_to_http() {
         let u = Url::parse("wss://a.test/x?y=1").unwrap();
-        assert_eq!(http_equivalent(&u).unwrap().as_str(), "https://a.test/x?y=1");
+        assert_eq!(
+            http_equivalent(&u).unwrap().as_str(),
+            "https://a.test/x?y=1"
+        );
         let u = Url::parse("ws://a.test:8080/").unwrap();
         assert_eq!(http_equivalent(&u).unwrap().as_str(), "http://a.test:8080/");
         assert!(http_equivalent(&Url::parse("https://a.test/").unwrap()).is_none());
@@ -404,11 +448,18 @@ mod tests {
                         resp.headers_mut().insert("x-seen-cookie", cookie.parse().unwrap());
                         Ok(resp)
                     };
-                    let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback).await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
+                        .await
+                        .unwrap();
                     while let Some(Ok(msg)) = ws.next().await {
                         match msg {
                             Message::Text(t) if t.as_str() == "bye" => {
-                                let _ = ws.close(Some(CloseFrame { code: CloseCode::from(4001), reason: "done".into() })).await;
+                                let _ = ws
+                                    .close(Some(CloseFrame {
+                                        code: CloseCode::from(4001),
+                                        reason: "done".into(),
+                                    }))
+                                    .await;
                             }
                             Message::Text(_) | Message::Binary(_) => {
                                 let _ = ws.send(msg).await;
@@ -439,13 +490,22 @@ mod tests {
         assert_eq!(handle.protocol, "chat");
 
         handle.commands.send(WsCommand::Text("hi".into())).unwrap();
-        handle.commands.send(WsCommand::Binary(vec![1, 2, 3])).unwrap();
+        handle
+            .commands
+            .send(WsCommand::Binary(vec![1, 2, 3]))
+            .unwrap();
         assert!(matches!(handle.events.recv().await, Some(WsEvent::Text(t)) if t == "hi"));
-        assert!(matches!(handle.events.recv().await, Some(WsEvent::Binary(b)) if b == vec![1, 2, 3]));
+        assert!(
+            matches!(handle.events.recv().await, Some(WsEvent::Binary(b)) if b == vec![1, 2, 3])
+        );
 
         handle.commands.send(WsCommand::Text("bye".into())).unwrap();
         match handle.events.recv().await {
-            Some(WsEvent::Close { code, reason, clean }) => {
+            Some(WsEvent::Close {
+                code,
+                reason,
+                clean,
+            }) => {
                 assert_eq!((code, reason.as_str(), clean), (4001, "done", true));
             }
             other => panic!("expected close, got {other:?}"),

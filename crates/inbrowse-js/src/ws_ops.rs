@@ -46,7 +46,14 @@ fn record(state: &OpState, method: &str, params: serde_json::Value) {
     }
 }
 
-fn frame_event(state: &OpState, method: &str, request_id: &str, opcode: u8, mask: bool, payload: String) {
+fn frame_event(
+    state: &OpState,
+    method: &str,
+    request_id: &str,
+    opcode: u8,
+    mask: bool,
+    payload: String,
+) {
     record(
         state,
         method,
@@ -97,7 +104,11 @@ pub(crate) async fn op_ws_open(
             .blocked_urls
             .iter()
             .any(|p| p == "*" || url.as_str().contains(p.as_str()));
-        (gs.cookie_jar.clone(), gs.http_client.clone(), (blocked, stealth))
+        (
+            gs.cookie_jar.clone(),
+            gs.http_client.clone(),
+            (blocked, stealth),
+        )
     };
     let (blocked, stealth) = blocked;
     if blocked {
@@ -181,7 +192,11 @@ pub(crate) async fn op_ws_open(
                 "Network.webSocketFrameError",
                 serde_json::json!({"requestId": request_id, "timestamp": now(), "errorMessage": message}),
             );
-            record(&state, "Network.webSocketClosed", serde_json::json!({"requestId": request_id, "timestamp": now()}));
+            record(
+                &state,
+                "Network.webSocketClosed",
+                serde_json::json!({"requestId": request_id, "timestamp": now()}),
+            );
             return Err(js_error(message));
         }
     };
@@ -197,10 +212,16 @@ pub(crate) async fn op_ws_open(
     response_headers.insert("Upgrade".into(), "websocket".into());
     response_headers.insert("Connection".into(), "Upgrade".into());
     if !handle.protocol.is_empty() {
-        response_headers.insert("Sec-WebSocket-Protocol".into(), handle.protocol.clone().into());
+        response_headers.insert(
+            "Sec-WebSocket-Protocol".into(),
+            handle.protocol.clone().into(),
+        );
     }
     if !handle.extensions.is_empty() {
-        response_headers.insert("Sec-WebSocket-Extensions".into(), handle.extensions.clone().into());
+        response_headers.insert(
+            "Sec-WebSocket-Extensions".into(),
+            handle.extensions.clone().into(),
+        );
     }
     record(
         &state,
@@ -236,9 +257,19 @@ pub(crate) fn op_ws_send_text(state: &mut OpState, id: u32, #[string] data: &str
         return false;
     };
     let request_id = conn.request_id.clone();
-    let sent = conn.commands.send(WsCommand::Text(data.to_string())).is_ok();
+    let sent = conn
+        .commands
+        .send(WsCommand::Text(data.to_string()))
+        .is_ok();
     if sent {
-        frame_event(state, "Network.webSocketFrameSent", &request_id, 1, true, data.to_string());
+        frame_event(
+            state,
+            "Network.webSocketFrameSent",
+            &request_id,
+            1,
+            true,
+            data.to_string(),
+        );
     }
     sent
 }
@@ -251,7 +282,14 @@ pub(crate) fn op_ws_send_binary(state: &mut OpState, id: u32, #[buffer] data: &[
     let request_id = conn.request_id.clone();
     let sent = conn.commands.send(WsCommand::Binary(data.to_vec())).is_ok();
     if sent {
-        frame_event(state, "Network.webSocketFrameSent", &request_id, 2, true, BASE64.encode(data));
+        frame_event(
+            state,
+            "Network.webSocketFrameSent",
+            &request_id,
+            2,
+            true,
+            BASE64.encode(data),
+        );
     }
     sent
 }
@@ -285,15 +323,33 @@ pub(crate) async fn op_ws_recv(state: Rc<RefCell<OpState>>, id: u32) -> String {
     let event = events.lock().await.recv().await;
     let json = match event {
         Some(WsEvent::Text(d)) => {
-            frame_event(&state.borrow(), "Network.webSocketFrameReceived", &request_id, 1, false, d.clone());
+            frame_event(
+                &state.borrow(),
+                "Network.webSocketFrameReceived",
+                &request_id,
+                1,
+                false,
+                d.clone(),
+            );
             serde_json::json!({"t": "text", "d": d})
         }
         Some(WsEvent::Binary(b)) => {
             let d = BASE64.encode(b);
-            frame_event(&state.borrow(), "Network.webSocketFrameReceived", &request_id, 2, false, d.clone());
+            frame_event(
+                &state.borrow(),
+                "Network.webSocketFrameReceived",
+                &request_id,
+                2,
+                false,
+                d.clone(),
+            );
             serde_json::json!({"t": "binary", "d": d})
         }
-        Some(WsEvent::Close { code, reason, clean }) => {
+        Some(WsEvent::Close {
+            code,
+            reason,
+            clean,
+        }) => {
             serde_json::json!({"t": "close", "code": code, "reason": reason, "clean": clean})
         }
         None => serde_json::json!({"t": "close", "code": 1006, "reason": "", "clean": false}),
@@ -301,8 +357,11 @@ pub(crate) async fn op_ws_recv(state: Rc<RefCell<OpState>>, id: u32) -> String {
     if json["t"] == "close" {
         let mut state = state.borrow_mut();
         registry(&mut state).conns.remove(&id);
-        record(&state, "Network.webSocketClosed", serde_json::json!({"requestId": request_id, "timestamp": now()}));
+        record(
+            &state,
+            "Network.webSocketClosed",
+            serde_json::json!({"requestId": request_id, "timestamp": now()}),
+        );
     }
     json.to_string()
 }
-

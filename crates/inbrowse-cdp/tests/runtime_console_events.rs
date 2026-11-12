@@ -254,3 +254,42 @@ async fn runtime_events_only_reach_sessions_while_runtime_is_enabled() {
     assert_eq!(retained["result"]["value"], 0.0);
     assert!(events(&ctx, "Runtime.consoleAPICalled").is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unhandled_rejection_emits_one_exception_thrown_in_promise() {
+    let mut ctx = CdpContext::new();
+    let (_, session) = create_and_attach(&mut ctx).await;
+    cdp(&mut ctx, 1, "Runtime.enable", json!({}), Some(&session)).await;
+    ctx.pending_events.clear();
+
+    let url = concat!(
+        "data:text/html,<script>",
+        "Promise.reject(new Error('rejected'));",
+        "Promise.reject(new Error('handled')).catch(function(){});",
+        "</script>"
+    );
+    cdp(
+        &mut ctx,
+        2,
+        "Page.navigate",
+        json!({"url": url, "waitUntil": "load"}),
+        Some(&session),
+    )
+    .await;
+    cdp(
+        &mut ctx,
+        3,
+        "Runtime.evaluate",
+        json!({"expression": "new Promise(resolve => setTimeout(resolve, 50))", "awaitPromise": true}),
+        Some(&session),
+    )
+    .await;
+
+    let exceptions = events(&ctx, "Runtime.exceptionThrown");
+    assert_eq!(exceptions.len(), 1, "exception events: {exceptions:?}");
+    let details = &exceptions[0].1["exceptionDetails"];
+    assert_eq!(details["text"], "Uncaught (in promise)");
+    assert!(details["exception"]["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("Error: rejected")));
+}

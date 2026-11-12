@@ -18,7 +18,10 @@ use serde_json::Value;
 use url::Url;
 
 use crate::http::{self, f, i, s, Req};
-use crate::{time, Auth, Comment, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session, SocialError, Sort};
+use crate::{
+    time, Auth, Comment, Credentials, DateConfidence, Engagement, Item, SearchRequest, Session,
+    SocialError, Sort,
+};
 
 const SITE: &str = "Reddit";
 const GAP: Duration = Duration::from_millis(1000);
@@ -33,7 +36,11 @@ fn tokens() -> &'static Mutex<HashMap<String, (String, Instant)>> {
 }
 
 async fn app_token(session: &Session, c: &Credentials) -> Result<String, SocialError> {
-    if let Some((token, until)) = tokens().lock().unwrap_or_else(|e| e.into_inner()).get(&c.key) {
+    if let Some((token, until)) = tokens()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&c.key)
+    {
         if *until > Instant::now() {
             return Ok(token.clone());
         }
@@ -41,21 +48,33 @@ async fn app_token(session: &Session, c: &Credentials) -> Result<String, SocialE
     let secret = c.secret.as_deref().unwrap_or("");
     let basic = base64::engine::general_purpose::STANDARD.encode(format!("{}:{secret}", c.key));
     let req = Req {
-        headers: vec![("Authorization", format!("Basic {basic}")), ("Accept", "application/json".into())],
+        headers: vec![
+            ("Authorization", format!("Basic {basic}")),
+            ("Accept", "application/json".into()),
+        ],
         cookies: false,
         form: Some("grant_type=client_credentials".into()),
         min_gap: GAP,
         login_cookie: None,
     };
-    let body = http::json(session, &http::url("https://www.reddit.com/api/v1/access_token")?, req, SITE).await?;
+    let body = http::json(
+        session,
+        &http::url("https://www.reddit.com/api/v1/access_token")?,
+        req,
+        SITE,
+    )
+    .await?;
     let token = s(&body, "access_token").ok_or_else(|| {
         SocialError::LoginRequired("Reddit did not accept the app id and secret".into())
     })?;
     let ttl = i(&body, "expires_in").unwrap_or(3600).max(120) as u64;
-    tokens()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(c.key.clone(), (token.clone(), Instant::now() + Duration::from_secs(ttl - 60)));
+    tokens().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        c.key.clone(),
+        (
+            token.clone(),
+            Instant::now() + Duration::from_secs(ttl - 60),
+        ),
+    );
     Ok(token)
 }
 
@@ -66,14 +85,25 @@ enum Route {
 
 async fn route(session: &Session, credentials: Option<&Credentials>) -> Result<Route, SocialError> {
     match credentials {
-        Some(c) if c.provider.eq_ignore_ascii_case("reddit") => Ok(Route::Api(app_token(session, c).await?)),
-        Some(c) => Err(SocialError::Invalid(format!("credentials for {} cannot be used with Reddit", c.provider))),
+        Some(c) if c.provider.eq_ignore_ascii_case("reddit") => {
+            Ok(Route::Api(app_token(session, c).await?))
+        }
+        Some(c) => Err(SocialError::Invalid(format!(
+            "credentials for {} cannot be used with Reddit",
+            c.provider
+        ))),
         None => {
             // Reddit sets other cookies on anonymous visits; only this one
             // means a signed-in account.
-            let signed_in = session.cookie(&http::url("https://www.reddit.com/")?, LOGIN_COOKIE).is_some();
+            let signed_in = session
+                .cookie(&http::url("https://www.reddit.com/")?, LOGIN_COOKIE)
+                .is_some();
             Ok(Route::Site {
-                auth: if signed_in { Auth::Cookies } else { Auth::Anonymous },
+                auth: if signed_in {
+                    Auth::Cookies
+                } else {
+                    Auth::Anonymous
+                },
             })
         }
     }
@@ -86,7 +116,10 @@ impl Route {
             Route::Api(token) => Ok((
                 http::url(&format!("https://oauth.reddit.com{path}"))?,
                 Req {
-                    headers: vec![("Authorization", format!("bearer {token}")), ("Accept", "application/json".into())],
+                    headers: vec![
+                        ("Authorization", format!("bearer {token}")),
+                        ("Accept", "application/json".into()),
+                    ],
                     cookies: false,
                     form: None,
                     min_gap: GAP,
@@ -133,7 +166,11 @@ fn post(d: &Value) -> Option<Item> {
         author: s(d, "author").filter(|a| a != "[deleted]"),
         community: s(d, "subreddit"),
         published_at: secs.map(time::to_rfc3339),
-        date_confidence: if secs.is_some() { DateConfidence::Exact } else { DateConfidence::Unknown },
+        date_confidence: if secs.is_some() {
+            DateConfidence::Exact
+        } else {
+            DateConfidence::Unknown
+        },
         engagement: Engagement {
             score: i(d, "score"),
             comments: i(d, "num_comments"),
@@ -150,7 +187,12 @@ fn listing_posts(listing: &Value) -> Vec<Item> {
     listing
         .pointer("/data/children")
         .and_then(Value::as_array)
-        .map(|c| c.iter().filter_map(|child| child.get("data")).filter_map(post).collect())
+        .map(|c| {
+            c.iter()
+                .filter_map(|child| child.get("data"))
+                .filter_map(post)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -193,16 +235,24 @@ pub(crate) async fn search(
 
 /// The post id from `/r/<sub>/comments/<id>/...`, `/comments/<id>` or redd.it/<id>.
 fn post_id(url: &Url) -> Result<String, SocialError> {
-    let parts: Vec<&str> = url.path_segments().map(|s| s.filter(|p| !p.is_empty()).collect()).unwrap_or_default();
+    let parts: Vec<&str> = url
+        .path_segments()
+        .map(|s| s.filter(|p| !p.is_empty()).collect())
+        .unwrap_or_default();
     let host = url.host_str().unwrap_or("");
     let id = if host.ends_with("redd.it") {
         parts.first().copied()
     } else {
-        parts.iter().position(|p| *p == "comments").and_then(|i| parts.get(i + 1).copied())
+        parts
+            .iter()
+            .position(|p| *p == "comments")
+            .and_then(|i| parts.get(i + 1).copied())
     };
     id.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()))
         .map(String::from)
-        .ok_or_else(|| SocialError::Invalid("expected a Reddit post URL (/r/<sub>/comments/<id>/...)".into()))
+        .ok_or_else(|| {
+            SocialError::Invalid("expected a Reddit post URL (/r/<sub>/comments/<id>/...)".into())
+        })
 }
 
 pub(crate) async fn thread(
@@ -221,13 +271,19 @@ pub(crate) async fn thread(
         .append_pair("depth", "1")
         .append_pair("raw_json", "1");
     let body = http::json(session, &api, options, SITE).await?;
-    let parts = body.as_array().ok_or_else(|| SocialError::Failed("Reddit: unexpected thread shape".into()))?;
+    let parts = body
+        .as_array()
+        .ok_or_else(|| SocialError::Failed("Reddit: unexpected thread shape".into()))?;
     let mut item = parts
         .first()
         .map(listing_posts)
         .and_then(|mut p| (!p.is_empty()).then(|| p.remove(0)))
         .ok_or_else(|| SocialError::Failed("Reddit: thread without a post".into()))?;
-    if let Some(children) = parts.get(1).and_then(|l| l.pointer("/data/children")).and_then(Value::as_array) {
+    if let Some(children) = parts
+        .get(1)
+        .and_then(|l| l.pointer("/data/children"))
+        .and_then(Value::as_array)
+    {
         item.top_comments = children
             .iter()
             .filter(|c| c.get("kind").and_then(Value::as_str) == Some("t1"))
@@ -255,7 +311,10 @@ mod tests {
     fn post_ids_and_buckets() {
         let u = Url::parse("https://www.reddit.com/r/rust/comments/1abcde/some_title/").unwrap();
         assert_eq!(post_id(&u).unwrap(), "1abcde");
-        assert_eq!(post_id(&Url::parse("https://redd.it/1abcde").unwrap()).unwrap(), "1abcde");
+        assert_eq!(
+            post_id(&Url::parse("https://redd.it/1abcde").unwrap()).unwrap(),
+            "1abcde"
+        );
         assert!(post_id(&Url::parse("https://www.reddit.com/r/rust/").unwrap()).is_err());
         assert_eq!(bucket(30), "month");
         assert_eq!(bucket(7), "week");
@@ -272,9 +331,15 @@ mod tests {
         .unwrap();
         let items = listing_posts(&v);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].url, "https://www.reddit.com/r/rust/comments/1abcde/hello/");
+        assert_eq!(
+            items[0].url,
+            "https://www.reddit.com/r/rust/comments/1abcde/hello/"
+        );
         assert_eq!(items[0].text, "https://example.com/a");
         assert_eq!(items[0].engagement.upvote_ratio, Some(0.97));
-        assert_eq!(items[0].published_at.as_deref(), Some("2026-10-13T10:27:00Z"));
+        assert_eq!(
+            items[0].published_at.as_deref(),
+            Some("2026-10-13T10:27:00Z")
+        );
     }
 }

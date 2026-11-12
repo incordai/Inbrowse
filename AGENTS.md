@@ -50,7 +50,7 @@ runs each test in its own process, which is the only supported way.
 
 The authoritative behavioral gate is the **obstacle course** in the companion
 repo [`Inbrowse-benchmark`](https://github.com/incordai/Inbrowse-benchmark)
-(33 capability + speed stages, must stay 33/33):
+(38 capability + speed stages, must stay 38/38):
 
 ```bash
 INBROWSE_BIN=./target/release/inbrowse python3 obstacle-course/run.py --runs 1 --warmup 0
@@ -67,15 +67,15 @@ For any code change:
 1. Run focused release-mode nextest coverage for the crates and repro involved.
 2. Run `cargo nextest run --release --features render --no-fail-fast`.
 3. Run the exact release build shown above.
-4. The obstacle course still reports **33/33**.
+4. The obstacle course still reports **38/38**.
 5. For render changes, run deterministic fixtures and broad top/bottom real-site
    captures using the methodology below.
 6. For stealth changes, re-test with `--stealth` (a non-stealth binary won't
    exercise the `wreq` path).
 
-Do not bulk-run `cargo fmt`: the tree is not rustfmt-clean, so a blanket format
-produces a huge unrelated diff. Match the surrounding style in the files you
-edit instead.
+Format with `scripts/ci/fmt.sh` before committing; CI runs
+`scripts/ci/fmt.sh --check`. Never use `cargo fmt --all`: it also rewrites the
+vendored crates under `vendor/`, which must stay byte-for-byte upstream.
 
 ## Architecture
 
@@ -145,9 +145,12 @@ screenshots or reports.
   pass reference-node vs parent nid in a way that's easy to break. If you touch
   mutation methods, verify `before()`, `after()`, `replaceWith()`, and
   `replaceChild()` on connected elements.
-- **Multi-statement `--eval` starting with `const` returns `null`** (V8 gives
-  `const` an empty completion value). Wrap snippets in an IIFE:
-  `(function(){ ...; return result; })()`.
+- **Two evaluation readings.** User-typed JavaScript (`fetch --eval`, scrape,
+  MCP `browser_evaluate`, SDK `evaluate_awaited`) goes through
+  `Page::evaluate_checked`: DevTools console rules, completion values, promises
+  awaited, errors are errors. Engine-written probes use `Page::evaluate`
+  (block or function body, returns `Result`); use `evaluate_or_null` only where
+  a failed probe legitimately means "no value".
 - **`canAccessOpener` must be in every `TargetInfo` payload**, or strict CDP
   clients (chromiumoxide) panic.
 - **The DOM reparenting guards in `tree.rs` are load-bearing.** `append_child` /

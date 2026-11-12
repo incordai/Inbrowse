@@ -76,6 +76,102 @@ fn main() {
     println!("cargo:rustc-env=INBROWSE_BUILD_VERSION={version}");
 
     delay_load_media_dlls();
+    #[cfg(windows)]
+    windows_resources(&version);
+}
+
+/// Windows shows a binary's icon in Explorer and its version resource in
+/// Properties > Details and Task Manager. Without one, `inbrowse.exe` has a
+/// generic icon and blank name, company and version fields.
+#[cfg(windows)]
+fn windows_resources(version: &str) {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR");
+    let icon = std::path::Path::new(&manifest_dir).join("../../assets/inbrowse.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let icon = icon
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("{}: {err}", icon.display()));
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("Cargo sets OUT_DIR"));
+
+    for (bin, description) in [
+        ("inbrowse", "Inbrowse"),
+        ("inbrowse-worker", "Inbrowse scrape worker"),
+    ] {
+        let rc = out_dir.join(format!("{bin}.rc"));
+        std::fs::write(&rc, resource_script(bin, description, version, &icon))
+            .unwrap_or_else(|err| panic!("{}: {err}", rc.display()));
+        match embed_resource::compile_for(&rc, [bin], embed_resource::NONE) {
+            embed_resource::CompilationResult::NotAttempted(why) => {
+                println!(
+                    "cargo:warning=no Windows resource compiler, {bin}.exe gets no icon: {why}"
+                );
+            }
+            embed_resource::CompilationResult::Failed(why) => {
+                panic!("compiling {}: {why}", rc.display());
+            }
+            embed_resource::CompilationResult::Ok
+            | embed_resource::CompilationResult::NotWindows => {}
+        }
+    }
+}
+
+/// A resource script with the icon and a VERSIONINFO block. The numeric
+/// version is the leading `major.minor.patch` of `version` (a tag such as
+/// `0.3.1`, or `0.3.1-dev+sha` for local builds); the string fields keep it whole.
+#[cfg(windows)]
+fn resource_script(bin: &str, description: &str, version: &str, icon: &std::path::Path) -> String {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .take(3)
+        .map(|part| part.parse::<u16>().unwrap_or(0));
+    let [major, minor, patch] = [(); 3].map(|_| parts.next().unwrap_or(0));
+    // `canonicalize` gives a `\\?\` verbatim path; rc.exe wants a plain one,
+    // with backslashes escaped inside the string literal.
+    let icon = icon.to_string_lossy();
+    let icon = icon
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&icon)
+        .replace('\\', r"\\");
+    let text = |value: &str| value.replace('"', "\"\"");
+    let (version, description) = (text(version), text(description));
+    format!(
+        r#"#include <winver.h>
+
+1 ICON "{icon}"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION {major},{minor},{patch},0
+PRODUCTVERSION {major},{minor},{patch},0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Incord AI"
+            VALUE "FileDescription", "{description}"
+            VALUE "FileVersion", "{version}"
+            VALUE "InternalName", "{bin}"
+            VALUE "LegalCopyright", "Copyright 2026 Incord AI"
+            VALUE "OriginalFilename", "{bin}.exe"
+            VALUE "ProductName", "Inbrowse"
+            VALUE "ProductVersion", "{version}"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+"#
+    )
 }
 
 /// The video decoder crate (moq-video, via inbrowse-media) imports Media

@@ -28,21 +28,19 @@ fn default_background_color(params: &Value) -> Result<Option<[u8; 4]>, String> {
     let Some(color) = params.get("color") else {
         return Ok(None);
     };
-    let color = color.as_object().ok_or(
-        "Emulation.setDefaultBackgroundColorOverride color must be an RGBA object",
-    )?;
+    let color = color
+        .as_object()
+        .ok_or("Emulation.setDefaultBackgroundColorOverride color must be an RGBA object")?;
     let channel = |name: &str| -> Result<u8, String> {
         let value = color.get(name).and_then(Value::as_i64).ok_or_else(|| {
-            format!(
-                "Emulation.setDefaultBackgroundColorOverride requires integer color.{name}"
-            )
+            format!("Emulation.setDefaultBackgroundColorOverride requires integer color.{name}")
         })?;
         Ok(value.clamp(0, 255) as u8)
     };
     let alpha = match color.get("a") {
-        Some(value) => value.as_f64().ok_or(
-            "Emulation.setDefaultBackgroundColorOverride color.a must be a number",
-        )?,
+        Some(value) => value
+            .as_f64()
+            .ok_or("Emulation.setDefaultBackgroundColorOverride color.a must be a number")?,
         None => 1.0,
     };
     if !alpha.is_finite() {
@@ -67,15 +65,22 @@ pub async fn handle(
     match method {
         "setEmulatedMedia" => {
             let features = match params.get("features") {
-                Some(features) => features.as_array().ok_or("Emulation.setEmulatedMedia features must be an array")?.as_slice(),
+                Some(features) => features
+                    .as_array()
+                    .ok_or("Emulation.setEmulatedMedia features must be an array")?
+                    .as_slice(),
                 None => &[],
             };
             let mut reduce = false;
             let mut dark = false;
             for feature in features {
-                let name = feature.get("name").and_then(Value::as_str)
+                let name = feature
+                    .get("name")
+                    .and_then(Value::as_str)
                     .ok_or("Media feature requires a string name")?;
-                let value = feature.get("value").and_then(Value::as_str)
+                let value = feature
+                    .get("value")
+                    .and_then(Value::as_str)
                     .ok_or("Media feature requires a string value")?;
                 match name {
                     "prefers-reduced-motion" => {
@@ -93,7 +98,8 @@ pub async fn handle(
                     _ => {}
                 }
             }
-            ctx.get_session_page_mut(session_id).ok_or("No page for session")?
+            ctx.get_session_page_mut(session_id)
+                .ok_or("No page for session")?
                 .set_media_preferences(reduce, dark);
             Ok(json!({}))
         }
@@ -189,6 +195,17 @@ pub async fn handle(
             page.set_locale_override((!locale.is_empty()).then(|| locale.to_string()));
             Ok(json!({}))
         }
+        "setTimezoneOverride" => {
+            let zone = params
+                .get("timezoneId")
+                .and_then(Value::as_str)
+                .ok_or("Emulation.setTimezoneOverride requires timezoneId")?;
+            let page = ctx
+                .get_session_page_mut(session_id)
+                .ok_or("No page for session")?;
+            page.set_time_zone_override(Some(zone.to_string()))?;
+            Ok(json!({}))
+        }
         // Touch emulation does not affect layout yet, but acknowledging it is
         // compatible with clients that pair it with a metrics override.
         "setTouchEmulationEnabled" => Ok(json!({})),
@@ -210,12 +227,16 @@ mod tests {
             {"name": "prefers-color-scheme", "value": "dark"},
             {"name": "prefers-reduced-motion", "value": "reduce"}
         ]});
-        handle("setEmulatedMedia", &both, &mut ctx, &session).await.unwrap();
+        handle("setEmulatedMedia", &both, &mut ctx, &session)
+            .await
+            .unwrap();
         let script = "return [matchMedia('(prefers-color-scheme:dark)').matches, matchMedia('(prefers-reduced-motion:reduce)').matches];";
         for _ in 0..2 {
             let page = ctx.get_session_page_mut(&session).unwrap();
-            page.navigate("data:text/html,<body>probe</body>").await.unwrap();
-            assert_eq!(page.evaluate(script), json!([true, true]));
+            page.navigate("data:text/html,<body>probe</body>")
+                .await
+                .unwrap();
+            assert_eq!(page.evaluate(script).unwrap(), json!([true, true]));
         }
         for invalid in [
             json!({"features": null}),
@@ -223,21 +244,66 @@ mod tests {
             json!({"features": [{"name":"prefers-color-scheme", "value":"light"}, {"name":"prefers-reduced-motion", "value":"invalid"}]}),
             json!({"features": [{"name":"prefers-color-scheme", "value":"invalid"}]}),
         ] {
-            assert!(handle("setEmulatedMedia", &invalid, &mut ctx, &session).await.is_err());
-            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([true, true]));
+            assert!(handle("setEmulatedMedia", &invalid, &mut ctx, &session)
+                .await
+                .is_err());
+            assert_eq!(
+                ctx.get_session_page_mut(&session)
+                    .unwrap()
+                    .evaluate(script)
+                    .unwrap(),
+                json!([true, true])
+            );
         }
-        handle("setEmulatedMedia", &json!({}), &mut ctx, &session).await.unwrap();
-        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
-        handle("setEmulatedMedia", &both, &mut ctx, &session).await.unwrap();
+        handle("setEmulatedMedia", &json!({}), &mut ctx, &session)
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.get_session_page_mut(&session)
+                .unwrap()
+                .evaluate(script)
+                .unwrap(),
+            json!([false, false])
+        );
+        handle("setEmulatedMedia", &both, &mut ctx, &session)
+            .await
+            .unwrap();
         for value in ["light", "no-preference", ""] {
-            handle("setEmulatedMedia", &json!({"features":[{"name":"prefers-color-scheme", "value":value}]}), &mut ctx, &session).await.unwrap();
-            assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
-            handle("setEmulatedMedia", &both, &mut ctx, &session).await.unwrap();
+            handle(
+                "setEmulatedMedia",
+                &json!({"features":[{"name":"prefers-color-scheme", "value":value}]}),
+                &mut ctx,
+                &session,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                ctx.get_session_page_mut(&session)
+                    .unwrap()
+                    .evaluate(script)
+                    .unwrap(),
+                json!([false, false])
+            );
+            handle("setEmulatedMedia", &both, &mut ctx, &session)
+                .await
+                .unwrap();
         }
-        handle("setEmulatedMedia", &json!({"features":[]}), &mut ctx, &session).await.unwrap();
-        assert_eq!(ctx.get_session_page_mut(&session).unwrap().evaluate(script), json!([false, false]));
+        handle(
+            "setEmulatedMedia",
+            &json!({"features":[]}),
+            &mut ctx,
+            &session,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ctx.get_session_page_mut(&session)
+                .unwrap()
+                .evaluate(script)
+                .unwrap(),
+            json!([false, false])
+        );
     }
-
 
     #[tokio::test]
     async fn device_metrics_override_updates_page_and_window_viewport() {
@@ -272,7 +338,8 @@ mod tests {
                 "return [innerWidth, innerHeight, visualViewport.width,\
                          visualViewport.height, screen.width, screen.height,\
                          screen.availWidth, screen.availHeight, devicePixelRatio];"
-            ),
+            )
+            .unwrap(),
             json!([1024, 768, 1024, 768, 1440, 900, 1440, 900, 2])
         );
     }
@@ -310,7 +377,8 @@ mod tests {
         assert_eq!(
             ctx.get_session_page_mut(&session_id)
                 .unwrap()
-                .evaluate("[navigator.language, navigator.languages]"),
+                .evaluate("[navigator.language, navigator.languages]")
+                .unwrap(),
             json!(["de-DE", ["de-DE", "de"]])
         );
 
@@ -325,7 +393,8 @@ mod tests {
         assert_eq!(
             ctx.get_session_page_mut(&session_id)
                 .unwrap()
-                .evaluate("[navigator.language, navigator.languages]"),
+                .evaluate("[navigator.language, navigator.languages]")
+                .unwrap(),
             json!(["de-DE", ["de-DE", "de"]])
         );
     }
@@ -364,7 +433,8 @@ mod tests {
             page.evaluate(
                 "return [innerWidth, innerHeight, screen.width !== 1111,\
                          screen.height !== 777];"
-            ),
+            )
+            .unwrap(),
             json!([800, 600, true, true])
         );
     }
@@ -427,9 +497,11 @@ mod tests {
         let page = ctx.get_session_page_mut(&session_id).unwrap();
         page.set_viewport((1111.0, 777.0));
         page.set_device_scale_factor(1.5);
-        let baseline_screen = page.evaluate(
-            "return [screen.width, screen.height, screen.availWidth, screen.availHeight];",
-        );
+        let baseline_screen = page
+            .evaluate(
+                "return [screen.width, screen.height, screen.availWidth, screen.availHeight];",
+            )
+            .unwrap();
 
         handle(
             "setDeviceMetricsOverride",
@@ -484,7 +556,8 @@ mod tests {
         assert_eq!(
             page.evaluate(
                 "return [screen.width, screen.height, screen.availWidth, screen.availHeight];"
-            ),
+            )
+            .unwrap(),
             baseline_screen
         );
     }
@@ -544,7 +617,8 @@ mod tests {
         assert_eq!(
             page.evaluate(
                 "return [screen.width, screen.height, screen.availWidth, screen.availHeight];"
-            ),
+            )
+            .unwrap(),
             json!([700, 500, 700, 500])
         );
     }

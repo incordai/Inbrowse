@@ -54,8 +54,9 @@ async fn textarea_idl_matches_browser_semantics() {
     let mut page = browser.new_page().await.unwrap();
     page.goto(&base).await.unwrap();
 
-    let probes = page.evaluate(
-        r#"(function () {
+    let probes = page
+        .evaluate(
+            r#"(function () {
             var t = document.getElementById('t');
             return {
                 rows_default: t.rows,
@@ -69,7 +70,8 @@ async fn textarea_idl_matches_browser_semantics() {
                 rows_invalid: (t.setAttribute('rows', '0'), t.rows),
             };
         })()"#,
-    );
+        )
+        .unwrap();
 
     assert_eq!(probes["rows_default"], 2);
     assert_eq!(probes["cols_default"], 20);
@@ -94,8 +96,9 @@ async fn textarea_gets_intrinsic_control_box() {
     let mut page = browser.new_page().await.unwrap();
     page.goto(&base).await.unwrap();
 
-    let probes = page.evaluate(
-        r#"(function () {
+    let probes = page
+        .evaluate(
+            r#"(function () {
             var box = function (id) {
                 var r = document.getElementById(id).getBoundingClientRect();
                 return r.width.toFixed(0) + 'x' + r.height.toFixed(0);
@@ -109,7 +112,8 @@ async fn textarea_gets_intrinsic_control_box() {
                 value_roundtrip: (t.value = 'hi', t.value),
             };
         })()"#,
-    );
+        )
+        .unwrap();
 
     // Chromium reference: an empty cols=20 rows=2 control is 168x36; each
     // extra row adds one 15px control line; authored height wins.

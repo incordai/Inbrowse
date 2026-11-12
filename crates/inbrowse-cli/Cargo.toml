@@ -49,6 +49,10 @@ serde_json = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows executables carry the Inbrowse icon and file details (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.12"
+
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 tokio-tungstenite = { workspace = true }

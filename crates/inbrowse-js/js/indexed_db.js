@@ -257,6 +257,15 @@ function _idbValidatePath(path) {
 function _idbActive(state) {
   return state.state === 'active' && state.task === __inbrowseCore.ops.op_indexed_db_task();
 }
+
+// Whether a transaction is committing on its own: the task it was last active
+// in has ended with no request queued, so its commit runs in its next posted
+// task (_idbRun). Like Chrome, it already counts as finished then, whatever
+// timer or other task happens to run before that commit.
+function _idbFinishing(state) {
+  return state.state !== 'finished' && !state.committing && !state.requests.length
+    && state.task !== __inbrowseCore.ops.op_indexed_db_task();
+}
 class IDBTransaction {
   constructor(token, db, names, mode, id = null, schema = null) {
     const d = _idbSlot(db);
@@ -273,7 +282,7 @@ class IDBTransaction {
   get objectStoreNames() { const s = _idbSlot(this); return _idbNames(() => s.mode === 'versionchange' ? s.schema.map(x => x.name) : s.names); }
   objectStore(name) {
     const s = _idbSlot(this); name = String(name);
-    if (s.state === 'finished') throw _idbError('InvalidStateError');
+    if (s.state === 'finished' || _idbFinishing(s)) throw _idbError('InvalidStateError');
     const schemas = s.schema || _idbSlot(s.db).schema;
     if (!(s.mode === 'versionchange' || s.names.includes(name)) || !schemas.some(x => x.name === name)) throw _idbError('NotFoundError');
     if (!s.stores.has(name)) s.stores.set(name, new IDBObjectStore(_idbToken,this,name));

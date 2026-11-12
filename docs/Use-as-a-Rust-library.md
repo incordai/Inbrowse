@@ -31,12 +31,12 @@ async fn main() -> anyhow::Result<()> {
     page.goto("https://example.com").await?;
 
     println!("URL: {}", page.url());
-    println!("HTML bytes: {}", page.content().len());
+    println!("HTML bytes: {}", page.content()?.len());
 
     let el = page.wait_for_selector("h1", Duration::from_secs(5)).await?;
-    println!("Heading: {}", el.text());
+    println!("Heading: {}", el.text()?);
 
-    let title = page.evaluate("document.title");
+    let title = page.evaluate("document.title")?;
     println!("Title: {}", title);
 
     Ok(())
@@ -51,8 +51,15 @@ async fn main() -> anyhow::Result<()> {
 - `goto(url).await` navigate and wait for load
 - `content()` rendered HTML
 - `url()` current URL
-- `evaluate(js)` run JavaScript, returns a `serde_json::Value`
-- `query_selector(css)` first match as an `Element`, or `None`
+- `evaluate(js)` run JavaScript and return its value as `serde_json::Value`:
+  an object literal, statements whose last value is the result, or a function
+  body when the source has a top-level `return`. A thrown or syntax error is
+  `Error::JsEval`; a returned promise is not awaited.
+- `evaluate_awaited(js, Duration).await` the console reading used by
+  `fetch --eval` and MCP: a returned promise is awaited and the duration bounds
+  the run and the wait; running out of time is `Error::Timeout`
+- `query_selector(css)` first match as an `Element`, `Ok(None)` when nothing
+  matches
 - `wait_for_selector(css, Duration).await` poll until present
 - `settle(max_ms).await` drive the event loop so async work (`fetch`, timers) completes
 - `on_request(cb)` / `on_response(cb)` passive callbacks for every request and response
@@ -60,6 +67,9 @@ async fn main() -> anyhow::Result<()> {
 - `add_preload_script(js)` run a script before the page's own scripts
 
 `Element`: `text()`, `attribute(name)`, `click()`.
+
+`content()`, `query_selector()`, `text()` and `attribute()` return a `Result`:
+a JavaScript failure is an error, never an empty string or `None`.
 
 `CookieStore`: `set`, `get_all`, `get_for_url`, `save_to_file`, `load_from_file`.
 

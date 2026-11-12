@@ -40,6 +40,15 @@ pub fn ua_style(tag: &str) -> LayoutStyle {
         | "mark" | "abbr" | "cite" | "var" | "dfn" | "kbd" | "samp" | "q" | "time" | "s" | "u"
         | "del" | "ins" | "tt" | "big" | "bdi" | "bdo" | "br" | "wbr" | "data" | "output"
         | "label" | "ruby" | "rt" | "rp" => Display::Inline,
+        // Replaced elements are inline-level in HTML's UA sheet: an image, a
+        // canvas, a video or a frame next to text or to each other shares the
+        // line and sits on the baseline. Replacement already makes each box
+        // atomic; `is_inline_block` stays reserved for an authored
+        // inline-block outer display and native controls. No UA max-width is
+        // imposed: deliberately oversized art keeps its intrinsic ratio.
+        "img" | "svg" | "canvas" | "video" | "audio" | "iframe" | "embed" | "object" => {
+            Display::Inline
+        }
         "tr" => Display::Flex,
         _ => Display::Block,
     };
@@ -335,20 +344,6 @@ pub fn ua_style(tag: &str) -> LayoutStyle {
         if tag == "th" {
             style.font_weight = Some("bold".to_string());
         }
-    } else if tag == "img" {
-        // Images are inline-level replaced elements by default. Replacement
-        // already makes the box atomic; `is_inline_block` is reserved for an
-        // authored inline-block outer display and native controls. Chromium's
-        // UA sheet does not impose a responsive max-width: author/reset CSS
-        // must opt into that. A synthetic `max-width:100%` here distorts
-        // deliberately oversized art whose height and intrinsic ratio
-        // establish its width.
-        style.display = Display::Inline;
-    } else if tag == "svg" {
-        // An outer `<svg>` in HTML is an inline-level replaced element like
-        // `<img>`, so `text-align` places it and it sits on the text baseline.
-        // Its descendants are painted by the SVG renderer, not laid out.
-        style.display = Display::Inline;
     }
     style
 }
@@ -563,7 +558,7 @@ pub fn inline_style_change_preserves_box_metrics(old: Option<&str>, new: Option<
 }
 
 fn parse_containment(value: &str) -> Option<u8> {
-    use crate::{CONTAIN_SIZE, CONTAIN_INLINE_SIZE, CONTAIN_LAYOUT, CONTAIN_STYLE, CONTAIN_PAINT};
+    use crate::{CONTAIN_INLINE_SIZE, CONTAIN_LAYOUT, CONTAIN_PAINT, CONTAIN_SIZE, CONTAIN_STYLE};
     let value = value.trim().to_ascii_lowercase();
     match value.as_str() {
         "none" | "initial" | "unset" | "revert" | "revert-layer" => return Some(0),
@@ -582,11 +577,14 @@ fn parse_containment(value: &str) -> Option<u8> {
             "paint" => CONTAIN_PAINT,
             _ => return None,
         };
-        if flags & flag != 0 { return None; }
+        if flags & flag != 0 {
+            return None;
+        }
         flags |= flag;
     }
-    (flags != 0 && flags & (CONTAIN_SIZE | CONTAIN_INLINE_SIZE)
-        != (CONTAIN_SIZE | CONTAIN_INLINE_SIZE)).then_some(flags)
+    (flags != 0
+        && flags & (CONTAIN_SIZE | CONTAIN_INLINE_SIZE) != (CONTAIN_SIZE | CONTAIN_INLINE_SIZE))
+        .then_some(flags)
 }
 
 fn parse_container_type(value: &str) -> Option<crate::ContainerType> {
@@ -1211,8 +1209,10 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
                 style.background_size = None;
                 style.background_size_expression = background_size_expression(value);
                 style.background_size_fit = parse_background_size_fit(value);
-                style.background_position = crate::BackgroundPosition::default();
-                style.background_repeat = parse_image_repeat(value);
+                style.background_position = background_shorthand_position(value)
+                    .map(|position| parse_background_position(&position))
+                    .unwrap_or_default();
+                style.background_repeat = parse_background_repeat(value).unwrap_or_default();
                 style.background_origin = crate::BackgroundOrigin::default();
                 style.background_clip = crate::BackgroundClip::default();
                 if let Some((origin, clip)) = parse_background_box_shorthand(value) {
@@ -1234,7 +1234,7 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         }
         "background-position" => style.background_position = parse_background_position(value),
         "background-repeat" => {
-            style.background_repeat = parse_image_repeat(value);
+            style.background_repeat = parse_background_repeat(value).unwrap_or_default();
         }
         "background-origin" => {
             style.background_origin = parse_background_origin(value).unwrap_or_default();
@@ -1944,6 +1944,12 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         "grid" => parse_grid_shorthand(style, value),
         "grid-auto-flow" => style.grid_auto_flow = parse_grid_auto_flow(value),
         "grid-area" => set_grid_area(style, value),
+        "grid-column" | "grid-row" | "grid-column-start" | "grid-column-end" | "grid-row-start"
+        | "grid-row-end"
+            if !grid_placement_declaration_is_valid(
+                value,
+                matches!(name, "grid-column" | "grid-row"),
+            ) => {}
         "grid-column" => set_grid_placement(style, value, true),
         "grid-row" => set_grid_placement(style, value, false),
         "grid-column-start" => set_grid_placement_side(style, value, true, true),
@@ -1971,8 +1977,11 @@ fn apply_value(style: &mut LayoutStyle, name: &str, value: &str) {
         "contain" => {
             if let Some(flags) = parse_containment(value) {
                 style.containment = flags;
-                set_containing_block_trigger(style, crate::CB_TRIGGER_CONTAIN,
-                    flags & (crate::CONTAIN_LAYOUT | crate::CONTAIN_PAINT) != 0);
+                set_containing_block_trigger(
+                    style,
+                    crate::CB_TRIGGER_CONTAIN,
+                    flags & (crate::CONTAIN_LAYOUT | crate::CONTAIN_PAINT) != 0,
+                );
             }
         }
         "will-change" => {
@@ -2766,9 +2775,7 @@ fn split_variable_arguments(arguments: &str) -> Option<(&str, Option<&str>)> {
         }
         index += 1;
     }
-    stack
-        .is_empty()
-        .then_some((arguments, None))
+    stack.is_empty().then_some((arguments, None))
 }
 
 fn has_top_level_variable_forbidden_token(value: &str) -> Option<bool> {
@@ -2829,7 +2836,11 @@ fn valid_custom_property_name(name: &str) -> bool {
             escaped = false;
         } else if character == '\\' {
             escaped = true;
-        } else if !(character.is_alphanumeric() || character == '-' || character == '_' || !character.is_ascii()) {
+        } else if !(character.is_alphanumeric()
+            || character == '-'
+            || character == '_'
+            || !character.is_ascii())
+        {
             return false;
         }
     }
@@ -3104,7 +3115,10 @@ fn supports_conservative_known_value(name: &str, value: &str) -> bool {
             "top" | "baseline" | "text-top" | "middle" | "bottom" | "text-bottom"
         ),
         "border-collapse" => matches!(lower.as_str(), "collapse" | "separate"),
-        "caption-side" => matches!(lower.as_str(), "top" | "bottom" | "block-start" | "block-end"),
+        "caption-side" => matches!(
+            lower.as_str(),
+            "top" | "bottom" | "block-start" | "block-end"
+        ),
         "border-spacing" => dimensions(value, false, 2),
         "column-count" | "-webkit-column-count" => {
             lower == "auto" || parse_column_count(value).is_some()
@@ -4199,9 +4213,9 @@ pub(crate) fn resolve_grid_calc(value: *const (), basis: f32) -> f32 {
         f32::from_bits(calc.vh.load(Ordering::Relaxed)),
         basis,
     )
-        .filter(|value| value.is_finite())
-        .unwrap_or(0.0)
-        .max(0.0)
+    .filter(|value| value.is_finite())
+    .unwrap_or(0.0)
+    .max(0.0)
 }
 
 /// Parse a track list into taffy sizing functions plus the `[line-name]` map
@@ -4488,9 +4502,7 @@ fn apply_grid_auto_tracks(style: &mut LayoutStyle, value: &str, columns: bool) {
         // retained lower-origin/layer declaration for revert, so it follows
         // the existing non-inherited-property policy and uses the initial
         // automatic implicit track.
-        "initial" | "unset" | "revert" | "revert-layer" => {
-            (Vec::new(), false, Vec::new())
-        }
+        "initial" | "unset" | "revert" | "revert-layer" => (Vec::new(), false, Vec::new()),
         _ => {
             let Some((tracks, calc_expressions)) = parse_grid_auto_track_list(value) else {
                 return;
@@ -4901,6 +4913,31 @@ fn consume_grid_integer_math(parser: &mut cssparser::Parser<'_, '_>) -> bool {
         parser.reset(&state);
     }
     valid
+}
+
+/// Whether a `grid-column`/`grid-row` shorthand (`shorthand`) or one of their
+/// longhands is a valid declaration. CSS Grid 1 section 8.3 makes zero and
+/// negative spans and a line number of zero invalid (`span 0`, `0`), so the
+/// declaration is ignored like any other invalid one, and `var()` values that
+/// substitute to one (Shopify's `span var(--menu-content-columns-desktop) / -1`
+/// with the variable at 0) get the same treatment here as an unresolvable
+/// `var()`. Letting `span 0` through gave taffy a zero-track grid area, which
+/// panics in track sizing.
+fn grid_placement_declaration_is_valid(value: &str, shorthand: bool) -> bool {
+    let value = value.trim();
+    if matches!(
+        value.to_ascii_lowercase().as_str(),
+        "initial" | "inherit" | "unset" | "revert" | "revert-layer"
+    ) {
+        return true;
+    }
+    let parts = split_top_level(value, '/');
+    if parts.len() > if shorthand { 2 } else { 1 } {
+        return false;
+    }
+    parts
+        .iter()
+        .all(|part| !part.trim().is_empty() && parse_grid_line_kind(part.trim()).is_some())
 }
 
 /// Store a `grid-column`/`grid-row` value. Numeric/`span` forms resolve to a
@@ -6063,7 +6100,9 @@ fn logical_border_single<T: Copy>(
     matches!(tokens.as_slice(), [one] if parse(one).is_some()).then(|| parse(tokens[0]).unwrap())
 }
 
-fn logical_border_sides(name: &str) -> Option<(crate::BorderCascadeSide, crate::BorderCascadeSide)> {
+fn logical_border_sides(
+    name: &str,
+) -> Option<(crate::BorderCascadeSide, crate::BorderCascadeSide)> {
     match name {
         "border-inline-width" | "border-inline-style" | "border-inline-color" => Some((
             crate::BorderCascadeSide::InlineStart,
@@ -6095,8 +6134,9 @@ fn apply_logical_border(style: &mut LayoutStyle, name: &str, value: &str) {
     let shorthand_side = match name {
         "border-inline" => Some(crate::BorderCascadeSide::Inline),
         "border-block" => Some(crate::BorderCascadeSide::Block),
-        "border-inline-start" | "border-inline-end" | "border-block-start"
-        | "border-block-end" => logical_border_single_side(name),
+        "border-inline-start" | "border-inline-end" | "border-block-start" | "border-block-end" => {
+            logical_border_single_side(name)
+        }
         _ => None,
     };
     if let Some(side) = shorthand_side {
@@ -6500,8 +6540,7 @@ pub(crate) fn functional_percentage_factor(value: &str) -> Option<f32> {
     }
     let at_zero = resolve_contextual_length(value, 16.0, 16.0, 1.0, 1.0, 0.0)?;
     let at_hundred = resolve_contextual_length(value, 16.0, 16.0, 1.0, 1.0, 100.0)?;
-    let at_two_hundred =
-        resolve_contextual_length(value, 16.0, 16.0, 1.0, 1.0, 200.0)?;
+    let at_two_hundred = resolve_contextual_length(value, 16.0, 16.0, 1.0, 1.0, 200.0)?;
     let tolerance = 0.0001;
     if at_zero.abs() > tolerance
         || (at_two_hundred - at_hundred * 2.0).abs() > tolerance
@@ -7147,7 +7186,10 @@ fn apply_font_size(style: &mut LayoutStyle, value: &str) {
 fn apply_word_spacing(style: &mut LayoutStyle, value: &str) {
     let value = value.trim();
     let lower = value.to_ascii_lowercase();
-    if matches!(lower.as_str(), "inherit" | "unset" | "revert" | "revert-layer") {
+    if matches!(
+        lower.as_str(),
+        "inherit" | "unset" | "revert" | "revert-layer"
+    ) {
         style.word_spacing = None;
         style.word_spacing_raw = None;
         return;
@@ -7181,7 +7223,9 @@ fn parse_word_spacing_length(value: &str) -> Option<crate::Dimension> {
         }
         _ => return None,
     };
-    if !parser.is_exhausted() { return None; }
+    if !parser.is_exhausted() {
+        return None;
+    }
     match length.resolve(16.0, 16.0, 1.0, 1.0) {
         crate::Dimension::Px(pixels) if pixels.is_finite() => Some(length),
         _ => None,
@@ -8453,9 +8497,7 @@ fn parse_flex_shorthand(style: &mut LayoutStyle, value: &str) {
 /// may appear in either order and each may appear at most once. Shorthand
 /// omission resets the other constituent to its initial value rather than
 /// retaining an earlier longhand winner.
-fn parse_flex_flow_shorthand(
-    value: &str,
-) -> Option<(taffy::FlexDirection, taffy::FlexWrap)> {
+fn parse_flex_flow_shorthand(value: &str) -> Option<(taffy::FlexDirection, taffy::FlexWrap)> {
     let lower = value.trim().to_ascii_lowercase();
     if matches!(
         lower.as_str(),
@@ -8529,6 +8571,37 @@ fn parse_background_size_fit(value: &str) -> Option<crate::ObjectFit> {
     }
 }
 
+/// `background-repeat`: `repeat-x`, `repeat-y`, or one or two of `repeat`,
+/// `no-repeat`, `space` and `round` for the horizontal then vertical axis.
+fn parse_background_repeat(
+    value: &str,
+) -> Option<(crate::BackgroundRepeat, crate::BackgroundRepeat)> {
+    use crate::BackgroundRepeat::{NoRepeat, Repeat, Round, Space};
+    let keyword = |token: &str| match token.to_ascii_lowercase().as_str() {
+        "repeat" => Some(Repeat),
+        "no-repeat" => Some(NoRepeat),
+        "space" => Some(Space),
+        "round" => Some(Round),
+        _ => None,
+    };
+    let tokens: Vec<&str> = split_ws_paren(value)
+        .into_iter()
+        .filter(|token| {
+            matches!(
+                token.to_ascii_lowercase().as_str(),
+                "repeat" | "no-repeat" | "repeat-x" | "repeat-y" | "space" | "round"
+            )
+        })
+        .collect();
+    match tokens.as_slice() {
+        [token, ..] if token.eq_ignore_ascii_case("repeat-x") => Some((Repeat, NoRepeat)),
+        [token, ..] if token.eq_ignore_ascii_case("repeat-y") => Some((NoRepeat, Repeat)),
+        [x, y, ..] => Some((keyword(x)?, keyword(y)?)),
+        [both] => keyword(both).map(|axis| (axis, axis)),
+        _ => None,
+    }
+}
+
 fn parse_image_repeat(value: &str) -> Option<(bool, bool)> {
     let tokens: Vec<&str> = split_ws_paren(value)
         .into_iter()
@@ -8595,6 +8668,37 @@ fn parse_background_box_shorthand(
         [(origin, _), (_, clip)] => Some((parse_background_origin(origin)?, *clip)),
         _ => None,
     }
+}
+
+/// The `<bg-position>` of a `background` shorthand's first layer: its
+/// position keywords, lengths and percentages, up to the `/` that starts the
+/// size. URLs and gradients (function tokens), colors, and repeat, box and
+/// attachment keywords are not positions. `None` when the layer names none,
+/// which leaves the initial `0% 0%`.
+fn background_shorthand_position(value: &str) -> Option<String> {
+    let first_layer = split_top_level(value, ',').into_iter().next()?;
+    let mut position = Vec::new();
+    for token in split_ws_paren(first_layer) {
+        if token.contains('(') {
+            continue;
+        }
+        let (part, size_follows) = match token.split_once('/') {
+            Some((before, _)) => (before, true),
+            None => (token, false),
+        };
+        let lower = part.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "left" | "right" | "top" | "bottom" | "center"
+        ) || (!part.is_empty() && px_value(part).is_some())
+        {
+            position.push(lower);
+        }
+        if size_follows {
+            break;
+        }
+    }
+    (!position.is_empty()).then(|| position.join(" "))
 }
 
 fn background_size_expression(value: &str) -> Option<String> {
@@ -8872,7 +8976,10 @@ mod tests {
             ),
         );
         assert_eq!(later_logical.border.right, 12.0);
-        assert_eq!(later_logical.border_model.colors.right, Some([0x86, 0x2e, 0x9c, 255]));
+        assert_eq!(
+            later_logical.border_model.colors.right,
+            Some([0x86, 0x2e, 0x9c, 255])
+        );
 
         let later_physical = compute_style(
             "div",
@@ -8882,7 +8989,10 @@ mod tests {
             ),
         );
         assert_eq!(later_physical.border.right, 4.0);
-        assert_eq!(later_physical.border_model.colors.right, Some([0x0b, 0x72, 0x85, 255]));
+        assert_eq!(
+            later_physical.border_model.colors.right,
+            Some([0x0b, 0x72, 0x85, 255])
+        );
 
         let late_direction = compute_style(
             "div",
@@ -8908,7 +9018,10 @@ mod tests {
         assert_eq!(style.border_model.styles.left, crate::BorderStyle::Solid);
         assert_eq!(style.border_model.styles.top, crate::BorderStyle::Dashed);
         assert_eq!(style.border_model.colors.top, Some([0xe0, 0x31, 0x31, 255]));
-        assert_eq!(style.border_model.colors.bottom, Some([0x2f, 0x9e, 0x44, 255]));
+        assert_eq!(
+            style.border_model.colors.bottom,
+            Some([0x2f, 0x9e, 0x44, 255])
+        );
 
         for (property, value) in [
             ("border-inline", "1px solid red"),
@@ -8918,8 +9031,14 @@ mod tests {
         ] {
             assert!(supports_declaration(property, value), "{property}:{value}");
         }
-        assert!(!supports_declaration("border-inline-start-width", "1px 2px"));
-        assert!(!supports_declaration("border-block-color", "red blue green"));
+        assert!(!supports_declaration(
+            "border-inline-start-width",
+            "1px 2px"
+        ));
+        assert!(!supports_declaration(
+            "border-block-color",
+            "red blue green"
+        ));
         assert!(!supports_declaration("border-inline-style", "solid banana"));
     }
 
@@ -10625,7 +10744,15 @@ mod tests {
         assert_eq!(s.background_size, None);
         assert_eq!(s.background_size_expression, None);
         assert_eq!(s.background_size_fit, None);
-        assert_eq!(s.background_position, crate::BackgroundPosition::default());
+        // `0` is a one-value position: the other axis is centered (Chromium
+        // computes `background: 0` to `0px 50%`).
+        assert_eq!(
+            s.background_position,
+            crate::BackgroundPosition::new(
+                crate::BackgroundPositionAxis::pixels(0.0),
+                crate::BackgroundPositionAxis::percentage(0.5),
+            )
+        );
         assert_eq!(s.background_origin, crate::BackgroundOrigin::PaddingBox);
         assert_eq!(s.background_clip, crate::BackgroundClip::BorderBox);
         assert!(!s.background_clip_text);
@@ -10644,6 +10771,41 @@ mod tests {
         assert_eq!(
             contextual.background_size_expression.as_deref(),
             Some("calc(100% - 2rem) auto")
+        );
+    }
+
+    #[test]
+    fn background_shorthand_sets_the_position() {
+        use crate::{BackgroundPosition, BackgroundPositionAxis};
+        let position =
+            |declaration: &str| compute_style("div", Some(declaration)).background_position;
+        let center = BackgroundPositionAxis::percentage(0.5);
+        assert_eq!(
+            position("background:url(/a.png) center"),
+            BackgroundPosition::new(center, center)
+        );
+        assert_eq!(
+            position("background:#fff url(/sprite.png) -24px 0 no-repeat"),
+            BackgroundPosition::new(
+                BackgroundPositionAxis::pixels(-24.0),
+                BackgroundPositionAxis::pixels(0.0)
+            ),
+        );
+        assert_eq!(
+            position("background:url(hero.svg) right bottom/cover no-repeat fixed"),
+            BackgroundPosition::new(
+                BackgroundPositionAxis::percentage(1.0),
+                BackgroundPositionAxis::percentage(1.0)
+            ),
+        );
+        // A size after the slash is not a position, and no position keeps the initial one.
+        assert_eq!(
+            position("background:url(a.png) 10% / 50px 20px"),
+            BackgroundPosition::new(BackgroundPositionAxis::percentage(0.1), center),
+        );
+        assert_eq!(
+            position("background:red url(a.png) no-repeat"),
+            BackgroundPosition::default()
         );
     }
 
@@ -10806,7 +10968,13 @@ mod tests {
                  background-size:10px 10px;background-repeat:repeat-x no-repeat",
             ),
         );
-        assert_eq!(style.background_repeat, Some((true, false)));
+        assert_eq!(
+            style.background_repeat,
+            (
+                crate::BackgroundRepeat::Repeat,
+                crate::BackgroundRepeat::NoRepeat
+            )
+        );
         let crate::BackgroundGradientLayer::Linear {
             stop_positions,
             repeating,
@@ -11127,20 +11295,14 @@ mod tests {
             assert!(!supports_declaration("flex-flow", value), "{value}");
         }
 
-        let direction_only = compute_style(
-            "div",
-            Some("flex-wrap:wrap;flex-flow:column"),
-        );
+        let direction_only = compute_style("div", Some("flex-wrap:wrap;flex-flow:column"));
         assert_eq!(
             direction_only.flex_direction,
             Some(taffy::FlexDirection::Column)
         );
         assert_eq!(direction_only.flex_wrap, Some(taffy::FlexWrap::NoWrap));
 
-        let wrap_only = compute_style(
-            "div",
-            Some("flex-direction:column;flex-flow:wrap"),
-        );
+        let wrap_only = compute_style("div", Some("flex-direction:column;flex-flow:wrap"));
         assert_eq!(wrap_only.flex_direction, Some(taffy::FlexDirection::Row));
         assert_eq!(wrap_only.flex_wrap, Some(taffy::FlexWrap::Wrap));
 
@@ -11151,10 +11313,8 @@ mod tests {
         );
         assert_eq!(reversed.flex_wrap, Some(taffy::FlexWrap::Wrap));
 
-        let invalid_later = compute_style(
-            "div",
-            Some("flex-flow:column wrap;flex-flow:row column"),
-        );
+        let invalid_later =
+            compute_style("div", Some("flex-flow:column wrap;flex-flow:row column"));
         assert_eq!(
             invalid_later.flex_direction,
             Some(taffy::FlexDirection::Column)

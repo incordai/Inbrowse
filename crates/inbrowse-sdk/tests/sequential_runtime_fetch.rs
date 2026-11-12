@@ -64,16 +64,21 @@ async fn run_browser(base: &str) {
             }}
         }})()"#,
     );
-    page.evaluate(&script);
+    page.evaluate(&script).unwrap();
 
     for _ in 0..20 {
         page.settle(250).await;
-        if page.evaluate("document.body.getAttribute('data-done')") == serde_json::json!("12") {
+        if page
+            .evaluate("document.body.getAttribute('data-done')")
+            .unwrap()
+            == serde_json::json!("12")
+        {
             break;
         }
     }
     assert_eq!(
-        page.evaluate("document.body.getAttribute('data-done')"),
+        page.evaluate("document.body.getAttribute('data-done')")
+            .unwrap(),
         serde_json::json!("12")
     );
 }

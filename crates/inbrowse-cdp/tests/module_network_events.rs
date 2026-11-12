@@ -263,9 +263,9 @@ async fn module_records_survive_page_runtime_suspension() {
     page.navigate(&format!("{base}/")).await.unwrap();
     assert!(page.network_events.iter().any(|e| e.url == format!("{base}/root.js") && e.body_size > 0),
         "direct Page navigation must expose parser module responses");
-    page.evaluate("import('/lazy.js')");
+    page.evaluate("import('/lazy.js')").unwrap();
     page.settle_for_duration(100).await;
-    assert_eq!(page.evaluate("globalThis.lazyRan"), json!(true));
+    assert_eq!(page.evaluate("globalThis.lazyRan").unwrap(), json!(true));
     page.sync_js_network_events();
     let bodies = [
         ("/root.js", "import '/child.js';"),

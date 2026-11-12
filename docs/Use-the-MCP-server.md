@@ -60,9 +60,25 @@ The active page continues running timers and network callbacks between tool
 calls over both stdio and HTTP. Task driving is wake-driven and parks when
 the page is idle; a future timer does not block incoming MCP requests.
 
+The browser starts on the first tool call that needs a page. After 5 minutes
+with no MCP request the server closes every page, so an agent host that keeps
+the server running does not keep pages, their JavaScript and their timers
+alive between tasks. Cookies and storage stay (and are saved to
+`--storage-dir`). The next tool call opens a new page, and its result ends with
+a note that the earlier tabs, element refs and page state are gone, naming the
+last page so the agent can navigate back. Change the wait with
+`--idle-timeout <SECS>`; `--idle-timeout 0` keeps pages open until
+`browser_close` or exit.
+
 Navigation and lifecycle:
 
 - `browser_navigate`, `browser_back`, `browser_forward`, `browser_reload`, `browser_close`
+
+A page script still running after `scriptTimeoutMs` (default 5000 ms) is
+stopped and the page's other scripts keep running. `browser_navigate` and
+`browser_tab_new` list each stopped script, and scripts skipped because the
+document's script time ran out, as `Warning:` lines after the navigation
+summary.
 
 Read the page:
 
@@ -76,6 +92,16 @@ Read the page:
   metadata. Descriptions preview at most 80 characters per name or value and
   do not include password control values.
 - `browser_markdown`, `browser_links`, `browser_extract`: page as markdown, link list, or structured content.
+  `browser_markdown` takes `max_chars` (default 4000), `boilerplate` (`drop`,
+  the default, leaves out navigation, the page header and footer and sidebars;
+  `keep` returns the full page) and `format`: `markdown` (default) or `json`.
+  With `json` the result is one JSON object with `url`,
+  `status`, `title`, `description`, `lang`, `publishedTime`, `content` (the
+  markdown), `links` (absolute URL to link text) and `images` (absolute URL to
+  alt text), the same object as `inbrowse fetch --dump json`
+  ([fields](CLI-reference.md)); `lang` and `publishedTime` are left out when the
+  page states none. `max_chars` then truncates `content` only, so the object
+  stays valid JSON.
 - `browser_interactive_elements`, `browser_detect_forms`: actionable elements and form fields.
 
 Snapshots and interactive-element listings exclude HTML/ARIA-hidden content;
@@ -92,9 +118,11 @@ Wait and run JS:
 
 - `browser_wait_for`, `browser_wait_for_text`, `browser_evaluate`
 
-`browser_evaluate` accepts JavaScript scripts, executes them once, and waits for
-returned promises. `timeoutMs` defaults to 5000 ms and bounds synchronous
-execution as well as promise settlement. Exceptions, rejected promises, and
+`browser_evaluate` reads JavaScript the way the DevTools console does, the same
+as `inbrowse fetch --eval`: statements return their last value, `{a: 1}` is an
+object, the source runs once, and a returned promise is awaited. `timeoutMs`
+defaults to 5000 ms and bounds synchronous execution as well as promise
+settlement. Exceptions, rejected promises, and
 timeouts return MCP tool errors (`isError: true`); a successful JavaScript
 `null` or `undefined` result is still returned as `null` text.
 
@@ -122,7 +150,13 @@ left, and right margins. Paper dimensions and margins are measured in inches.
 Files (these take a `source` instead of acting on the page):
 
 - `document_extract`: text of a PDF, Office, OpenDocument, spreadsheet, CSV or
-  plain-text file, as `inbrowse extract` prints it. Default `extract` feature.
+  plain-text file, as `inbrowse extract` prints it:
+  `{format, text, sections, warnings, source, untrusted}`. `warnings` is always
+  present, as `code: message` strings for content that was skipped or is
+  probably missing (for example a PDF page with no text layer that may be a
+  scan); an empty list means nothing was lost. Takes `hint`, `timeout` and
+  `password` (for an encrypted PDF). Default `extract` feature. The sections and
+  warning codes are in the [CLI reference](CLI-reference.md#inbrowse-extract-pathurl).
 - `media_extract`: frames, 16 kHz mono WAV and captions from an MP4, WebM,
   Matroska or WebVTT file, as `inbrowse media` reports them. Takes
   `every_secs`, `max_frames`, `scene_changes`, `audio`, `max_side`, `ocr`

@@ -205,7 +205,10 @@ pub enum SocialError {
     LoginRequired(String),
     /// The site wants a checkpoint or captcha solved in a normal browser.
     AccountChallenge(String),
-    RateLimited { retry_after_secs: u64, detail: String },
+    RateLimited {
+        retry_after_secs: u64,
+        detail: String,
+    },
     QuotaExceeded(String),
     /// Anonymous access refused; an account or API key would help.
     Blocked(String),
@@ -220,7 +223,10 @@ impl std::fmt::Display for SocialError {
         match self {
             Self::LoginRequired(d) => write!(f, "login_required: {d}"),
             Self::AccountChallenge(d) => write!(f, "account_challenge: {d}"),
-            Self::RateLimited { retry_after_secs, detail } => write!(f, "rate_limited:{retry_after_secs}: {detail}"),
+            Self::RateLimited {
+                retry_after_secs,
+                detail,
+            } => write!(f, "rate_limited:{retry_after_secs}: {detail}"),
             Self::QuotaExceeded(d) => write!(f, "quota_exceeded: {d}"),
             Self::Blocked(d) => write!(f, "blocked: {d}"),
             Self::Invalid(d) => write!(f, "invalid: {d}"),
@@ -252,15 +258,27 @@ pub async fn search(session: &Session, request: &SearchRequest) -> Result<Result
     let (from, to) = window(request.days);
     let mut warnings = Vec::new();
     let (items, auth) = match request.source {
-        Source::HackerNews => (hackernews::search(session, &request, from, to).await?, Auth::Anonymous),
+        Source::HackerNews => (
+            hackernews::search(session, &request, from, to).await?,
+            Auth::Anonymous,
+        ),
         Source::Github => github::search(session, &request, from, to, &mut warnings).await?,
-        Source::Polymarket => (polymarket::search(session, &request, &mut warnings).await?, Auth::Anonymous),
+        Source::Polymarket => (
+            polymarket::search(session, &request, &mut warnings).await?,
+            Auth::Anonymous,
+        ),
         Source::Reddit => reddit::search(session, &request, from, to, &mut warnings).await?,
         Source::X => match request.credentials.as_ref() {
-            Some(c) if c.provider.eq_ignore_ascii_case("x") => {
-                (x::search_api(session, &request, c, &mut warnings).await?, Auth::Api)
+            Some(c) if c.provider.eq_ignore_ascii_case("x") => (
+                x::search_api(session, &request, c, &mut warnings).await?,
+                Auth::Api,
+            ),
+            Some(c) => {
+                return Err(SocialError::Invalid(format!(
+                    "credentials for {} cannot be used with X",
+                    c.provider
+                )))
             }
-            Some(c) => return Err(SocialError::Invalid(format!("credentials for {} cannot be used with X", c.provider))),
             None => {
                 return Err(SocialError::Invalid(
                     "X without an API key is searched through a signed-in browser page".into(),
@@ -323,19 +341,29 @@ pub async fn thread(
     comments: usize,
     credentials: Option<&Credentials>,
 ) -> Result<Results, SocialError> {
-    let parsed = url::Url::parse(url.trim()).map_err(|_| SocialError::Invalid(format!("not a URL: {url}")))?;
+    let parsed = url::Url::parse(url.trim())
+        .map_err(|_| SocialError::Invalid(format!("not a URL: {url}")))?;
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    let host = host.trim_start_matches("www.").trim_start_matches("old.").trim_start_matches("m.");
+    let host = host
+        .trim_start_matches("www.")
+        .trim_start_matches("old.")
+        .trim_start_matches("m.");
     let comments = comments.clamp(0, 50);
     let mut warnings = Vec::new();
     let (source, item, auth) = match host {
-        "news.ycombinator.com" => (Source::HackerNews, hackernews::thread(session, &parsed, comments).await?, Auth::Anonymous),
+        "news.ycombinator.com" => (
+            Source::HackerNews,
+            hackernews::thread(session, &parsed, comments).await?,
+            Auth::Anonymous,
+        ),
         "github.com" => {
-            let (item, auth) = github::thread(session, &parsed, comments, credentials, &mut warnings).await?;
+            let (item, auth) =
+                github::thread(session, &parsed, comments, credentials, &mut warnings).await?;
             (Source::Github, item, auth)
         }
         "reddit.com" | "redd.it" => {
-            let (item, auth) = reddit::thread(session, &parsed, comments, credentials, &mut warnings).await?;
+            let (item, auth) =
+                reddit::thread(session, &parsed, comments, credentials, &mut warnings).await?;
             (Source::Reddit, item, auth)
         }
         _ => return Err(SocialError::Invalid(format!("no thread reader for {host}"))),
@@ -345,7 +373,10 @@ pub async fn thread(
         source: source.as_str(),
         query: None,
         window: Window {
-            from: item.published_at.clone().unwrap_or_else(|| time::to_rfc3339(now)),
+            from: item
+                .published_at
+                .clone()
+                .unwrap_or_else(|| time::to_rfc3339(now)),
             to: time::to_rfc3339(now),
         },
         auth,

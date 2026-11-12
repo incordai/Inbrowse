@@ -37,7 +37,14 @@ fn spawn_html_server() -> String {
 
 fn context(id: &str, storage_dir: Option<std::path::PathBuf>) -> Arc<BrowserContext> {
     std::env::set_var("INBROWSE_ALLOW_PRIVATE_NETWORK", "1");
-    Arc::new(BrowserContext::with_storage_and_network(id.into(), None, false, None, storage_dir, true))
+    Arc::new(BrowserContext::with_storage_and_network(
+        id.into(),
+        None,
+        false,
+        None,
+        storage_dir,
+        true,
+    ))
 }
 
 /// Run an async script body; it must eventually call `done(value)`.
@@ -46,10 +53,10 @@ async fn run(page: &mut Page, body: &str) -> Value {
         "(function() {{ window.__result = undefined; const done = (v) => {{ window.__result = JSON.stringify(v); }}; \
          const fail = (e) => done('FAIL: ' + (e && (e.name + ': ' + e.message) || e)); \
          try {{ {body} }} catch (e) {{ fail(e); }} return 1; }})()"
-    ));
+    )).unwrap();
     for _ in 0..100 {
         page.settle(50).await;
-        if let Some(s) = page.evaluate("window.__result").as_str() {
+        if let Some(s) = page.evaluate("window.__result").unwrap().as_str() {
             return serde_json::from_str(s).unwrap();
         }
     }
@@ -193,7 +200,8 @@ async fn databases_persist_across_navigation_and_storage_dir() {
     let origin = spawn_html_server();
     let dir = std::env::temp_dir().join(format!("inbrowse-idb-persist-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let write = format!(r#"{PROMISIFY}
+    let write = format!(
+        r#"{PROMISIFY}
         (async () => {{
             const db = await openDb();
             const tx = db.transaction('people', 'readwrite');
@@ -202,8 +210,10 @@ async fn databases_persist_across_navigation_and_storage_dir() {
             db.close();
             done('ok');
         }})().catch(fail);
-    "#);
-    let read = format!(r#"{PROMISIFY}
+    "#
+    );
+    let read = format!(
+        r#"{PROMISIFY}
         (async () => {{
             window.upgrade = 'none';
             const db = await openDb();
@@ -214,7 +224,8 @@ async fn databases_persist_across_navigation_and_storage_dir() {
             db.close();
             done({{ upgrade, name: v && v.name, bytes: v && Array.from(v.bytes), map: v && v.m.get(1), list }});
         }})().catch(fail);
-    "#);
+    "#
+    );
     let expected = json!({"upgrade": "none", "name": "Kept", "bytes": [1, 2], "map": "one", "list": [{"name": "app", "version": 1}]});
 
     {
@@ -228,14 +239,21 @@ async fn databases_persist_across_navigation_and_storage_dir() {
         ctx.save_storage();
     }
 
-    let mut page = Page::new("idb-persist-2".into(), context("idb-persist-2", Some(dir.clone())));
+    let mut page = Page::new(
+        "idb-persist-2".into(),
+        context("idb-persist-2", Some(dir.clone())),
+    );
     page.navigate(&format!("{origin}/c")).await.unwrap();
     assert_eq!(run(&mut page, &read).await, expected);
 
-    let deleted = run(&mut page, r#"
+    let deleted = run(
+        &mut page,
+        r#"
         const req = indexedDB.deleteDatabase('app');
         req.onsuccess = async () => done(await indexedDB.databases());
-    "#).await;
+    "#,
+    )
+    .await;
     assert_eq!(deleted, json!([]));
     let _ = std::fs::remove_dir_all(&dir);
 }

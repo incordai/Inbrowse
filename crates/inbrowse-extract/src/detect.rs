@@ -4,7 +4,7 @@
 
 use std::io::Read;
 
-use crate::{office, ExtractError, Format, Limits};
+use crate::{cfb, office, ExtractError, Format, Limits};
 
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 const OLE_MAGIC: &[u8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
@@ -22,19 +22,41 @@ pub fn detect(bytes: &[u8], hint: Option<&str>, limits: &Limits) -> Result<Forma
         return detect_archive(bytes, limits);
     }
     if bytes.starts_with(OLE_MAGIC) {
-        // Legacy binary Office. calamine reads .xls; .doc and .ppt are refused
-        // there with a clear error rather than guessed at here.
-        return Ok(Format::Xls);
+        return detect_ole(bytes, limits);
     }
     let sample = &bytes[..bytes.len().min(8192)];
     if sample.contains(&0) || std::str::from_utf8(utf8_prefix(sample)).is_err() {
-        return Err(ExtractError::Unsupported("binary data in no recognised format".into()));
+        return Err(ExtractError::Unsupported(
+            "binary data in no recognised format".into(),
+        ));
     }
     let is_csv = hint.is_some_and(|h| {
         let h = h.trim().to_ascii_lowercase();
         h.ends_with(".csv") || h == "csv" || h.starts_with("text/csv")
     });
     Ok(if is_csv { Format::Csv } else { Format::Text })
+}
+
+/// Legacy binary Office in an OLE compound file. calamine reads only `.xls`, so
+/// the stream names (`cfb::identify`) decide: `.doc`, `.ppt` and encrypted OOXML
+/// get their own refusal instead of calamine's "Cannot find Workbook stream".
+/// Sibling of `detect_archive`, both called by `detect`.
+fn detect_ole(bytes: &[u8], limits: &Limits) -> Result<Format, ExtractError> {
+    match cfb::identify(bytes, limits)? {
+        cfb::Application::Excel => Ok(Format::Xls),
+        cfb::Application::Word => Err(ExtractError::Unsupported(
+            "legacy Word .doc file; convert it to .docx".into(),
+        )),
+        cfb::Application::PowerPoint => Err(ExtractError::Unsupported(
+            "legacy PowerPoint .ppt file; convert it to .pptx".into(),
+        )),
+        cfb::Application::EncryptedPackage => Err(ExtractError::Encrypted(
+            "the Office file is password-protected; remove the password and try again".into(),
+        )),
+        cfb::Application::Other => Err(ExtractError::Unsupported(
+            "OLE compound file that is not an Excel, Word or PowerPoint document".into(),
+        )),
+    }
 }
 
 fn detect_archive(bytes: &[u8], limits: &Limits) -> Result<Format, ExtractError> {
@@ -64,7 +86,9 @@ fn detect_archive(bytes: &[u8], limits: &Limits) -> Result<Format, ExtractError>
         "application/vnd.oasis.opendocument.text" => Ok(Format::Odt),
         "application/vnd.oasis.opendocument.presentation" => Ok(Format::Odp),
         "application/vnd.oasis.opendocument.spreadsheet" => Ok(Format::Ods),
-        _ => Err(ExtractError::Unsupported("zip archive that is not an Office or OpenDocument file".into())),
+        _ => Err(ExtractError::Unsupported(
+            "zip archive that is not an Office or OpenDocument file".into(),
+        )),
     }
 }
 

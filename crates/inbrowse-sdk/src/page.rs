@@ -8,12 +8,10 @@ use serde_json::Value;
 
 use crate::error::Error;
 
-/// Read a DOM node id from a JS `evaluate` result. inbrowse serializes JS numbers
-/// as f64, so `Value::as_u64` returns None for an integer-valued result; accept
-/// either an integer or a non-negative finite float. null / non-numbers -> None.
+/// Read a DOM node id from a JS `evaluate` result. Integral numbers come back
+/// as JSON integers, so a node id is a `u64`; null and anything else is `None`.
 fn nid_from_value(v: &Value) -> Option<u64> {
     v.as_u64()
-        .or_else(|| v.as_f64().filter(|f| f.is_finite() && *f >= 0.0).map(|f| f as u64))
 }
 
 /// A browser tab/page.
@@ -42,12 +40,41 @@ impl Page {
         self.inner.borrow().url_string()
     }
 
-    /// Execute JS in the page.
+    /// Execute JS in the page and return its value as JSON.
+    ///
+    /// The source is an object literal, a block of statements whose last
+    /// value is the result (`var a = 1; a + 1` is `2`), or a function body
+    /// when it has a top-level `return`. A thrown or syntax error is
+    /// [`Error::JsEval`]. A returned promise is not awaited; use
+    /// [`Self::evaluate_awaited`] for that, or [`Self::settle`] afterwards.
     ///
     /// Takes `&self` via interior mutability so element handles that borrow the
     /// page immutably can drive evaluation without any `unsafe` aliasing.
-    pub fn evaluate(&self, expression: &str) -> Value {
-        self.inner.borrow_mut().evaluate(expression)
+    pub fn evaluate(&self, expression: &str) -> Result<Value, Error> {
+        self.inner
+            .borrow_mut()
+            .evaluate(expression)
+            .map_err(Error::JsEval)
+    }
+
+    /// Evaluate JS the way the DevTools console does and await a returned
+    /// promise, all within `timeout`. A thrown error, a rejected promise and a
+    /// syntax error are [`Error::JsEval`]; running out of time is
+    /// [`Error::Timeout`]. Same semantics as `inbrowse fetch --eval` and the
+    /// MCP `browser_evaluate` tool (inbrowse `Page::evaluate_checked`).
+    pub async fn evaluate_awaited(
+        &mut self,
+        expression: &str,
+        timeout: Duration,
+    ) -> Result<Value, Error> {
+        self.inner
+            .get_mut()
+            .evaluate_checked(expression, timeout)
+            .await
+            .map_err(|error| match error {
+                inbrowse::EvalError::TimedOut(_) => Error::Timeout(error.to_string()),
+                other => Error::JsEval(other.to_string()),
+            })
     }
 
     /// URLs of the page's child frames, in creation order.
@@ -62,20 +89,25 @@ impl Page {
     }
 
     /// Get page HTML content.
-    pub fn content(&self) -> String {
-        let val = self.evaluate("document.documentElement.outerHTML");
-        val.as_str().unwrap_or("").to_string()
+    pub fn content(&self) -> Result<String, Error> {
+        let val =
+            self.evaluate("document.documentElement ? document.documentElement.outerHTML : ''")?;
+        Ok(val.as_str().unwrap_or_default().to_string())
     }
 
-    /// Query a single element by CSS selector.
-    pub fn query_selector(&self, selector: &str) -> Option<Element<'_>> {
+    /// Query a single element by CSS selector. `Ok(None)` when nothing
+    /// matches; an invalid selector is an error.
+    pub fn query_selector(&self, selector: &str) -> Result<Option<Element<'_>>, Error> {
         let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
         let js = format!(
             "(function() {{ var el = document.querySelector('{}'); return el ? el._nid : null; }})()",
             escaped
         );
-        let val = self.evaluate(&js);
-        nid_from_value(&val).map(|nid| Element { node_id: nid, page: self })
+        let val = self.evaluate(&js)?;
+        Ok(nid_from_value(&val).map(|nid| Element {
+            node_id: nid,
+            page: self,
+        }))
     }
 
     /// Wait for CSS selector to appear (polls every 100ms).
@@ -91,9 +123,12 @@ impl Page {
                 "(function() {{ var el = document.querySelector('{}'); return el ? el._nid : null; }})()",
                 escaped
             );
-            let val = self.evaluate(&js);
+            let val = self.evaluate(&js)?;
             if let Some(nid) = nid_from_value(&val) {
-                return Ok(Element { node_id: nid, page: self });
+                return Ok(Element {
+                    node_id: nid,
+                    page: self,
+                });
             }
             if start.elapsed() > timeout {
                 return Err(Error::Timeout(format!(
@@ -177,16 +212,16 @@ pub struct Element<'p> {
 
 impl Element<'_> {
     /// Get text content of this element.
-    pub fn text(&self) -> String {
+    pub fn text(&self) -> Result<String, Error> {
         let val = self.page.evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); return el ? el.textContent : ''; }})()",
             self.node_id
-        ));
-        val.as_str().unwrap_or("").to_string()
+        ))?;
+        Ok(val.as_str().unwrap_or_default().to_string())
     }
 
     /// Get an attribute value.
-    pub fn attribute(&self, name: &str) -> Option<String> {
+    pub fn attribute(&self, name: &str) -> Result<Option<String>, Error> {
         // Escape the name like query_selector escapes its selector, so a name
         // containing a quote/backslash cannot break out of the JS string literal
         // and inject code into the page.
@@ -194,8 +229,8 @@ impl Element<'_> {
         let val = self.page.evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); return el ? el.getAttribute('{}') : null; }})()",
             self.node_id, escaped
-        ));
-        if val.is_null() { None } else { Some(val.as_str().unwrap_or("").to_string()) }
+        ))?;
+        Ok(val.as_str().map(str::to_string))
     }
 
     /// Click this element.
@@ -204,12 +239,12 @@ impl Element<'_> {
         self.page.evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); if (el) el.scrollIntoView({{block:'center'}}); }})()",
             self.node_id
-        ));
+        ))?;
         // Click
         let result = self.page.evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); if (el) {{ el.click(); return true; }} return false; }})()",
             self.node_id
-        ));
+        ))?;
         if result.as_bool().unwrap_or(false) {
             Ok(())
         } else {
