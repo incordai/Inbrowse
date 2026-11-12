@@ -199,6 +199,15 @@ async fn select_and_set_selection_range_fire_select_when_the_range_changes() {
         })()"#,
     )
     .unwrap();
+    // Each select event is a queued task; one short turn can miss the last
+    // on a loaded host, so pump until three arrived (bounded), then one more
+    // turn so an unexpected fourth would still be seen.
+    for _ in 0..100 {
+        rt.run_event_loop_bounded(30).await.unwrap();
+        if rt.evaluate("fired.length >= 3").unwrap() == json!(true) {
+            break;
+        }
+    }
     rt.run_event_loop_bounded(50).await.unwrap();
     assert_eq!(
         rt.evaluate("[fired, i.selectionStart, i.selectionEnd, e.value.length]").unwrap(),

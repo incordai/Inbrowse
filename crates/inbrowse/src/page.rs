@@ -2738,7 +2738,7 @@ impl Page {
         // navigation timeout). Without the variable the phase is also capped
         // at this page's navigation timeout, so a caller asking for a 5 s
         // navigation does not wait 30 s for page scripts.
-        let mut script_deadline_ms: u64 = std::env::var("INBROWSE_SCRIPT_DEADLINE_MS")
+        let script_deadline_ms: u64 = std::env::var("INBROWSE_SCRIPT_DEADLINE_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| {
@@ -2746,24 +2746,31 @@ impl Page {
             });
         self.script_warnings.clear();
         let phase_start = tokio::time::Instant::now();
-        let mut script_deadline =
+        let script_deadline =
             phase_start + tokio::time::Duration::from_millis(script_deadline_ms);
         // The phase starts after the document and its stylesheets arrived, so
-        // a budget as long as the navigation timeout would outlive it: the
-        // whole navigation would fail on one slow script. End the fetch phase
-        // early enough to run what arrived and fire load (a quarter of the
-        // timeout, at most 2 s), and report the scripts still in flight.
-        if let Some(navigation_deadline) = self.navigation_deadline {
-            let reserve = (self.navigation_timeout() / 4).min(std::time::Duration::from_secs(2));
-            let latest = navigation_deadline
-                .checked_sub(reserve)
-                .unwrap_or(phase_start)
-                .max(phase_start);
-            if latest < script_deadline {
-                script_deadline = latest;
-                script_deadline_ms = duration_millis_u64(latest - phase_start);
+        // waiting for external scripts as long as the navigation timeout would
+        // outlive the navigation: it would fail on one slow script. Stop
+        // waiting for downloads early enough to run what arrived and fire
+        // load (a quarter of the timeout, at most 2 s), and report the scripts
+        // still in flight. Only the download wait is cut short; inline and
+        // arrived scripts keep the whole script-phase budget.
+        let (fetch_deadline, fetch_budget_ms) = match self.navigation_deadline {
+            Some(navigation_deadline) => {
+                let reserve =
+                    (self.navigation_timeout() / 4).min(std::time::Duration::from_secs(2));
+                let latest = navigation_deadline
+                    .checked_sub(reserve)
+                    .unwrap_or(phase_start)
+                    .max(phase_start);
+                if latest < script_deadline {
+                    (latest, duration_millis_u64(latest - phase_start))
+                } else {
+                    (script_deadline, script_deadline_ms)
+                }
             }
-        }
+            None => (script_deadline, script_deadline_ms),
+        };
 
         // Hard backstop over the WHOLE script-execution phase. Inline scripts
         // run back-to-back with no await between them, so neither the soft
@@ -3007,7 +3014,7 @@ impl Page {
         let mut fetch_results = Vec::new();
         let mut budget_exhausted = false;
         loop {
-            match tokio::time::timeout_at(script_deadline, fetch_stream.next()).await {
+            match tokio::time::timeout_at(fetch_deadline, fetch_stream.next()).await {
                 Ok(Some(result)) => fetch_results.push(result),
                 Ok(None) => break,
                 Err(_) => {
@@ -3036,7 +3043,7 @@ impl Page {
             for (idx, url) in &fetch_tasks {
                 if !arrived.contains(idx) {
                     self.script_warnings.push(format!(
-                        "script {url} did not load within the {script_deadline_ms}ms script budget"
+                        "script {url} did not load within the {fetch_budget_ms}ms script budget"
                     ));
                 }
             }
@@ -8974,6 +8981,23 @@ mod tests {
                 .unwrap(),
             serde_json::json!(true),
             "queue latency must not consume a module's active-work budget",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_almost_spent_navigation_still_runs_inline_scripts() {
+        let mut page = import_map_test_page(
+            "spent-navigation-inline",
+            "http://127.0.0.1:9",
+            "<html><body><script>globalThis.__inline_ran = true;</script></body></html>",
+        );
+        // Only the wait for script downloads is cut to the navigation
+        // deadline; an inline script needs no download and still runs.
+        page.navigation_deadline = Some(tokio::time::Instant::now());
+        page.execute_scripts().await;
+        assert_eq!(
+            page.js.as_mut().unwrap().evaluate("globalThis.__inline_ran === true").unwrap(),
+            serde_json::json!(true),
         );
     }
 

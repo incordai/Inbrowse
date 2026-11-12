@@ -256,13 +256,20 @@ All notable changes to Inbrowse are recorded here. The format follows
   methods are never replayed.
 - A script that has not arrived before the navigation deadline is reported by
   name (`Warning: script ... did not load`) and the page loads without it,
-  instead of the whole navigation failing.
+  instead of the whole navigation failing. Inline scripts always run.
+- `DOM.requestNode` rejects an object that is not a DOM node again, and a
+  fetched iframe document starts with its iframe's content box as viewport.
+- An IndexedDB transaction with no requests counts as finished once its task
+  ends, so using it later throws `InvalidStateError` as in Chrome, whichever
+  task runs first.
 
 ### Security
 
 - `zstd`, `zstd-safe` and `zstd-sys` updated to patched versions.
 - `calamine` updated to 0.38.0 (RUSTSEC-2026-0436) and `quinn-proto` to
   0.11.19.
+- `rustix` updated to 1.1.6 (RUSTSEC-2026-0486) and `lru` to 0.18.5
+  (RUSTSEC-2026-0253).
 
 ## [0.3.0] - 2026-11-03
 

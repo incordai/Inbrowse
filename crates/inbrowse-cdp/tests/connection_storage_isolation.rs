@@ -308,6 +308,12 @@ async fn indexed_db_persists_across_sequential_connections_with_a_storage_dir() 
         let (mut c, _) = connect_async(&third).await.unwrap();
         let sc = page(&mut c, &url).await;
         assert_eq!(idb_get(&mut c, &sc, &["first-key", "second-key"]).await, json!(["first-connection", "second-connection"]));
+        // Close the last connection too and wait for its teardown, whose final
+        // write is the cookie jar, so no flush is still writing into the
+        // profile when it is removed.
+        evaluate(&mut c, &sc, "document.cookie='closeThird=done'").await;
+        c.close(None).await.unwrap();
+        wait_for_cookie(&root, "closeThird").await;
     }).await;
     fixture.abort();
     std::fs::remove_dir_all(root).unwrap();

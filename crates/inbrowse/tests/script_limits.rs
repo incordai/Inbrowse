@@ -16,6 +16,9 @@ fn page() -> Page {
 async fn a_runaway_inline_script_is_stopped_and_reported() {
     let mut page = page();
     page.set_script_timeout(Duration::from_millis(200));
+    // A first document pays the process's one-time engine start-up, which on
+    // a loaded host is seconds; the bound below is for stopping the script.
+    page.navigate("data:text/html,<p>warm</p>").await.unwrap();
     let started = Instant::now();
     page.navigate("data:text/html,<script>while(true){}</script><script>document.title='after'</script>")
         .await

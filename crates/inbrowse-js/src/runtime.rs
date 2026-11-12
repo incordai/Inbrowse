@@ -4861,6 +4861,17 @@ impl InbrowseJsRuntime {
         };
         let scope = &mut v8::ContextScope::new(scope, creation);
         v8::tc_scope!(let scope, scope);
+        // Only a Node of the realm that made the object stands for a node; a
+        // plain object that carries a numeric `_nid` must not resolve.
+        let node_name = v8::String::new(scope, "Node").ok_or_else(unresolved)?;
+        let node_constructor = creation
+            .global(scope)
+            .get(scope, node_name.into())
+            .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+            .ok_or_else(unresolved)?;
+        if object.instance_of(scope, node_constructor) != Some(true) {
+            return Err(unresolved());
+        }
         let key = v8::String::new(scope, "_nid").ok_or_else(unresolved)?;
         let node = object
             .get(scope, key.into())
@@ -26051,11 +26062,16 @@ mod tests {
         use std::io::Read;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        // The HTTP client sends a GET whose connection closed before any
+        // response once more (send_with_connection_retry in inbrowse-net), so
+        // the server closes both attempts before sending headers, rather
+        // than returning an HTTP error.
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 2048];
-            stream.read(&mut request).unwrap();
-            // Close before sending headers, rather than returning an HTTP error.
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                stream.read(&mut request).unwrap();
+            }
         });
         let url = format!("http://{address}/entry.js");
         let client = inbrowse_net::InbrowseHttpClient::with_full_options(

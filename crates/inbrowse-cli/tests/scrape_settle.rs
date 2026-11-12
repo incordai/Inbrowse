@@ -3,9 +3,10 @@
 
 use std::process::Command;
 
-/// Each timer appends its delay to `#a`.
+/// Each timer appends its delay to `#a`. The later timer is seconds out, so a
+/// slow run of the default settle on a loaded host still ends before it.
 const TIMERS_PAGE: &str = "data:text/html,<div id=a></div><script>\
-for (const ms of [100, 1000]) setTimeout(() => a.textContent += ms + ' ', ms)\
+for (const ms of [100, 4000]) setTimeout(() => a.textContent += ms + ' ', ms)\
 </script>";
 
 fn scrape_eval(extra: &[&str]) -> serde_json::Value {
@@ -31,5 +32,5 @@ fn scrape_evaluates_the_settled_page() {
 
 #[test]
 fn scrape_settle_timers_waits_for_later_timers() {
-    assert_eq!(scrape_eval(&["--settle-timers", "1500"]), serde_json::json!("100 1000"));
+    assert_eq!(scrape_eval(&["--settle-timers", "4500"]), serde_json::json!("100 4000"));
 }

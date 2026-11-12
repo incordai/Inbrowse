@@ -5700,10 +5700,16 @@ class Element extends Node {
         el._iframeOpaque = _sandboxOpaqueOrigin;
         try { el._iframeOpaque ||= new URL(loadedUrl).origin !== pageOrigin; } catch (_) { el._iframeOpaque = true; }
         // The host fires load after creating the realm and running its scripts.
+        // The frame's viewport is the iframe's content box, the size the host
+        // keeps it at once laid out (sync_frame_viewports in runtime.rs).
         const box = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        const inset = (...names) => names.reduce((sum, name) => sum + (parseFloat(style[name]) || 0), 0);
+        const contentWidth = Math.round(box.width - inset('borderLeftWidth', 'borderRightWidth', 'paddingLeft', 'paddingRight'));
+        const contentHeight = Math.round(box.height - inset('borderTopWidth', 'borderBottomWidth', 'paddingTop', 'paddingBottom'));
         if (el._frameId) globalThis.__inbrowse_forgetFrame(el._frameId);
         el._frameId = __inbrowseCore.ops.op_frame_document_ready(
-          loadedUrl, html, Math.round(box.width) || 300, Math.round(box.height) || 150, el._nid);
+          loadedUrl, html, contentWidth > 0 ? contentWidth : 300, contentHeight > 0 ? contentHeight : 150, el._nid);
         if (el._frameId) globalThis.__inbrowse_frameElements[el._frameId] = el;
         el._iframeDoc = el._iframeOpaque ? null : new _IframeDocument(html, loadedUrl, el);
         el._iframeWin = el._iframeOpaque ? _remoteWindow(el._frameId) : new _IframeWindow(el._iframeDoc, loadedUrl);

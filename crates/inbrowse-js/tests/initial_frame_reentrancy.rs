@@ -12,20 +12,23 @@ fn setup(html: &str) -> InbrowseJsRuntime {
     rt
 }
 
+/// A srcdoc document loads in a queued task, a later turn; one short turn can
+/// miss it on a loaded host, so pump until `loaded` holds (bounded).
+async fn pump_until(rt: &mut InbrowseJsRuntime, loaded: &str) {
+    for _ in 0..100 {
+        rt.run_event_loop_bounded(30).await.unwrap();
+        if rt.evaluate(loaded).unwrap() == json!(true) {
+            return;
+        }
+    }
+}
+
 #[tokio::test]
 async fn srcdoc_iframe_created_via_innerhtml_does_not_abort() {
     let mut rt = setup("<html><body><div id=host></div></body></html>");
     rt.evaluate(r#"host.innerHTML = '<iframe srcdoc="<p>frame</p>"></iframe>'"#)
         .unwrap();
-    // The srcdoc document loads at a later turn; one short turn can miss it on
-    // a loaded host, so pump until it is there (bounded).
-    for _ in 0..100 {
-        rt.run_event_loop_bounded(30).await.unwrap();
-        let loaded = "host.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>frame</p>'";
-        if rt.evaluate(loaded).unwrap() == json!(true) {
-            break;
-        }
-    }
+    pump_until(&mut rt, "host.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>frame</p>'").await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {
@@ -49,7 +52,7 @@ async fn srcdoc_iframe_created_via_property_then_append_does_not_abort() {
         })()"#,
     )
     .unwrap();
-    rt.run_event_loop_bounded(30).await.unwrap();
+    pump_until(&mut rt, "document.querySelector('iframe')?.contentDocument?.body?.innerHTML === '<p>prop</p>'").await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {
@@ -73,7 +76,7 @@ async fn srcdoc_iframe_with_synchronous_dom_touch_does_not_abort() {
         })()"#,
     )
     .unwrap();
-    rt.run_event_loop_bounded(30).await.unwrap();
+    pump_until(&mut rt, "!!document.querySelector('iframe')?.contentDocument?.querySelector('span')").await;
     assert_eq!(
         rt.evaluate(
             r#"(() => {

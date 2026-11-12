@@ -88,8 +88,19 @@ async fn an_unhandled_rejection_is_an_error_console_entry_and_an_exception() {
         "Promise.reject(new Error('rejected')); Promise.reject('plain reason');",
     )
     .unwrap();
+    // Unhandled rejections are reported from a later task; one short turn can
+    // miss them on a loaded host, so pump until both arrived (bounded), then
+    // one more turn so an unexpected third would still be seen.
+    let mut messages = Vec::new();
+    for _ in 0..100 {
+        rt.run_event_loop_bounded(30).await.unwrap();
+        messages.extend(rt.take_pending_console_messages());
+        if messages.len() >= 2 {
+            break;
+        }
+    }
     rt.run_event_loop_bounded(50).await.unwrap();
-    let messages = rt.take_pending_console_messages();
+    messages.extend(rt.take_pending_console_messages());
     assert_eq!(messages.len(), 2, "{messages:?}");
     assert!(messages[0].starts_with("[error] Uncaught (in promise) Error: rejected"), "{messages:?}");
     assert_eq!(messages[1], "[error] Uncaught (in promise) plain reason");
