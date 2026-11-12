@@ -1,7 +1,7 @@
 {
   "name": "inbrowse",
   "displayName": "Inbrowse",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A fast headless browser for Claude Code: pages with JavaScript, forms and tabs; PDF, Office and spreadsheet text; video frames, audio and captions; OCR; research posts from Reddit, X, Hacker News, GitHub and Polymarket",
   "author": { "name": "Incord AI", "url": "https://github.com/incordai" },
   "homepage": "https://github.com/incordai/Inbrowse",
@@ -14,7 +14,9 @@
       "args": ["mcp"],
       "env": {
         "INBROWSE_OCR_URL": "${user_config.ocr_url}",
-        "INBROWSE_OCR_KEY": "${user_config.ocr_key}"
+        "INBROWSE_OCR_KEY": "${user_config.ocr_key}",
+        "INBROWSE_MCP_ALLOW_FILE_ACCESS": "${user_config.allow_file_access}",
+        "INBROWSE_ALLOW_PRIVATE_NETWORK": "${user_config.allow_private_network}"
       }
     }
   },
@@ -36,6 +38,18 @@
       "title": "OCR engine key",
       "description": "Key for the OCR engine, only if it asks for one. Stored in the system's secure storage.",
       "sensitive": true
+    },
+    "allow_file_access": {
+      "type": "boolean",
+      "title": "Open local files",
+      "description": "Let browser_navigate open file:// pages on this computer, such as a local HTML or SVG file. Off: only web pages. Needs Inbrowse 0.4.1 or later.",
+      "default": false
+    },
+    "allow_private_network": {
+      "type": "boolean",
+      "title": "Open localhost and LAN pages",
+      "description": "Let the browser load localhost, 127.0.0.1 and private-network addresses, such as a dev server at http://localhost:3000. Off: they are blocked, so a web page cannot reach your machine or network.",
+      "default": false
     },
     "route_webfetch": {
       "type": "boolean",

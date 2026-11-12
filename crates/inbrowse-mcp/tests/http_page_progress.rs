@@ -62,6 +62,7 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
         None,
         false,
         None,
+        false,
     ));
     local.run_until(async {
         for _ in 0..100 {
@@ -139,6 +140,7 @@ async fn idle_pages_close_and_the_next_call_says_so() {
         None,
         false,
         Some(Duration::from_millis(500)),
+        false,
     ));
     local.run_until(async {
         for _ in 0..100 {

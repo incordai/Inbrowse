@@ -130,13 +130,26 @@ pub struct BrowserState {
 
 impl BrowserState {
     pub fn new(proxy: Option<String>, user_agent: Option<String>, stealth: bool) -> Self {
+        Self::with_file_access(proxy, user_agent, stealth, false)
+    }
+
+    /// As [`Self::new`]; `allow_file_access` lets page tools open `file://`
+    /// URLs (`inbrowse mcp --allow-file-access`). Off by default so an agent
+    /// cannot read local files through a page. Callers: `run`, `http::run`.
+    pub fn with_file_access(
+        proxy: Option<String>,
+        user_agent: Option<String>,
+        stealth: bool,
+        allow_file_access: bool,
+    ) -> Self {
         // `--storage-dir` is a global flag, so the profile arrives through the
         // environment rather than through every constructor call. Without this
         // the MCP path silently ignored the flag and persisted nothing, cookies
         // included.
         let storage_dir = std::env::var_os("INBROWSE_STORAGE_DIR").map(std::path::PathBuf::from);
-        let context =
+        let mut context =
             BrowserContext::with_storage_full("mcp".to_string(), proxy, stealth, None, storage_dir);
+        context.set_allow_file_access(allow_file_access);
         BrowserState {
             tabs: std::collections::BTreeMap::new(),
             active_tab: None,
@@ -385,19 +398,21 @@ fn idle_duration_text(idle: Duration) -> String {
 
 /// The stdio MCP server. The first tool call that needs a page opens one;
 /// `idle_close` closes every page after that long with no request (`None`
-/// keeps them until `browser_close` or exit).
+/// keeps them until `browser_close` or exit). `allow_file_access` lets page
+/// tools open `file://` URLs. Caller: inbrowse-cli `mcp`.
 pub async fn run(
     proxy: Option<String>,
     user_agent: Option<String>,
     stealth: bool,
     idle_close: Option<Duration>,
+    allow_file_access: bool,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin);
     let mut writer = stdout;
 
-    let mut state = BrowserState::new(proxy, user_agent, stealth);
+    let mut state = BrowserState::with_file_access(proxy, user_agent, stealth, allow_file_access);
     state.operator_network_hints = true;
     // A stdio server runs as the local user's child process, so document_extract
     // may read that user's files here (never on the HTTP transport).
@@ -1617,11 +1632,17 @@ async fn tool_navigate(args: &Value, state: &mut BrowserState) -> Result<String,
         .get("url")
         .and_then(Value::as_str)
         .ok_or("Missing url parameter")?;
-    if url::Url::parse(url)
-        .ok()
-        .is_some_and(|parsed| parsed.scheme() == "file")
+    if !state.context.allow_file_access
+        && url::Url::parse(url)
+            .ok()
+            .is_some_and(|parsed| parsed.scheme() == "file")
     {
-        return Err("file:// navigation is disabled for MCP".to_string());
+        return Err(
+            "file:// navigation is disabled for MCP; start the server with \
+            `inbrowse mcp --allow-file-access` (or INBROWSE_MCP_ALLOW_FILE_ACCESS=1) \
+            to open local files"
+                .to_string(),
+        );
     }
     let wait_until = args
         .get("waitUntil")
@@ -4626,6 +4647,29 @@ mod tests {
             submitted.contains("q=hello"),
             "the submitted body must carry the filled field, got {submitted}"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_navigation_follows_the_allow_file_access_switch() {
+        let dir = std::env::temp_dir().join(format!("inbrowse-mcp-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("page.html");
+        std::fs::write(&path, "<title>Local</title><p>from disk</p>").unwrap();
+        let url = url::Url::from_file_path(&path).unwrap().to_string();
+
+        // Off by default, and the refusal names the switch.
+        let mut closed = BrowserState::new(None, None, false);
+        let error = tool_navigate(&json!({ "url": url }), &mut closed)
+            .await
+            .expect_err("file:// must be refused by default");
+        assert!(error.contains("--allow-file-access"), "{error}");
+
+        let mut open = BrowserState::with_file_access(None, None, false, true);
+        let summary = tool_navigate(&json!({ "url": url }), &mut open)
+            .await
+            .expect("with the switch the local page opens");
+        assert!(summary.contains("\"Local\""), "{summary}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// The page for the select-field tests: a single select whose markup

@@ -6,6 +6,16 @@ All notable changes to Inbrowse are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `inbrowse mcp --allow-file-access` (or `INBROWSE_MCP_ALLOW_FILE_ACCESS=1`)
+  lets the MCP page tools open `file://` pages, such as a local HTML or SVG
+  file. Off by default, as before; the Claude Code plugin has an "Open local
+  files" setting for it.
+- The Claude Code plugin has an "Open localhost and LAN pages" setting, so its
+  browser can load a local dev server such as `http://localhost:3000` (it sets
+  `INBROWSE_ALLOW_PRIVATE_NETWORK`). Off by default.
+
 ## [0.4.0] - 2026-11-12
 
 ### Added

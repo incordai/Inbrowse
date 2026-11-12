@@ -70,6 +70,12 @@ last page so the agent can navigate back. Change the wait with
 `--idle-timeout <SECS>`; `--idle-timeout 0` keeps pages open until
 `browser_close` or exit.
 
+Local files: `browser_navigate` refuses `file://` URLs unless the server runs
+with `--allow-file-access` (or `INBROWSE_MCP_ALLOW_FILE_ACCESS=1`; the Claude
+Code plugin's "Open local files" setting sets it). With `--http`, any client
+that can reach the server can then read this machine's files, so enable it
+there only on a trusted network.
+
 Navigation and lifecycle:
 
 - `browser_navigate`, `browser_back`, `browser_forward`, `browser_reload`, `browser_close`
