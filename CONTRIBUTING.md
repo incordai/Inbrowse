@@ -160,9 +160,12 @@ Keep ops panic-safe: a panic in an op must degrade to a null result, never
 unwind into V8's FFI frame. Do not remove the robustness guards described in
 AGENTS.md (the V8 watchdog, the `tree.rs` reparenting guards, the CLI deadline).
 
-Do not bulk-run `cargo fmt`. The tree is not rustfmt-clean, so a blanket format
-produces a large unrelated diff. Match the surrounding style in the files you
-edit. Comments should explain non-obvious "why", not restate the code.
+Run `scripts/ci/fmt.sh` before committing; CI fails on unformatted code. It
+formats the workspace crates only. Do not use `cargo fmt --all`, which would
+also reformat the vendored crates under `vendor/`. Formatting-only commits are
+listed in `.git-blame-ignore-revs`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` so `git blame` skips
+them. Comments should explain non-obvious "why", not restate the code.
 
 ## Commit messages
 

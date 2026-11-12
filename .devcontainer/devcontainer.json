@@ -15,9 +15,8 @@
     "vscode": {
       "extensions": ["rust-lang.rust-analyzer"],
       "settings": {
-        // The tree is not rustfmt-clean; formatting on save would add a large
-        // unrelated diff to every change (see CONTRIBUTING.md).
-        "editor.formatOnSave": false
+        // The crates are rustfmt-clean and CI checks it (scripts/ci/fmt.sh).
+        "[rust]": { "editor.formatOnSave": true }
       }
     }
   }

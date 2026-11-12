@@ -73,9 +73,9 @@ For any code change:
 6. For stealth changes, re-test with `--stealth` (a non-stealth binary won't
    exercise the `wreq` path).
 
-Do not bulk-run `cargo fmt`: the tree is not rustfmt-clean, so a blanket format
-produces a huge unrelated diff. Match the surrounding style in the files you
-edit instead.
+Format with `scripts/ci/fmt.sh` before committing; CI runs
+`scripts/ci/fmt.sh --check`. Never use `cargo fmt --all`: it also rewrites the
+vendored crates under `vendor/`, which must stay byte-for-byte upstream.
 
 ## Architecture
 
