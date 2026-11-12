@@ -160,6 +160,9 @@ fn an_error_page_is_still_converted() {
 
 // detach-invisibles
 
+// Hiding by a stylesheet class needs the CSS cascade, which only the render
+// build computes; inline styles and `hidden` work without it.
+#[cfg(feature = "render")]
 #[test]
 fn content_hidden_by_style_is_left_out() {
     let md = markdown_of(

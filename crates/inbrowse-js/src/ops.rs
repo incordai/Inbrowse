@@ -15,11 +15,11 @@ use inbrowse_dom::{DomTree, NodeData, NodeId};
 #[cfg(feature = "stealth")]
 use inbrowse_net::StealthHttpClient;
 use inbrowse_net::{
-    CallbackRegistry, CookieJar, InbrowseHttpClient, RequestInfo, ResourceType, Response,
-    SameSiteContext, same_site,
+    CallbackRegistry, CookieJar, InbrowseHttpClient, RequestInfo, ResourceRequest, ResourceType,
+    Response, SameSiteContext, same_site,
 };
 #[cfg(feature = "render")]
-use inbrowse_net::{RequestCredentials, RequestMode, ResourceRequest};
+use inbrowse_net::{RequestCredentials, RequestMode};
 use tokio::sync::Mutex;
 
 #[cfg(feature = "render")]

@@ -295,6 +295,8 @@ async fn describe_node_on_an_iframe_names_its_frame_and_content_document() {
     assert_eq!(attributes["attributes"][0], "id");
 }
 
+// Element boxes come from layout, which only the render build computes.
+#[cfg(feature = "render")]
 #[tokio::test(flavor = "current_thread")]
 async fn an_element_of_a_frame_resolves_measures_and_clicks_in_page_coordinates() {
     let mut page = Fixture::open().await;
@@ -420,6 +422,9 @@ async fn an_iframe_created_by_script_is_a_frame_when_the_command_returns() {
     assert_eq!(page.eval(Some(context), "document.URL").await, "about:blank");
 }
 
+// Accessibility visibility reads computed style, which only the render build
+// computes (as for the page in accessibility_names.rs).
+#[cfg(feature = "render")]
 #[tokio::test(flavor = "current_thread")]
 async fn hidden_content_inside_a_frame_is_not_in_its_accessibility_tree() {
     let mut page = Fixture::open().await;

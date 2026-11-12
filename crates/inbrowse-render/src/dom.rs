@@ -4240,6 +4240,8 @@ pub(crate) fn can_retain_layout_for_metadata(
 /// Shadow trees compile their own stylesheets, and `:host` or `::slotted`
 /// rules there can match light-DOM nodes. An attribute write is invisible to
 /// every shadow tree only when no shadow sheet depends on that attribute.
+/// Used by the paint-only retained-layout checks above and below.
+#[cfg(feature = "paint")]
 fn shadow_stylesheets_ignore_attributes<'a>(
     tree: &DomTree,
     viewport: (f32, f32),
