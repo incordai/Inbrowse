@@ -4,20 +4,46 @@ on:
   push:
     tags:
       - 'v*'
+  # Republish the image of an existing release tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.4.0
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  # Each architecture builds on a native runner. Emulating arm64 with QEMU
+  # crashed V8 while it created its startup snapshot (SIGILL), depending on
+  # the runner's CPU.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
+      - name: Resolve the release tag
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ steps.version.outputs.tag }}
           persist-credentials: false
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -28,20 +54,62 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: |
             INBROWSE_VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/inbrowse:${{ steps.version.outputs.version }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/inbrowse:latest
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ secrets.DOCKERHUB_USERNAME }}/inbrowse,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=inbrowse-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=inbrowse-${{ matrix.arch }}
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # One multi-architecture image under the version and `latest` tags.
+  merge:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create the version and latest tags
+        env:
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/inbrowse
+          INPUT_TAG: ${{ inputs.tag }}
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tag="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          version="${tag#v}"
+          docker buildx imagetools create -t "$IMAGE:$version" -t "$IMAGE:latest" \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:$version"
