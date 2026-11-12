@@ -10,7 +10,7 @@ import unittest
 class ObstacleReleaseGate(unittest.TestCase):
     def compare(self, candidate_passes, base_passes=False, base_ms=1, candidate_ms=1):
         stages = [{"name": f"stage-{n}", "pass": True, "median_ms": 1}
-                  for n in range(33)]
+                  for n in range(38)]
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory) / "base.json"
             candidate = Path(directory) / "candidate.json"

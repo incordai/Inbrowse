@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 MAX_RESULT_BYTES = 10 * 1024 * 1024
-EXPECTED_STAGE_COUNT = 33
+EXPECTED_STAGE_COUNT = 38
 
 
 def load_result(path: Path) -> dict:

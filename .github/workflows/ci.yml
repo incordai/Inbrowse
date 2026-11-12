@@ -188,11 +188,11 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: incordai/Inbrowse-benchmark
-          ref: 9c45e7475704bcf559a9a971d5e54497f40b5e78
+          ref: a0fff2762a61ab51980d1d609632647fdfc75c1e
           path: inbrowse-benchmark
           persist-credentials: false
 
-      - name: Require all 33 obstacle stages
+      - name: Require all 38 obstacle stages
         run: |
           INBROWSE_BIN="$RUNNER_TEMP/inbrowse-ci/inbrowse-pr" \
             python3 inbrowse-benchmark/obstacle-course/run.py \
@@ -266,7 +266,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: incordai/Inbrowse-benchmark
-          ref: 9c45e7475704bcf559a9a971d5e54497f40b5e78
+          ref: a0fff2762a61ab51980d1d609632647fdfc75c1e
           path: inbrowse-benchmark
           persist-credentials: false
 
