@@ -696,6 +696,80 @@ streaming `Page.startScreencast` protocol.
  </picture>
 </a>
 
+## Credits
+
+Inbrowse stands on these open-source projects. Thank you to their authors.
+
+**Origin**
+
+- [obscura](https://github.com/h4ckf0r0day/obscura) (Apache-2.0): the project
+  Inbrowse was forked from.
+
+**JavaScript and the web platform**
+
+- [V8](https://v8.dev) through [rusty_v8](https://github.com/denoland/rusty_v8)
+  and [deno_core](https://github.com/denoland/deno) (MIT): the JavaScript engine.
+- [html5ever](https://github.com/servo/html5ever) (MIT/Apache-2.0),
+  [selectors](https://github.com/servo/stylo) and
+  [cssparser](https://github.com/servo/rust-cssparser) (MPL-2.0) from Servo:
+  HTML parsing, CSS selectors and CSS syntax.
+
+**Rendering**
+
+- [Taffy](https://github.com/DioxusLabs/taffy) (MIT): flexbox, grid and block layout.
+- [cosmic-text](https://github.com/pop-os/cosmic-text) and
+  [swash](https://github.com/dfrg/swash) (MIT/Apache-2.0), with
+  [rustybuzz](https://github.com/harfbuzz/rustybuzz) and
+  [ttf-parser](https://github.com/harfbuzz/ttf-parser): text shaping and fonts.
+- [tiny-skia](https://github.com/linebender/tiny-skia) (BSD-3-Clause) and
+  [resvg and usvg](https://github.com/linebender/resvg) (MIT/Apache-2.0):
+  painting and SVG.
+- [image](https://github.com/image-rs/image) (MIT/Apache-2.0): image decoding.
+- Fonts bundled for text rendering: [Liberation](https://github.com/liberationfonts/liberation-fonts)
+  (SIL OFL 1.1), [DejaVu](https://dejavu-fonts.github.io) (Bitstream Vera
+  license) and [Noto Color Emoji](https://github.com/googlefonts/noto-emoji)
+  (SIL OFL 1.1).
+
+**Network and protocols**
+
+- [reqwest](https://github.com/seanmonstar/reqwest), [hyper](https://github.com/hyperium/hyper)
+  and [Tokio](https://github.com/tokio-rs/tokio) (MIT/Apache-2.0),
+  [rustls](https://github.com/rustls/rustls) (Apache-2.0/ISC/MIT): HTTP and TLS.
+- [wreq](https://github.com/0x676e67/wreq) (Apache-2.0) with BoringSSL: the
+  stealth transport.
+
+**Video and audio (`media`)**
+
+- [OpenH264](https://github.com/cisco/openh264) by Cisco through
+  [openh264-rs](https://github.com/ralfbiedert/openh264-rs) (BSD-2-Clause): H.264.
+- [libvpx](https://chromium.googlesource.com/webm/libvpx) (BSD-3-Clause): VP8 and VP9.
+- [unsafe-libopus](https://github.com/DCNick3/unsafe-libopus), libopus in Rust
+  (BSD-3-Clause): Opus.
+- [Symphonia](https://github.com/pdeljanov/Symphonia) (MPL-2.0): AAC.
+- [moq](https://github.com/moq-dev/moq) and
+  [mp4-atom](https://github.com/kixelated/mp4-atom) (MIT/Apache-2.0),
+  [webm-iterable](https://github.com/austinleroy/webm-iterable) (MIT): MP4 and
+  WebM containers; [rubato](https://github.com/HEnquist/rubato)
+  (MIT/Apache-2.0): audio resampling.
+
+**Documents (`extract`)**
+
+- [pdf-extract](https://github.com/jrmuizel/pdf-extract) (MIT): PDF text.
+- [calamine](https://github.com/tafia/calamine), [quick-xml](https://github.com/tafia/quick-xml)
+  and [zip](https://github.com/zip-rs/zip2) (MIT): spreadsheets, Word,
+  PowerPoint and OpenDocument.
+
+**OCR**
+
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (Apache-2.0): the
+  PP-OCR detection and recognition models that read text in images. They run
+  in the Incord memory engine, not in the Inbrowse binary.
+
+**Markdown and testing**
+
+- [Jina Reader](https://github.com/jina-ai/reader) (Apache-2.0): its tests are
+  the reference for the Markdown and JSON output.
+
 ## License
 
 Apache-2.0. Copyright 2026 Incord AI. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
