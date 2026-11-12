@@ -680,6 +680,22 @@ claude plugin install inbrowse@inbrowse
 The MCP server exposes still-image and PDF output. Use CDP when you need the
 streaming `Page.startScreencast` protocol.
 
+## Contributors
+
+<a href="https://github.com/incordai/Inbrowse/graphs/contributors">
+  <img alt="Contributors" src="https://contrib.rocks/image?repo=incordai/Inbrowse" />
+</a>
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=incordai%2Finbrowse&type=date&releases=&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=incordai/inbrowse&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=incordai/inbrowse&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=incordai/inbrowse&type=date&legend=bottom-right" />
+ </picture>
+</a>
+
 ## License
 
 Apache-2.0. Copyright 2026 Incord AI. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
