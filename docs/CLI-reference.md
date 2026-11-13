@@ -224,6 +224,8 @@ Run inbrowse as an MCP server.
     --proxy <URL>            HTTP or SOCKS5 proxy
     --user-agent <UA>        Override the User-Agent
     --idle-timeout <SECS>    Close pages after this long with no request (default 300, 0 = never)
+    --allow-file-access      Let page tools open file:// URLs (off by default;
+                             INBROWSE_MCP_ALLOW_FILE_ACCESS=1 does the same)
     --stealth                Consistent browser fingerprint + tracker blocking (global)
     --allow-private-network  Permit loopback / RFC1918 / link-local
 -v, --verbose                Enable info logging

@@ -294,6 +294,14 @@ enum Command {
         /// storage. 0 keeps pages open until `browser_close` or exit.
         #[arg(long, value_name = "SECS", default_value_t = inbrowse_mcp::DEFAULT_IDLE_CLOSE.as_secs())]
         idle_timeout: u64,
+
+        /// Let page tools (browser_navigate, browser_tab_new) open file://
+        /// URLs. Off by default so an agent cannot read local files through a
+        /// page. INBROWSE_MCP_ALLOW_FILE_ACCESS=1 does the same (the Claude
+        /// Code plugin sets it). With --http, any client that can reach the
+        /// server can then read this machine's files.
+        #[arg(long)]
+        allow_file_access: bool,
     },
 
     /// Print the text of a PDF, Word, PowerPoint, OpenDocument, spreadsheet,
@@ -559,6 +567,19 @@ fn merge_user_agent(
     command_user_agent: Option<String>,
 ) -> Option<String> {
     command_user_agent.or(global_user_agent)
+}
+
+/// Whether an on/off environment variable is on: `1`, `true`, `yes` or `on`,
+/// in any case, the values `INBROWSE_ALLOW_PRIVATE_NETWORK` accepts
+/// (inbrowse-ssrf `env_allows_private_network`). Used for
+/// `INBROWSE_MCP_ALLOW_FILE_ACCESS`, which the Claude Code plugin sets.
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Normalize a raw `--v8-flags` value into the string we'll hand to V8.
@@ -909,11 +930,18 @@ async fn run_cli() -> anyhow::Result<()> {
             proxy,
             user_agent,
             idle_timeout,
+            allow_file_access,
         }) => {
             let user_agent = merge_user_agent(global_user_agent.clone(), user_agent);
             configure_font_directories(&font_dirs)?;
             let mcp_proxy = merge_proxy(global_proxy.clone(), proxy);
             let idle_close = (idle_timeout > 0).then(|| Duration::from_secs(idle_timeout));
+            let allow_file_access = allow_file_access
+                || env_flag_enabled(
+                    std::env::var("INBROWSE_MCP_ALLOW_FILE_ACCESS")
+                        .ok()
+                        .as_deref(),
+                );
             // `inbrowse mcp` builds its BrowserContext from the environment, so
             // the global profile flag has to be handed over explicitly.
             if let Some(ref dir) = global_storage_dir {
@@ -923,10 +951,25 @@ async fn run_cli() -> anyhow::Result<()> {
                 }
             }
             if http {
-                inbrowse_mcp::http::run(host, port, mcp_proxy, user_agent, stealth, idle_close)
-                    .await?;
+                inbrowse_mcp::http::run(
+                    host,
+                    port,
+                    mcp_proxy,
+                    user_agent,
+                    stealth,
+                    idle_close,
+                    allow_file_access,
+                )
+                .await?;
             } else {
-                inbrowse_mcp::run(mcp_proxy, user_agent, stealth, idle_close).await?;
+                inbrowse_mcp::run(
+                    mcp_proxy,
+                    user_agent,
+                    stealth,
+                    idle_close,
+                    allow_file_access,
+                )
+                .await?;
             }
         }
         #[cfg(feature = "extract")]
@@ -4107,6 +4150,32 @@ mod tests {
             ),
             _ => panic!("expected Mcp command"),
         }
+    }
+
+    #[test]
+    fn mcp_file_access_is_off_unless_asked_for() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["inbrowse", "mcp"];
+            argv.extend_from_slice(extra);
+            match Args::try_parse_from(argv)
+                .expect("clap should parse mcp")
+                .command
+            {
+                Some(Command::Mcp {
+                    allow_file_access, ..
+                }) => allow_file_access,
+                _ => panic!("expected Mcp command"),
+            }
+        };
+        assert!(!parse(&[]));
+        assert!(parse(&["--allow-file-access"]));
+        for on in ["1", "true", "YES", " on "] {
+            assert!(super::env_flag_enabled(Some(on)), "{on}");
+        }
+        for off in ["", "0", "false", "off", "no", "2"] {
+            assert!(!super::env_flag_enabled(Some(off)), "{off}");
+        }
+        assert!(!super::env_flag_enabled(None));
     }
 
     #[test]

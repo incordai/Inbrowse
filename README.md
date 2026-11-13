@@ -622,6 +622,7 @@ Optional flags (both transports):
 | `--font-dir <DIR>` | Load additional fonts before rendering (repeatable; render build) |
 | `--stealth` | Enable anti-detection mode |
 | `--idle-timeout <SECS>` | Close every page after this many seconds with no request (default `300`; `0` keeps pages open). Cookies and storage stay, and the next call opens a new page and says the old one was closed |
+| `--allow-file-access` | Let `browser_navigate` and `browser_tab_new` open `file://` pages, such as a local HTML or SVG file. Off by default; `INBROWSE_MCP_ALLOW_FILE_ACCESS=1` does the same, and the Claude Code plugin has an "Open local files" setting for it |
 
 ### Claude Code plugin
 

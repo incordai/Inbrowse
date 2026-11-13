@@ -272,7 +272,9 @@ fn cors_header(origin: Option<&str>, allowlist: Option<&str>) -> String {
 }
 
 /// MCP Streamable HTTP transport (POST /mcp → JSON response). Pages open and
-/// close for idleness as on stdio ([`crate::run`]).
+/// close for idleness as on stdio ([`crate::run`]). `allow_file_access` lets
+/// page tools open `file://` URLs, so any client that can reach the server can
+/// read this machine's files: enable it only on a trusted network.
 pub async fn run(
     host: String,
     port: u16,
@@ -280,6 +282,7 @@ pub async fn run(
     user_agent: Option<String>,
     stealth: bool,
     idle_close: Option<std::time::Duration>,
+    allow_file_access: bool,
 ) -> Result<()> {
     let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
     let auth_token = token_from_env()?;
@@ -294,7 +297,7 @@ pub async fn run(
         tracing::info!("MCP bearer authentication enabled");
     }
 
-    let mut state = BrowserState::new(proxy, user_agent, stealth);
+    let mut state = BrowserState::with_file_access(proxy, user_agent, stealth, allow_file_access);
     state.idle_close = idle_close;
     let allowed_origins = Arc::new(allowed_origins_env());
     let auth_token = Arc::new(auth_token);
