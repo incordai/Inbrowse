@@ -6,6 +6,8 @@ All notable changes to Inbrowse are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-13
+
 ### Added
 
 - `inbrowse mcp --allow-file-access` (or `INBROWSE_MCP_ALLOW_FILE_ACCESS=1`)
@@ -344,6 +346,7 @@ All notable changes to Inbrowse are recorded here. The format follows
 The `v0.1.0` to `v0.2.5` tags in this repository are releases of the upstream
 project credited in the README.
 
-[Unreleased]: https://github.com/incordai/Inbrowse/compare/v0.4.0...main
+[Unreleased]: https://github.com/incordai/Inbrowse/compare/v0.4.1...main
+[0.4.1]: https://github.com/incordai/Inbrowse/releases/tag/v0.4.1
 [0.4.0]: https://github.com/incordai/Inbrowse/releases/tag/v0.4.0
 [0.3.0]: https://github.com/incordai/Inbrowse/releases/tag/v0.3.0
